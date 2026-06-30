@@ -1,0 +1,56 @@
+name: CI
+
+# Cross-platform proof: the full suite must pass on Linux, macOS, and Windows, across the supported
+# Node range (engines: >=18). This is what makes "works everywhere" a standing guarantee rather than a
+# one-machine check — it caught nothing only because the spawn + framing bugs were fixed first; it
+# exists so a platform regression can never ship silently again.
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: test (${{ matrix.os }}, node ${{ matrix.node }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        node: ['18', '20', '22']
+    steps:
+      - uses: actions/checkout@v4
+      - name: Use Node ${{ matrix.node }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      # Runtime dependencies are zero; this installs only the dev/test tooling (jose, for the OAuth
+      # test suite). No lockfile is committed (matching the zero-dep posture), so `npm install`.
+      - name: Install dev/test tooling
+        run: npm install
+      - name: Run the test suite
+        run: npm test
+
+  # Integration: prove interop against implementations we did NOT write — a real npx-launched MCP
+  # (server-everything) and the official MCP SDK client over Streamable HTTP. Gated behind
+  # TF_INTEGRATION=1 (network + the SDK devDep), so it runs only here, not in the offline matrix above.
+  # ubuntu = the POSIX spawn path, windows = the cmd.exe shim path — the two that the bugs lived in.
+  integration:
+    name: integration (real MCP + SDK client, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Use Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install dev/test tooling
+        run: npm install
+      - name: Integration tests (real npx MCP + official SDK client)
+        run: npm run test:integration
+        env:
+          TF_INTEGRATION: '1'

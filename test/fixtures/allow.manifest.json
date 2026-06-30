@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "hooks": [
+    {
+      "id": "pre-tool-use/deny-hook",
+      "event": "PreToolUse",
+      "matcher": "some-other-tool",
+      "type": "command",
+      "command": "node \"${HOOKS_DIR}/scripts/deny-hook.js\"",
+      "script": "scripts/deny-hook.js",
+      "timeout": 10,
+      "enabled": true,
+      "description": "TEST FIXTURE: an ENABLED deny hook whose matcher does NOT match 'danger'. Proves a non-matching manifest allows the call (execute() runs)."
+    }
+  ]
+}

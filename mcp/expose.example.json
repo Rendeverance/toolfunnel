@@ -1,0 +1,30 @@
+{
+  "_README": "SAMPLE config — NOT the live expose.json. This wires the bundled demo upstream at mcp/servers/mock-upstream/server.js so the MCP Manager has a real target. TO USE: either (A) copy this file over mcp/expose.json to pre-seed the host (drop the _README key — the loader ignores it, but copy cleanly), OR (B) leave expose.json empty and add the same upstream + expose entries through the MCP Manager UI (Add upstream -> Discover -> tick to expose). The upstream offers ping, add, echo; this sample exposes only TWO (ping, add) to demonstrate curation. IMPORTANT: the args path MUST resolve INSIDE the gateway root — the aggregator's isolation guard rejects any arg path that escapes the sandbox. A relative path like 'mcp/servers/mock-upstream/server.js' is resolved against the gateway root and stays inside it; 'node' in the command slot is the interpreter (not guarded). Do NOT edit the live mcp/expose.json to point outside the gateway root.",
+  "version": 1,
+  "upstreams": [
+    {
+      "id": "mock",
+      "transport": "stdio",
+      "command": "node",
+      "args": ["mcp/servers/mock-upstream/server.js"],
+      "enabled": true,
+      "description": "Bundled demo upstream MCP (zero-dependency, stdio): ping, add, echo. No network, no fs writes, no process mutation."
+    }
+  ],
+  "expose": [
+    {
+      "upstream": "mock",
+      "tool": "ping",
+      "as": "mock_ping",
+      "category": "demo",
+      "enabled": true
+    },
+    {
+      "upstream": "mock",
+      "tool": "add",
+      "as": "mock_add",
+      "category": "demo",
+      "enabled": true
+    }
+  ]
+}

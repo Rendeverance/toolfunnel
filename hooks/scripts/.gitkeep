@@ -1,0 +1,3 @@
+# Keeps hooks/scripts/ in the repo. Hook scripts (authored via tf_hook_add / the UI) live here.
+# The directory must exist for the atomic temp+rename script write to succeed (a fresh clone
+# needs it present). Do not delete this file unless the directory holds other tracked scripts.

@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "hooks": [
+    {
+      "id": "pre-tool-use/deny-hook",
+      "event": "PreToolUse",
+      "matcher": "danger",
+      "type": "command",
+      "command": "node \"${HOOKS_DIR}/scripts/deny-hook.js\"",
+      "script": "scripts/deny-hook.js",
+      "timeout": 10,
+      "enabled": true,
+      "description": "TEST FIXTURE: unconditionally denies the 'danger' tool so gate.test.js can prove a PreToolUse deny prevents execute()."
+    }
+  ]
+}

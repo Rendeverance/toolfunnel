@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ToolFunnel</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <span class="logo" aria-hidden="true">
+          <img class="logo-img" src="/logo.jpg" alt="">
+        </span>
+        <div class="brand-text">
+          <h1><span class="brand-tool">Tool</span>Funnel</h1>
+          <p class="tagline">MCP gateway &middot; management console</p>
+        </div>
+      </div>
+      <div class="stats" id="stats">
+        <div class="stat"><span class="stat-num" id="stat-tools">&middot;</span><span class="stat-label">tools</span></div>
+        <div class="stat"><span class="stat-num" id="stat-upstreams">&middot;</span><span class="stat-label">mcps</span></div>
+        <div class="stat"><span class="stat-num" id="stat-hooks">&middot;</span><span class="stat-label">hooks</span></div>
+      </div>
+    </header>
+
+    <nav class="tabs">
+      <button class="tab is-active" data-tab="tools">Tools</button>
+      <button class="tab" data-tab="mcps">MCPs</button>
+      <button class="tab" data-tab="hooks">Hooks</button>
+      <button class="tab" data-tab="logs">Logs</button>
+      <button class="tab" data-tab="auth">Auth</button>
+    </nav>
+
+    <main>
+      <!-- ───────────────────────── Tools view ───────────────────────── -->
+      <section class="view is-active" id="view-tools">
+        <!-- Top-level surface: which tools are injected into the AI's context EVERY turn. The 4
+             meta-tools default ON; promote local/upstream tools with the per-row "Hot" toggle. -->
+        <div class="surface-panel" id="surface-panel">
+          <div class="surface-head">
+            <span class="surface-title">Top-level surface</span>
+            <span class="surface-sub">tools injected every turn &middot; the rest stay lean, discovered on demand</span>
+            <span class="surface-count" id="surface-count"></span>
+          </div>
+          <div class="surface-meta" id="surface-meta"></div>
+          <div class="surface-warnings" id="surface-warnings" hidden></div>
+        </div>
+
+        <div class="toolbar">
+          <div class="searchbar">
+            <svg class="search-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="11" cy="11" r="7"></circle><path d="m21 21-4.3-4.3"></path>
+            </svg>
+            <input id="search-tools" type="search" placeholder="Search tools by name, summary, category, id, or mode&hellip;" autocomplete="off" spellcheck="false">
+            <span class="result-count" id="count-tools"></span>
+          </div>
+          <label class="show-hidden" title="Show tools you've hidden from this manager list"><input type="checkbox" id="show-hidden"> show hidden</label>
+          <button class="btn btn-add" id="addbtn-tools" type="button" aria-expanded="false">+ Add tool</button>
+        </div>
+
+        <form class="addform" id="addform-tools" hidden autocomplete="off">
+          <div class="field-grid">
+            <label class="field"><span>id <em>*</em></span><input id="t-id" type="text" placeholder="my_tool" spellcheck="false"></label>
+            <label class="field"><span>name <em>*</em></span><input id="t-name" type="text" placeholder="My Tool"></label>
+            <label class="field"><span>category</span><input id="t-category" type="text" placeholder="utilities"></label>
+            <label class="field">
+              <span>mode</span>
+              <select id="t-mode">
+                <option value="gateway">gateway — run here</option>
+                <option value="reference">reference — AI runs it</option>
+              </select>
+            </label>
+            <label class="field field-wide"><span>summary</span><input id="t-summary" type="text" placeholder="One-line description shown in the list."></label>
+            <label class="field" id="t-invoke-type-field">
+              <span>invoke type</span>
+              <select id="t-invoke-type">
+                <option value="script">script</option>
+                <option value="shell">shell</option>
+                <option value="none">none</option>
+              </select>
+            </label>
+            <label class="field" id="t-path-field"><span>script path</span><input id="t-path" type="text" placeholder="scripts/my-tool.js" spellcheck="false"></label>
+            <label class="field field-wide" id="t-command-field" hidden><span>shell command</span><input id="t-command" type="text" placeholder="echo hello" spellcheck="false"></label>
+            <label class="field field-wide"><span>instructions</span><textarea id="t-instructions" rows="2" placeholder="How the connected AI should call this tool."></textarea></label>
+            <label class="field field-wide" id="t-script-field"><span>script body <em class="hint">(optional — authored under tools/scripts/)</em></span><textarea id="t-scripttext" rows="5" spellcheck="false" placeholder="'use strict';&#10;// reads JSON args from process.env.TOOLFUNNEL_TOOL_ARGS"></textarea></label>
+          </div>
+          <div class="addform-actions">
+            <button class="btn btn-primary" id="t-submit" type="submit">Add tool</button>
+            <button class="btn btn-ghost" id="t-cancel" type="button">Cancel</button>
+          </div>
+        </form>
+
+        <div id="tool-list" class="card-list"></div>
+        <div id="tools-empty" class="empty" hidden>No tools in the register.</div>
+      </section>
+
+      <!-- ───────────────────────── MCPs view ───────────────────────── -->
+      <section class="view" id="view-mcps">
+        <div class="toolbar">
+          <div class="searchbar">
+            <svg class="search-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="11" cy="11" r="7"></circle><path d="m21 21-4.3-4.3"></path>
+            </svg>
+            <input id="search-mcps" type="search" placeholder="Search upstream MCPs by id, command, or description&hellip;" autocomplete="off" spellcheck="false">
+            <span class="result-count" id="count-mcps"></span>
+          </div>
+          <button class="btn btn-add" id="addbtn-mcps" type="button" aria-expanded="false">+ Add MCP</button>
+        </div>
+
+        <form class="addform" id="addform-mcps" hidden autocomplete="off">
+          <div class="field-grid">
+            <label class="field"><span>id <em>*</em></span><input id="m-id" type="text" placeholder="my-upstream" spellcheck="false"></label>
+            <label class="field">
+              <span>transport</span>
+              <select id="m-transport"><option value="stdio">stdio</option></select>
+            </label>
+            <label class="field field-wide"><span>command <em>*</em></span><input id="m-command" type="text" placeholder="node" spellcheck="false"></label>
+            <label class="field field-wide"><span>args <em class="hint">(space-separated)</em></span><input id="m-args" type="text" placeholder="path/to/server.js --flag" spellcheck="false"></label>
+            <label class="field field-wide"><span>description</span><input id="m-description" type="text" placeholder="What this upstream provides."></label>
+          </div>
+          <div class="subsection">
+            <div class="subsection-head">
+              <span class="subsection-title">Exposed tools <em class="hint">(optional — curated-direct selections)</em></span>
+              <button class="btn btn-ghost btn-sm" id="m-add-expose" type="button">+ expose</button>
+            </div>
+            <div id="m-expose-rows" class="expose-rows"></div>
+          </div>
+          <div class="addform-actions">
+            <button class="btn btn-primary" id="m-submit" type="submit">Add MCP</button>
+            <button class="btn btn-ghost" id="m-cancel" type="button">Cancel</button>
+          </div>
+        </form>
+
+        <div id="mcp-list" class="card-list"></div>
+        <div id="mcps-empty" class="empty" hidden>
+          <p>No upstream MCPs configured.</p>
+          <p class="muted">Add one above to surface its tools through the gateway.</p>
+        </div>
+      </section>
+
+      <!-- ───────────────────────── Hooks view ───────────────────────── -->
+      <section class="view" id="view-hooks">
+        <div class="toolbar">
+          <div class="searchbar">
+            <svg class="search-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="11" cy="11" r="7"></circle><path d="m21 21-4.3-4.3"></path>
+            </svg>
+            <input id="search-hooks" type="search" placeholder="Search hooks by id, event, matcher, or description&hellip;" autocomplete="off" spellcheck="false">
+            <span class="result-count" id="count-hooks"></span>
+          </div>
+          <button class="btn btn-add" id="addbtn-hooks" type="button" aria-expanded="false">+ Add hook</button>
+        </div>
+
+        <form class="addform" id="addform-hooks" hidden autocomplete="off">
+          <div class="field-grid">
+            <label class="field"><span>id <em>*</em></span><input id="h-id" type="text" placeholder="pre-tool-use/my-gate" spellcheck="false"></label>
+            <label class="field">
+              <span>event <em>*</em></span>
+              <select id="h-event"></select>
+            </label>
+            <label class="field"><span>matcher</span><input id="h-matcher" type="text" placeholder="Bash|Write (blank = all)" spellcheck="false"></label>
+            <label class="field field-wide"><span>command <em>*</em></span><input id="h-command" type="text" placeholder='node "${HOOKS_DIR}/scripts/my-gate.js"' spellcheck="false"></label>
+            <label class="field field-wide"><span>script body <em class="hint">(optional — authored under hooks/scripts/)</em></span><textarea id="h-scripttext" rows="5" spellcheck="false" placeholder="#!/usr/bin/env node&#10;// reads the event payload as JSON on stdin"></textarea></label>
+          </div>
+          <div class="addform-actions">
+            <button class="btn btn-primary" id="h-submit" type="submit">Add hook</button>
+            <button class="btn btn-ghost" id="h-cancel" type="button">Cancel</button>
+          </div>
+        </form>
+
+        <div id="hook-list" class="card-list"></div>
+        <div id="hooks-empty" class="empty" hidden>
+          <p>No hooks configured.</p>
+          <p class="muted">Add a lifecycle hook above, or toggle per-tool Pre/Post gates on the Tools tab.</p>
+        </div>
+      </section>
+
+      <!-- ───────────────────────── Logs view ───────────────────────── -->
+      <section class="view" id="view-logs">
+        <div class="toolbar logs-toolbar">
+          <div class="log-config">
+            <label class="switch"><input type="checkbox" id="log-enabled"><span class="slider"></span></label>
+            <span class="log-status" id="log-status">&middot;</span>
+            <span class="log-path mono" id="log-path"></span>
+          </div>
+          <span class="result-count log-count" id="count-logs"></span>
+          <button class="btn btn-ghost" id="logs-refresh" type="button" title="Reload recent entries">Refresh</button>
+        </div>
+
+        <div id="log-list" class="card-list log-list"></div>
+        <div id="logs-empty" class="empty" hidden>
+          <p>No entries yet.</p>
+          <p class="muted">Gate decisions and tool runs will appear here once activity is logged.</p>
+        </div>
+      </section>
+
+      <!-- ───────────────────────── Auth view ───────────────────────── -->
+      <section class="view" id="view-auth">
+        <div class="auth-intro">
+          <p>
+            ToolFunnel ships <strong>zero runtime dependencies</strong>. OAuth&nbsp;2.1 is
+            <strong>opt-in</strong>: enabling it adds exactly one audited, itself-zero-dependency
+            library&nbsp;&mdash; <code id="auth-josepin">jose</code>&nbsp;&mdash; the same one the
+            official MCP SDK uses. It is installed only when you choose to, here or via
+            <code>toolfunnel install-oauth</code>. With auth on, the HTTP host can validate bearer
+            tokens (resource-server role) and safely bind off&nbsp;localhost.
+          </p>
+        </div>
+
+        <!-- Dependency status + on-demand install -->
+        <div class="auth-card" id="auth-dep-card">
+          <div class="auth-row">
+            <span class="auth-dep-state" id="auth-dep-state">&middot;</span>
+            <button class="btn btn-primary" id="auth-install-btn" type="button" hidden>Install OAuth dependency</button>
+          </div>
+          <pre class="auth-install-log mono" id="auth-install-log" hidden></pre>
+        </div>
+
+        <!-- Config form -->
+        <form class="auth-card auth-form" id="auth-form" autocomplete="off">
+          <div class="auth-enable-row">
+            <label class="switch"><input type="checkbox" id="auth-enabled"><span class="slider"></span></label>
+            <span class="auth-enable-label">Enable OAuth&nbsp;2.1 resource-server validation</span>
+            <span class="auth-ready-badge" id="auth-ready-badge" hidden></span>
+          </div>
+          <div class="field-grid">
+            <label class="field field-wide"><span>issuer <em>*</em> <em class="hint">(the authorization server)</em></span><input id="auth-issuer" type="text" placeholder="https://auth.example.com" spellcheck="false"></label>
+            <label class="field field-wide"><span>audience <em>*</em> <em class="hint">(this gateway's resource URI — binds tokens, RFC&nbsp;8707)</em></span><input id="auth-audience" type="text" placeholder="https://gateway.example.com" spellcheck="false"></label>
+            <label class="field field-wide"><span>jwksUri <em class="hint">(optional — derived from the issuer via discovery if blank)</em></span><input id="auth-jwksuri" type="text" placeholder="https://auth.example.com/.well-known/jwks.json" spellcheck="false"></label>
+            <label class="field"><span>algorithms <em class="hint">(comma-separated, pinned)</em></span><input id="auth-algorithms" type="text" placeholder="RS256, ES256" spellcheck="false"></label>
+            <label class="field"><span>required scopes <em class="hint">(comma-separated, optional)</em></span><input id="auth-scopes" type="text" placeholder="tools:run" spellcheck="false"></label>
+            <label class="field"><span>clock tolerance (s)</span><input id="auth-clock" type="number" min="0" placeholder="30"></label>
+          </div>
+          <div class="addform-actions">
+            <button class="btn btn-primary" id="auth-save" type="submit">Save auth config</button>
+            <span class="auth-config-note muted" id="auth-config-note"></span>
+          </div>
+        </form>
+      </section>
+    </main>
+  </div>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

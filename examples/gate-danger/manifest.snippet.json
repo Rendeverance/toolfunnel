@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "hooks": [
+    {
+      "id": "pre-tool-use/gate-danger",
+      "event": "PreToolUse",
+      "matcher": "Danger Demo",
+      "type": "command",
+      "command": "node \"${HOOKS_DIR}/scripts/gate-danger.js\"",
+      "script": "scripts/gate-danger.js",
+      "timeout": 5,
+      "enabled": true,
+      "description": "Deny the Danger Demo tool unless args.confirm === true."
+    }
+  ]
+}

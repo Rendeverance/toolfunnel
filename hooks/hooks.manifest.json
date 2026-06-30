@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "hooks": [
+    {
+      "id": "pre-tool-use/example-deny-dangerous",
+      "event": "PreToolUse",
+      "matcher": "*",
+      "type": "command",
+      "command": "node \"${HOOKS_DIR}/scripts/example-deny-dangerous.js\"",
+      "script": "scripts/example-deny-dangerous.js",
+      "timeout": 10,
+      "enabled": false,
+      "description": "EXAMPLE (disabled by default). A PreToolUse policy gate: denies any tool call whose arguments contain an obviously-destructive shell pattern (rm -rf, mkfs, drive format, fork bomb). A non-zero exit fails closed and blocks the call before it runs. Enable it in the UI Hooks tab (or set enabled:true here) to see the gate bite; edit scripts/example-deny-dangerous.js to encode your own policy."
+    },
+    {
+      "id": "post-tool-use/example-audit",
+      "event": "PostToolUse",
+      "matcher": "*",
+      "type": "command",
+      "command": "node \"${HOOKS_DIR}/scripts/example-audit.js\"",
+      "script": "scripts/example-audit.js",
+      "timeout": 10,
+      "enabled": false,
+      "description": "EXAMPLE (disabled by default). A PostToolUse observer: runs AFTER a tool executes (advisory — it cannot un-run the call) and receives the tool result on stdin. The stub exits 0 (clean pass); replace its body to forward results to your own audit sink, metrics, or SIEM. Enable it in the UI Hooks tab (or set enabled:true here)."
+    }
+  ]
+}

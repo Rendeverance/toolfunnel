@@ -1,0 +1,28 @@
+# Dependencies (runtime: none. The single opt-in OAuth devDependency `jose` is range-pinned in
+# package.json; node_modules + the lockfile are not committed, matching the zero-dep posture.)
+node_modules/
+package-lock.json
+
+# Optional OAuth config — created on demand when you enable auth (default OFF when absent),
+# exactly like logs/ below. The committed repo ships no auth config; see docs/oauth.md for the shape.
+# Root-anchored so it ignores ONLY the top-level config dir, NOT the engine code in src/auth/.
+/auth/
+
+# Logs
+*.log
+logs/
+
+# Env / secrets
+.env
+.env.*
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Scratch
+*.tmp
+/tmp/
+coverage/

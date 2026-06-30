@@ -1,0 +1,171 @@
+{
+  "version": 1,
+  "description": "Tool register for the gateway — built-in demo scripts.",
+  "tools": [
+    {
+      "id": "echo",
+      "name": "Echo",
+      "summary": "Return the provided arguments back unchanged.",
+      "category": "demo",
+      "instructions": "Echoes its structured args back in the result. Pass any JSON value as args and the same value is returned. Useful as a connectivity / round-trip smoke test.",
+      "invoke": {
+        "type": "script",
+        "path": "scripts/echo.js"
+      }
+    },
+    {
+      "id": "base64",
+      "name": "Base64 Encode/Decode",
+      "summary": "Encode text to Base64 or decode Base64 back to text.",
+      "category": "encoding",
+      "instructions": "Args: { op: \"encode\"|\"decode\", text: string }. Both args required. encode -> Base64 of the UTF-8 text; decode -> UTF-8 from valid Base64 (malformed input is reported, not mangled).",
+      "invoke": {
+        "type": "script",
+        "path": "scripts/base64.js"
+      }
+    },
+    {
+      "id": "hash",
+      "name": "Hash",
+      "summary": "Compute a cryptographic digest (e.g. sha256) of input text.",
+      "category": "crypto",
+      "instructions": "Args: { algo?: \"sha256\"|\"sha1\"|\"md5\" (default \"sha256\"), text: string }. Returns the lowercase hex digest of the UTF-8 text.",
+      "invoke": {
+        "type": "script",
+        "path": "scripts/hash.js"
+      }
+    },
+    {
+      "id": "uuid",
+      "name": "UUID Generator",
+      "summary": "Generate a random RFC 4122 v4 UUID.",
+      "category": "generators",
+      "instructions": "Args: { count?: number (default 1) }. Returns one or more freshly generated v4 UUID strings.",
+      "invoke": {
+        "type": "script",
+        "path": "scripts/uuid.js"
+      }
+    },
+    {
+      "id": "json",
+      "name": "JSON Format",
+      "summary": "Validate and pretty-print a JSON string.",
+      "category": "data",
+      "instructions": "Args: { text: string, indent?: number (default 2) }. Parses the input; returns the re-serialised, indented JSON, or a clear parse error.",
+      "invoke": {
+        "type": "script",
+        "path": "scripts/json.js"
+      }
+    },
+    {
+      "id": "text-stats",
+      "name": "Text Stats",
+      "summary": "Count characters, words, and lines in a block of text.",
+      "category": "text",
+      "instructions": "Args: { text: string }. Returns { chars, words, lines } computed from the input text.",
+      "invoke": {
+        "type": "script",
+        "path": "scripts/text-stats.js"
+      }
+    },
+    {
+      "id": "danger",
+      "name": "Danger Demo",
+      "summary": "Demonstrate a gated, potentially destructive operation.",
+      "category": "demo",
+      "instructions": "A sample tool that represents a destructive action. It is intended to be exercised behind the gate so the gating path can be tested end to end. Pass { confirm: true } to proceed.",
+      "invoke": {
+        "type": "script",
+        "path": "scripts/danger.js"
+      }
+    },
+    {
+      "id": "tf_tool_add",
+      "name": "tf_tool_add",
+      "summary": "Register a new tool entry in the gateway tool register.",
+      "category": "management",
+      "instructions": "Add a register entry. Args: { id, name, summary?, category?, instructions?, invoke:{type:'script',path:'scripts/<file>'}|{type:'shell',command}, scriptText? }. If scriptText is given for a script invoke, the body is written to tools/scripts/<basename> first. Change is LIVE (no reconnect). Fails if id already exists.",
+      "invoke": {
+        "type": "script",
+        "path": "scripts/tf-tool-add.js"
+      }
+    },
+    {
+      "id": "tf_tool_set",
+      "name": "tf_tool_set",
+      "summary": "Activate, deactivate, promote (hot), hide, or remove a register tool.",
+      "category": "management",
+      "instructions": "Args: { id, action:'enable'|'disable'|'hot'|'unhot'|'hide'|'unhide'|'remove' }. enable/disable flips the active overlay (default ON) — disabled tools drop from toolfunnel_list_tools. hot/unhot promote/demote on the TOP-LEVEL every-turn surface (tools/list), making it directly callable (default OFF). hide/unhide declutter the MANAGER views only (tf_list + UI) and do NOT change what the AI sees. The id may be a local tool id, an upstream surfaced name, or a meta-tool name. remove deletes the register entry and purges its state key. All LIVE (no restart).",
+      "invoke": {
+        "type": "script",
+        "path": "scripts/tf-tool-set.js"
+      }
+    },
+    {
+      "id": "tf_mcp_add",
+      "name": "tf_mcp_add",
+      "summary": "Register an upstream MCP (and optionally expose some of its tools).",
+      "category": "management",
+      "instructions": "Args: { id, command, args?, env?, transport?='stdio', enabled?=true, description?, expose?:[{tool, as?, category?, enabled?}] }. Adds an upstreams[] entry; each expose[] item adds a curated-direct selection. Curated-direct changes need an aggregator reconnect to surface.",
+      "invoke": {
+        "type": "script",
+        "path": "scripts/tf-mcp-add.js"
+      }
+    },
+    {
+      "id": "tf_mcp_set",
+      "name": "tf_mcp_set",
+      "summary": "Enable, disable, or remove an upstream MCP.",
+      "category": "management",
+      "instructions": "Args: { id, action:'enable'|'disable'|'remove' }. enable/disable toggles the upstream; remove deletes it and cascades its expose entries. Reconnect needed for the curated-direct surface to change.",
+      "invoke": {
+        "type": "script",
+        "path": "scripts/tf-mcp-set.js"
+      }
+    },
+    {
+      "id": "tf_hook_add",
+      "name": "tf_hook_add",
+      "summary": "Add a hook manifest entry (e.g. a PreToolUse gate).",
+      "category": "management",
+      "instructions": "Args: { id, event, matcher?, command, script?, timeout?, enabled?=true, description?, scriptText? }. id format '<kebab-event>/<name>'. command should use the portable ${HOOKS_DIR} token. If scriptText is given, the script is authored under hooks/scripts/ (path-guarded). enabled is the manifest seed; live toggles live in hooks.state.json.",
+      "invoke": {
+        "type": "script",
+        "path": "scripts/tf-hook-add.js"
+      }
+    },
+    {
+      "id": "tf_hook_set",
+      "name": "tf_hook_set",
+      "summary": "Enable, disable, or remove a hook.",
+      "category": "management",
+      "instructions": "Args: { id, action:'enable'|'disable'|'remove' }. enable/disable writes the hooks.state.json overlay (wins over the manifest seed) and mirrors the manifest; remove deletes the manifest entry and purges the overlay key (the script file is left in place).",
+      "invoke": {
+        "type": "script",
+        "path": "scripts/tf-hook-set.js"
+      }
+    },
+    {
+      "id": "tf_list",
+      "name": "tf_list",
+      "summary": "List register tools, upstream MCPs, or hooks with their active state.",
+      "category": "management",
+      "instructions": "Args: { kind:'tools'|'mcps'|'hooks' }. tools → register briefs + enabled/hidden overlay; mcps → upstreams + expose selections; hooks → configured + auto-detected inventory with live enabled state. Read-only.",
+      "invoke": {
+        "type": "script",
+        "path": "scripts/tf-list.js"
+      }
+    },
+    {
+      "id": "tf_log",
+      "name": "tf_log",
+      "summary": "Enable, disable, or check the gateway activity/audit log.",
+      "category": "management",
+      "instructions": "Args: { action:'enable'|'disable'|'status', path? }. Toggles ToolFunnel's JSONL audit log (tool runs + gate allow/deny decisions). Default OFF. 'status' returns {enabled,path} + recent count. Like any tool, tf_log can itself be disabled to revoke logging control.",
+      "invoke": {
+        "type": "script",
+        "path": "scripts/tf-log.js"
+      }
+    }
+  ]
+}

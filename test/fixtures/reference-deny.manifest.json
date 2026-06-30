@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "hooks": [
+    {
+      "id": "pre-tool-use/reference-deny-hook",
+      "event": "PreToolUse",
+      "matcher": "__tf_test_ref_gate",
+      "type": "command",
+      "command": "node \"${HOOKS_DIR}/scripts/deny-hook.js\"",
+      "script": "scripts/deny-hook.js",
+      "timeout": 10,
+      "enabled": true,
+      "description": "TEST FIXTURE: unconditionally denies the '__tf_test_ref_gate' reference tool so reference-gate.test.js can prove a PreToolUse deny gates the instructions HANDOFF (no instructions, no spawn)."
+    }
+  ]
+}

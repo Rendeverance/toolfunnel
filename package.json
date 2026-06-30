@@ -1,0 +1,63 @@
+{
+  "name": "toolfunnel",
+  "version": "0.3.0",
+  "description": "A zero-dependency MCP gateway: host your own tools, forward and curate tools from other MCP servers, expose them leanly to cut agent token cost, and gate every call through your own policy hooks before it runs.",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "mcp-gateway",
+    "mcp-proxy",
+    "mcp-server",
+    "ai",
+    "agents",
+    "llm",
+    "tools",
+    "claude",
+    "anthropic",
+    "aggregator",
+    "token-efficiency"
+  ],
+  "license": "MIT",
+  "type": "commonjs",
+  "main": "src/mcp/server.js",
+  "bin": {
+    "toolfunnel": "bin/toolfunnel.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node bin/toolfunnel.js",
+    "http": "node bin/toolfunnel.js --http",
+    "install-oauth": "node bin/toolfunnel.js install-oauth",
+    "test": "node test/run-all.js",
+    "test:integration": "node test/integration-real-mcp.test.js && node test/integration-http-client.test.js"
+  },
+  "dependencies": {},
+  "author": "rendeverance",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Rendeverance/toolfunnel.git"
+  },
+  "homepage": "https://github.com/Rendeverance/toolfunnel#readme",
+  "bugs": {
+    "url": "https://github.com/Rendeverance/toolfunnel/issues"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "tools/tools.register.json",
+    "tools/scripts/",
+    "mcp/expose.example.json",
+    "mcp/servers/",
+    "hooks/hooks.manifest.json",
+    "hooks/scripts/",
+    "docs/",
+    "README.md",
+    "LICENSE"
+  ],
+  "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "jose": "^5.10.0"
+  }
+}
