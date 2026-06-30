@@ -1,6 +1,10 @@
 # ToolFunnel
 
-![ToolFunnel](assets/logo.png) <!-- logo asset (assets/logo.png) is added separately -->
+<p align="center">
+  <video src="https://github.com/Rendeverance/toolfunnel/raw/main/assets/logo.mp4" poster="assets/logo.png" width="420" controls muted loop playsinline>
+    <img src="assets/logo.png" alt="ToolFunnel" width="420">
+  </video>
+</p>
 
 > A zero-dependency* MCP gateway: host your own tools, forward and curate tools from other MCP servers, expose them **leanly** to cut agent token cost, and gate every call through your own policy hooks before it runs.
 
