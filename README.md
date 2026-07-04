@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/rendeverance-toolfunnel-badge.png)](https://mseep.ai/app/rendeverance-toolfunnel)
+
 # ToolFunnel
 
 ![ToolFunnel](assets/logo.png) <!-- logo asset (assets/logo.png) is added separately -->
