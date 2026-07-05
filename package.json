@@ -32,6 +32,7 @@
     "http": "node bin/toolfunnel.js --http",
     "install-oauth": "node bin/toolfunnel.js install-oauth",
     "test": "node test/run-all.js",
+    "release": "node scripts/release.js",
     "test:integration": "node test/integration-real-mcp.test.js && node test/integration-http-client.test.js"
   },
   "dependencies": {},
