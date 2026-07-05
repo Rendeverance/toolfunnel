@@ -68,7 +68,8 @@ const SCRIPTS_ROOT = path.join(ROOT, 'tools', 'scripts');
 const EXPOSE_PATH = path.join(ROOT, 'mcp', 'expose.json');
 
 const PROTOCOL_VERSION = '2024-11-05';
-const SERVER_INFO = { name: 'toolfunnel', version: '0.3.0' };
+// Version is sourced from package.json so serverInfo can never drift from the released version.
+const SERVER_INFO = { name: 'toolfunnel', version: require('../../package.json').version };
 
 // ── Diagnostics → stderr only (stdout is the JSON-RPC channel; never pollute it). ─────────────
 function logErr(...parts) {

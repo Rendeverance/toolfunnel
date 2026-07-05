@@ -92,7 +92,7 @@ for you (section 5). A quick smoke test:
 echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | node bin/toolfunnel.js
 ```
 
-You should get one JSON line back with `"serverInfo":{"name":"toolfunnel","version":"0.3.0"}`
+You should get one JSON line back with `"serverInfo":{"name":"toolfunnel","version":"<current version>"}`
 and `"protocolVersion":"2024-11-05"`.
 
 > **Working directory doesn't matter.** ToolFunnel resolves its config (`tools/`, `mcp/`,

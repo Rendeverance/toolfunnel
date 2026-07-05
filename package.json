@@ -1,6 +1,6 @@
 {
   "name": "toolfunnel",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "A zero-dependency MCP gateway: host your own tools, forward and curate tools from other MCP servers, expose them leanly to cut agent token cost, and gate every call through your own policy hooks before it runs.",
   "keywords": [
     "mcp",
@@ -28,6 +28,7 @@
   },
   "scripts": {
     "start": "node bin/toolfunnel.js",
+    "build": "echo toolfunnel has no build step - zero-dependency, runs from source",
     "http": "node bin/toolfunnel.js --http",
     "install-oauth": "node bin/toolfunnel.js install-oauth",
     "test": "node test/run-all.js",
