@@ -12,6 +12,9 @@ package-lock.json
 # it). User-created; a wrapped MCP ships its OWN copy in its own package, never in this repo.
 /toolfunnel.json
 
+# tf_pack output — deployment artifacts built FROM the live setup, never part of it.
+/dist/
+
 # Logs
 *.log
 logs/

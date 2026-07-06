@@ -17,7 +17,7 @@
  *     protocol.dispatch('toolfunnel_run_tool', { name, args })       // the run path
  *
  * Assertions:
- *   1. BACKWARD-COMPAT: every shipped register tool (the 7 demo + 8 management) resolves to
+ *   1. BACKWARD-COMPAT: every shipped register tool (the 7 demo + 9 management) resolves to
  *      "gateway" — they all carry script invokes and no explicit mode.
  *   2. REFERENCE: a sacrificial reference tool (mode:"reference", instructions:"do X") whose
  *      invoke points at a SPY script returns { ok:true, mode:"reference", instructions:"do X",

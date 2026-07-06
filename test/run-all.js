@@ -43,7 +43,7 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
 // The suite, in run order. Resolved relative to this directory so cwd never matters.
-const TEST_FILES = ['smoke.js', 'stdio.test.js', 'http.test.js', 'gate.test.js', 'management.test.js', 'mode.test.js', 'reference-gate.test.js', 'logging.test.js', 'proxy.test.js', 'reload.test.js', 'lean-forward.test.js', 'reconnect.test.js', 'matrix.test.js', 'ui-matrix.test.js', 'hidden.test.js', 'auth.test.js', 'audit-log.test.js', 'tool-editor.test.js', 'install.test.js', 'spawn-shim.test.js', 'server-config.test.js', 'config-home.test.js', 'integration-real-mcp.test.js', 'integration-http-client.test.js', 'release.test.js'];
+const TEST_FILES = ['smoke.js', 'stdio.test.js', 'http.test.js', 'gate.test.js', 'management.test.js', 'mode.test.js', 'reference-gate.test.js', 'logging.test.js', 'proxy.test.js', 'reload.test.js', 'lean-forward.test.js', 'reconnect.test.js', 'matrix.test.js', 'ui-matrix.test.js', 'hidden.test.js', 'auth.test.js', 'audit-log.test.js', 'tool-editor.test.js', 'install.test.js', 'spawn-shim.test.js', 'server-config.test.js', 'config-home.test.js', 'pack.test.js', 'integration-real-mcp.test.js', 'integration-http-client.test.js', 'release.test.js'];
 
 // Per-test safety ceiling. Each test sets its own internal timeouts (the stdio test, e.g., caps the
 // whole exchange at ~24s); this is the outer guard so a stuck child can never hang the whole run.

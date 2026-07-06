@@ -19,7 +19,7 @@
  *
  * Assertions (the task contract):
  *   1. tools/list (protocol.toolDefinitions) includes toolfunnel_run_tool;
- *      toolfunnel_list_tools({category:'management'}) returns all 8 management tools.
+ *      toolfunnel_list_tools({category:'management'}) returns all 9 management tools.
  *   2. TOOLS  : tf_tool_add → list shows it → disable hides it → enable shows it → remove drops it.
  *   3. MCP    : tf_mcp_add → list shows it → disable → enable → remove (config only; nothing spawned).
  *   4. HOOKS  : tf_hook_add (PostToolUse) → list shows it → disable → enable → remove.
@@ -62,8 +62,8 @@ const CONFIG_FILES = [
 // up alongside the config restore (snapshot/restore covers JSON, not script files).
 const DENY_SCRIPT = path.join(ROOT, 'hooks', 'scripts', '__tf_test_deny.js');
 
-// The eight management register ids (category "management").
-const MGMT_IDS = ['tf_tool_add', 'tf_tool_set', 'tf_mcp_add', 'tf_mcp_set', 'tf_hook_add', 'tf_hook_set', 'tf_list', 'tf_log'];
+// The nine management register ids (category "management").
+const MGMT_IDS = ['tf_tool_add', 'tf_tool_set', 'tf_mcp_add', 'tf_mcp_set', 'tf_hook_add', 'tf_hook_set', 'tf_list', 'tf_log', 'tf_pack'];
 
 // A self-denying PreToolUse hook body (mirrors test/fixtures/scripts/deny-hook.js):
 // reads stdin, prints the JSON protocol permissionDecision:"deny" on exit 0.
@@ -181,7 +181,7 @@ const ids = (arr) => (Array.isArray(arr) ? arr.map((x) => x && x.id) : []);
 
       const mgmt = await listMeta({ category: 'management' });
       const mgmtIds = ids(mgmt).sort();
-      check('META: toolfunnel_list_tools({category:"management"}) returns all 8', () => {
+      check('META: toolfunnel_list_tools({category:"management"}) returns all 9', () => {
         assert.deepStrictEqual(mgmtIds, MGMT_IDS.slice().sort(),
           'management ids = ' + JSON.stringify(mgmtIds));
       });

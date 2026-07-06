@@ -61,7 +61,17 @@ if (args.includes('--help') || args.includes('-h')) {
 // module-load-time anchor (register/expose/hooks paths, auth + log config, identity) reads the
 // same resolved home. Precedence: --config-dir > TOOLFUNNEL_HOME env > the package root.
 const { initConfigHome } = require('../src/core/config-home');
-initConfigHome({ dir: flagValue('--config-dir', '') });
+const configHome = initConfigHome({ dir: flagValue('--config-dir', '') }).home;
+
+// Advisory runtime preflight: the home's toolfunnel.json may declare `requires` (python, git, …)
+// for the tools it ships. A missing/old runtime breaks only the tools that need it, so each
+// problem is one loud stderr line and the gateway starts anyway. Never fatal, never throws.
+try {
+  const { checkRequires } = require('../src/core/requires');
+  for (const p of checkRequires(configHome)) {
+    process.stderr.write('[toolfunnel] REQUIRES: ' + p.problem + '\n');
+  }
+} catch (_e) { /* preflight must never stop the gateway */ }
 
 if (args[0] === 'install-oauth') {
   // Opt-in OAuth: pull the single audited dependency (jose) on demand. Keeps the default install

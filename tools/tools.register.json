@@ -166,6 +166,51 @@
         "type": "script",
         "path": "scripts/tf-log.js"
       }
+    },
+    {
+      "id": "tf_pack",
+      "name": "tf_pack",
+      "summary": "Package the LIVE setup into a deployment-ready artifact under <home>/dist/ (portable config home, or a publishable npm package wrapping toolfunnel).",
+      "category": "management",
+      "instructions": "Args: { format?:'home'|'npm' (default 'home'), name?, version?, description?, out?, force? }. Snapshots the current setup - tools + scripts, hot/hidden curation (tools.state.json), upstream references (mcp/expose.json), policy hooks (THE GATE TRAVELS), and identity (toolfunnel.json, rewritten with the pack's name/version; a declared `requires` travels too) - into <home>/dist/<out||name>/, a SEPARATE location from the live config. format 'home' = a portable config home (zip / git init / run via --config-dir). format 'npm' = a publishable package: generated package.json with toolfunnel as a caret DEPENDENCY (depend, never copy), a 2-line bin launcher pointing --config-dir at the bundled home/, and a README stub - then `cd dist/<name> && npm publish`. NEVER ships auth/ or logs/. Refuses a non-empty destination without force:true. out is a folder NAME under dist/, never a path.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "format": {
+            "type": "string",
+            "enum": [
+              "home",
+              "npm"
+            ],
+            "description": "Artifact type: portable config home (default) or publishable npm package."
+          },
+          "name": {
+            "type": "string",
+            "description": "Pack/package name (default: the home's serverName)."
+          },
+          "version": {
+            "type": "string",
+            "description": "Pack version (default: the home's serverVersion, else 0.1.0)."
+          },
+          "description": {
+            "type": "string",
+            "description": "npm format: the package.json description."
+          },
+          "out": {
+            "type": "string",
+            "description": "Folder NAME under <home>/dist/ (default: name)."
+          },
+          "force": {
+            "type": "boolean",
+            "description": "Overwrite files in an existing non-empty destination."
+          }
+        },
+        "additionalProperties": false
+      },
+      "invoke": {
+        "type": "script",
+        "path": "scripts/tf-pack.js"
+      }
     }
   ]
 }
