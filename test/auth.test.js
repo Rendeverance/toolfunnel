@@ -133,6 +133,7 @@ const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
   let host;
   let port;
   let uiHost;
+  let discoServer = null;
 
   try {
     // ════════════════════════════════════════════════════════════════════════════════════════
@@ -399,17 +400,90 @@ const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
     assert.strictEqual(enable.json && enable.json.ok, true, 'E3: enabling a coherent config is accepted');
     assert.strictEqual(enable.json && enable.json.ready, true, 'E3: reports ready (jose present + coherent)');
     pass.push('E3: enabling auth (coherent + jose present) → ok + ready');
+
+    // ════════════════════════════════════════════════════════════════════════════════════════
+    // PART F — OIDC discovery hardening (origin-pin on the discovered jwks_uri + no-redirect)
+    // ════════════════════════════════════════════════════════════════════════════════════════
+    // One local "issuer" serving three personas by path prefix. BOTH well-known candidates are
+    // handled per persona, so an assertion sees the pin's refusal — not a 404-fallback error.
+    discoServer = http.createServer((req, res) => {
+      const base = `http://127.0.0.1:${discoServer.address().port}`;
+      const wk = /^\/(same|cross|redir)\/\.well-known\/(openid-configuration|oauth-authorization-server)$/.exec(req.url || '');
+      if (!wk) { res.writeHead(404, { 'Content-Type': 'application/json' }); return res.end('{}'); }
+      if (wk[1] === 'same') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ jwks_uri: `${base}/same/jwks` }));
+      }
+      if (wk[1] === 'cross') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ jwks_uri: 'https://elsewhere.test/jwks' }));
+      }
+      // redir — bounce toward the same-origin persona; discovery must REFUSE to follow.
+      res.writeHead(302, { Location: `${base}/same/.well-known/openid-configuration` });
+      return res.end();
+    });
+    await new Promise((r) => discoServer.listen(0, '127.0.0.1', r));
+    const discoBase = `http://127.0.0.1:${discoServer.address().port}`;
+
+    // F1: a same-origin discovered jwks_uri resolves normally.
+    const sameUri = await resourceServer.resolveJwksUri({ issuer: `${discoBase}/same` }, 3000);
+    assert.strictEqual(sameUri, `${discoBase}/same/jwks`, 'F1: same-origin discovered jwks_uri resolves');
+    pass.push('F1: discovery resolves a same-origin jwks_uri');
+
+    // F2: a cross-origin discovered jwks_uri is refused, naming the explicit-trust escape hatch.
+    let crossErr = null;
+    try { await resourceServer.resolveJwksUri({ issuer: `${discoBase}/cross` }, 3000); }
+    catch (e) { crossErr = e; }
+    assert.ok(crossErr, 'F2: cross-origin discovered jwks_uri must reject');
+    assert.ok(/not on the issuer origin/i.test(crossErr.message), 'F2: rejection names the origin pin (got: ' + crossErr.message + ')');
+    assert.ok(/jwksUri/.test(crossErr.message), 'F2: rejection points at the explicit jwksUri escape hatch');
+    pass.push('F2: cross-origin discovered jwks_uri refused (origin pin) with the explicit-trust hint');
+
+    // F3: the escape hatch — an EXPLICIT cfg.jwksUri is honoured untouched (operator-stated trust;
+    // no discovery request is made, so the pin does not apply). This is how cross-origin IdPs
+    // (e.g. Google) are configured deliberately rather than trusted implicitly.
+    const explicit = await resourceServer.resolveJwksUri({ jwksUri: 'https://elsewhere.test/jwks', issuer: `${discoBase}/same` }, 3000);
+    assert.strictEqual(explicit, 'https://elsewhere.test/jwks', 'F3: explicit jwksUri bypasses discovery');
+    pass.push('F3: explicit cfg.jwksUri honoured as stated trust (no discovery, no pin)');
+
+    // F4: a REDIRECTING discovery endpoint is refused — the metadata must come from the exact
+    // well-known URL derived from the trusted issuer (fetch redirect:"error").
+    let redirErr = null;
+    try { await resourceServer.resolveJwksUri({ issuer: `${discoBase}/redir` }, 3000); }
+    catch (e) { redirErr = e; }
+    assert.ok(redirErr, 'F4: redirecting discovery must reject');
+    pass.push('F4: redirecting discovery endpoint refused (no-follow)');
   } finally {
     // Tear down servers + restore the shared auth config to its pre-test bytes.
     try { if (host) await host.stop(); } catch (_e) { /* ignore */ }
     try { if (uiHost) await uiHost.stop(); } catch (_e) { /* ignore */ }
     try { await new Promise((r) => jwksServer.close(r)); } catch (_e) { /* ignore */ }
     try { await new Promise((r) => jwksServerNoAlg.close(r)); } catch (_e) { /* ignore */ }
+    try {
+      if (discoServer) {
+        await new Promise((r) => {
+          discoServer.close(r);
+          // Destroy undici's keep-alive sockets NOW: plain close() waits out their idle timeout,
+          // and live undici handles at process.exit trip a libuv assert on Windows.
+          if (typeof discoServer.closeAllConnections === 'function') discoServer.closeAllConnections();
+        });
+      }
+    } catch (_e) { /* ignore */ }
     if (originalConfig != null) {
       try { fs.writeFileSync(CONFIG_PATH, originalConfig); } catch (_e) { /* ignore */ }
     } else {
       try { fs.unlinkSync(CONFIG_PATH); } catch (_e) { /* ignore */ }
     }
+    // Part F used global fetch → undici holds keep-alive sockets + async handles, and live undici
+    // handles at process.exit trip a libuv assert on Windows (UV_HANDLE_CLOSING → exit 0xC0000409,
+    // AFTER the PASS line). Tear the global dispatcher down explicitly (undici's own global slot),
+    // then let one macrotask pass so the handles unwind before exit. Best-effort by design.
+    try {
+      const dispatcher = globalThis[Symbol.for('undici.globalDispatcher.1')];
+      if (dispatcher && typeof dispatcher.destroy === 'function') await dispatcher.destroy();
+      else if (dispatcher && typeof dispatcher.close === 'function') await dispatcher.close();
+    } catch (_e) { /* ignore */ }
+    await new Promise((r) => setTimeout(r, 100));
   }
 
   for (const p of pass) console.log('  ok   - ' + p);

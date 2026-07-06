@@ -112,7 +112,27 @@ async function resolveJwksUri(cfg, timeoutMs) {
   for (const url of candidates) {
     try {
       const doc = await fetchJson(url, timeoutMs);
-      if (doc && typeof doc.jwks_uri === 'string' && doc.jwks_uri.length > 0) return doc.jwks_uri;
+      if (doc && typeof doc.jwks_uri === 'string' && doc.jwks_uri.length > 0) {
+        // ORIGIN-PIN the discovered value. The ISSUER is operator-trusted config, but the discovery
+        // DOCUMENT arrives over the network — it must not be able to point key fetching at a
+        // foreign origin (key-substitution + SSRF-adjacent surface). Cross-origin JWKS hosting is
+        // real (e.g. Google's issuer and JWKS live on different hosts), so the escape hatch is an
+        // EXPLICIT trust statement: set "jwksUri" in the auth config and discovery is skipped.
+        let sameOrigin = false;
+        try {
+          sameOrigin = new URL(doc.jwks_uri).origin === new URL(cfg.issuer).origin;
+        } catch (_e) {
+          /* malformed URL on either side → treat as cross-origin → refuse */
+        }
+        if (!sameOrigin) {
+          throw new Error(
+            `discovered jwks_uri "${doc.jwks_uri}" is not on the issuer origin — refusing the ` +
+              'cross-origin discovery result. If your IdP intentionally hosts JWKS on a separate ' +
+              'origin, state that trust explicitly by setting "jwksUri" in auth/auth.config.json.'
+          );
+        }
+        return doc.jwks_uri;
+      }
       lastErr = new Error(`discovery doc at ${url} has no jwks_uri`);
     } catch (e) {
       lastErr = e;
@@ -121,13 +141,18 @@ async function resolveJwksUri(cfg, timeoutMs) {
   throw lastErr || new Error('OIDC discovery failed');
 }
 
-/** GET + parse JSON with a hard timeout. Throws on non-2xx, network error, or bad JSON. */
+/**
+ * GET + parse JSON with a hard timeout. Throws on non-2xx, network error, bad JSON — or a REDIRECT:
+ * discovery metadata must come from the exact well-known URL derived from the trusted issuer
+ * (following a redirect would let a bounced endpoint serve the document from anywhere, hollowing
+ * out the origin pin above). Only discovery uses this helper; the JWKS fetch itself is jose's.
+ */
 async function fetchJson(url, timeoutMs) {
   const ac = new AbortController();
   const ms = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 10000;
   const t = setTimeout(() => ac.abort(), ms);
   try {
-    const res = await fetch(url, { signal: ac.signal, redirect: 'follow' });
+    const res = await fetch(url, { signal: ac.signal, redirect: 'error' });
     if (!res || !res.ok) throw new Error(`GET ${url} -> HTTP ${res ? res.status : 'no-response'}`);
     return await res.json();
   } finally {

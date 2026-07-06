@@ -145,7 +145,14 @@ function isLoopbackHost(hostHeader) {
   return host === '127.0.0.1' || host === 'localhost' || host === '::1' || host === '0:0:0:0:0:0:0:1';
 }
 
-/** Read a request body up to MAX_BODY_BYTES. Resolves the buffered string, or rejects 'too large'. */
+/**
+ * Read a request body up to MAX_BODY_BYTES. Resolves the buffered string, or rejects 'too large'.
+ * On over-cap it does NOT destroy the request — destroying here tears down the shared req/res
+ * socket before the caller's -32700 reply can flush (the client saw ECONNRESET instead of the clean
+ * parse error the declared-Content-Length path produces). Instead: stop BUFFERING (later chunks are
+ * discarded, so memory stays bounded) and reject; the caller replies via sendJsonAndClose, which
+ * flushes the error body first and destroys the request only in the res.end callback.
+ */
 function readBody(req) {
   return new Promise((resolve, reject) => {
     let size = 0;
@@ -157,15 +164,11 @@ function readBody(req) {
       fn(val);
     };
     req.on('data', (chunk) => {
+      if (done) return; // over-cap already signalled — discard, don't buffer
       size += chunk.length;
       if (size > MAX_BODY_BYTES) {
-        // Stop reading; the caller turns this into a parse-error response.
+        // Stop buffering; the caller flush-then-closes with the same -32700 as the declared-CL path.
         finish(reject, new Error('request body too large'));
-        try {
-          req.destroy();
-        } catch (_e) {
-          /* ignore */
-        }
         return;
       }
       chunks.push(chunk);
@@ -193,16 +196,19 @@ function sendJson(res, status, obj) {
 
 /**
  * Send a JSON response and then CLOSE the connection, draining the unread request body WITHOUT
- * buffering it. Used by the Content-Length pre-check (handleMcpPost): when a client announces an
- * oversized body we must reply cleanly (the documented -32700) *without* reading the multi-MiB
- * payload off the socket. The naive fix — `req.destroy()` straight after `res.end()` — resets the
- * socket before the response bytes flush, surfacing to the client as ECONNRESET instead of the
- * clean parse-error body. The robust sequence is:
+ * buffering it. Used by both over-cap paths (the Content-Length pre-check and readBody's streaming
+ * cap): the client must receive the documented -32700 cleanly while the oversized payload never
+ * touches memory. The naive close — `req.destroy()`, even deferred to the res.end flush callback —
+ * is NOT safe: destroy() sends a TCP RST whenever request bytes are still unread/in-flight, and on
+ * RST Windows discards the peer's receive queue, eating the response we just flushed (the client
+ * saw ECONNRESET instead of the -32700; proven by test 5 in http.test.js). The robust sequence:
  *   1. announce `Connection: close` so the client/keep-alive agent expects the socket to end here,
- *   2. write the full response body, and
- *   3. ONLY in the res.end(...) flush callback destroy the request — by then the response has been
- *      handed to the kernel, so the client receives the -32700 body, THEN sees the close. The
- *      unread request body is discarded (never buffered → no DoS) rather than politely resumed.
+ *   2. write the full response body, then in the res.end(...) flush callback:
+ *   3. resume() the request so any still-arriving body is DISCARDED (never buffered → no DoS),
+ *   4. HALF-CLOSE the socket (socket.end()) — the FIN travels in-order AFTER the response bytes,
+ *      so the client always reads the -32700 first, and
+ *   5. arm an unref'd hard-destroy timer as the backstop: a client that never stops sending and
+ *      never closes gets its socket torn down after a grace window (bounded lifetime, no leak).
  * Defensive: like sendJson, a serialise failure degrades to a 500-shaped error body; the whole
  * function is wrapped so a write-after-headers race can never throw out of handleMcpPost.
  * @param {import('node:http').IncomingMessage} req
@@ -233,9 +239,20 @@ function sendJsonAndClose(req, res, status, obj) {
       // pipelined follow-up (whose body would collide with the one we are about to discard).
       Connection: 'close',
     });
-    // Destroy the request ONLY after the response body has flushed to the kernel, so the client
-    // receives the clean -32700 first and the unread oversized body is dropped, not buffered.
-    res.end(body, destroyReq);
+    res.end(body, () => {
+      // The response has flushed to the kernel. Close down WITHOUT an RST (see the doc above):
+      try {
+        req.resume(); // discard (never buffer) whatever request body is still arriving
+        if (req.socket && !req.socket.destroyed) req.socket.end(); // FIN, in-order after the body
+      } catch (_e) {
+        return destroyReq(); // a torn socket at this point → plain destroy is all that is left
+      }
+      // Backstop: bound the socket's lifetime if the client neither finishes nor closes. The
+      // timer is unref'd so it never keeps the process alive; a normal close clears it.
+      const t = setTimeout(destroyReq, 10000);
+      if (t && typeof t.unref === 'function') t.unref();
+      if (req.socket) req.socket.once('close', () => clearTimeout(t));
+    });
   } catch (_e) {
     // writeHead/end can throw if headers were already sent by a racing path — fall back to a
     // straight destroy so the socket can never be left half-open.
@@ -501,9 +518,11 @@ function createHttpMcpServer(opts = {}) {
     try {
       raw = await readBody(req);
     } catch (err) {
-      // Oversized / aborted body → a clean parse error, server stays alive.
+      // Oversized / aborted body → the SAME flush-then-close -32700 as the Content-Length pre-check
+      // (readBody no longer destroys the request, so the reply can actually reach the client; a
+      // genuinely-dead socket is fine too — sendJsonAndClose's writes are defensively wrapped).
       log('POST /mcp body read failed:', (err && err.message) || String(err));
-      return sendJson(res, 200, makeError(ERR.PARSE, 'Parse error: ' + ((err && err.message) || 'bad body')));
+      return sendJsonAndClose(req, res, 200, makeError(ERR.PARSE, 'Parse error: ' + ((err && err.message) || 'bad body')));
     }
 
     let msg;

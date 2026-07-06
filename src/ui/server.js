@@ -19,6 +19,9 @@
  * DIRECTLY (no MCP round-trip). Every write is atomic (temp + rename) inside the store.
  *
  * SAFETY CONTRACT (mirrors src/mcp/http-transport.js):
+ *   - start() HARD-REFUSES a non-loopback bind host. The UI has no auth path at all, and it can
+ *     spawn processes (mcp add/discover) and write scripts (tools/hooks) — off-loopback it would be
+ *     an unauthenticated remote console. Loopback-only by design; no flag overrides it.
  *   - Binds 127.0.0.1 by default; a non-loopback Host header is rejected (DNS-rebind guard).
  *   - The request listener NEVER throws — a bad request becomes a clean JSON error.
  *   - start() rejects cleanly on EADDRINUSE (caller decides); stop() is idempotent.
@@ -89,6 +92,17 @@ function isLoopbackHost(hostHeader) {
   }
   host = host.toLowerCase();
   return host === '127.0.0.1' || host === 'localhost' || host === '::1' || host === '0:0:0:0:0:0:0:1';
+}
+
+/**
+ * Is the BIND address loopback? STRICTER than the Host-header check above: a missing Host header
+ * is legitimately loopback (the bind address is the boundary), but a missing/empty BIND address is
+ * not a loopback claim — it must name a loopback host explicitly to pass.
+ * @param {string|undefined} bindHost
+ * @returns {boolean}
+ */
+function isLoopbackBindHost(bindHost) {
+  return typeof bindHost === 'string' && bindHost.trim() !== '' && isLoopbackHost(bindHost);
 }
 
 /** Regex-escape a literal so a matcher built from it FULL-matches the string verbatim. */
@@ -1079,6 +1093,16 @@ function createUiServer(opts = {}) {
    */
   function start() {
     if (started) return Promise.resolve({ url: currentUrl(), port: boundPort });
+    // The HTTP transport refuses a non-loopback bind unless OAuth is enabled; the UI has NO auth
+    // path, so its refusal is unconditional. This endpoint spawns processes and writes scripts —
+    // "--ui --host 0.0.0.0" would hand an unauthenticated remote console to the LAN.
+    if (!isLoopbackBindHost(host)) {
+      return Promise.reject(new Error(
+        `refusing to bind the config UI to non-loopback host "${host}" — the UI is unauthenticated ` +
+          'and can spawn processes / write tool scripts. It is loopback-only by design; to configure ' +
+          'the gateway from another machine, use an SSH tunnel to 127.0.0.1 instead.'
+      ));
+    }
     httpServer = http.createServer(onRequest);
     return new Promise((resolve, reject) => {
       const onListenError = (err) => {
@@ -1140,5 +1164,6 @@ module.exports = {
   createUiServer,
   // Exported for unit tests / reuse — the small pure seams.
   isLoopbackHost,
+  isLoopbackBindHost,
   escapeRegex,
 };

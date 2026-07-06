@@ -10,6 +10,8 @@
  *   2. POST /mcp initialize    → 200, a JSON-RPC result with a protocolVersion + serverInfo.
  *   3. POST /mcp tools/list    → 200, the three advertised lean meta-tools are present.
  *   4. POST /mcp tools/call    → 200, toolfunnel_list_tools returns a non-empty briefs array.
+ *   5. POST /mcp chunked over-cap body → the SAME clean 200 + -32700 the declared-Content-Length
+ *      path produces (the old readBody destroyed the shared socket first → client saw ECONNRESET).
  *
  * Then stop() tears the host down cleanly. Run:  node test/http.test.js   (exit 0 = pass).
  *
@@ -153,6 +155,52 @@ function rpc(host, port, message) {
     const ids = briefs.map((b) => b && b.id).filter(Boolean);
     assert.ok(ids.length > 0, 'each brief carries an id (got ' + JSON.stringify(ids) + ')');
     pass.push('POST /mcp tools/call toolfunnel_list_tools → ' + briefs.length + ' briefs: ' + ids.join(', '));
+
+    // ── 5. Chunked over-cap body → the same clean -32700 as the declared-Content-Length path ──
+    // No Content-Length header → Node streams the body chunked, so the server's up-front CL
+    // pre-check can't fire and the STREAMING cap in readBody must handle it. The client keeps the
+    // request OPEN and waits for the reply — the server consumes-and-discards the tail, so the
+    // response must arrive on a healthy socket (the old code destroyed the shared req/res socket
+    // before replying, which surfaced to the client as ECONNRESET instead of this JSON).
+    const overCap = await new Promise((resolve, reject) => {
+      const guard = setTimeout(() => reject(new Error('over-cap POST: no response within 15s')), 15000);
+      const req5 = http.request(
+        { host, port, method: 'POST', path: '/mcp', headers: { 'Content-Type': 'application/json' } },
+        (res) => {
+          const chunks = [];
+          res.on('data', (c) => chunks.push(c));
+          res.on('end', () => {
+            clearTimeout(guard);
+            const text = Buffer.concat(chunks).toString('utf8');
+            let json = null;
+            try { json = JSON.parse(text); } catch (_e) { /* leave null */ }
+            // The socket is torn down server-side after this reply; a late EPIPE on our still-open
+            // request side is expected noise once the response is in hand.
+            req5.on('error', () => {});
+            resolve({ status: res.statusCode, json, text });
+          });
+          res.on('error', (e) => { clearTimeout(guard); reject(e); });
+        }
+      );
+      req5.on('error', (e) => { clearTimeout(guard); reject(e); });
+      // Stream past the 4 MiB cap (4 MiB + 128 KiB) in 256 KiB chunks, then WAIT — no end() —
+      // so the reply races nothing: the server has consumed everything we sent when it responds.
+      const chunk = Buffer.alloc(256 * 1024, 0x61);
+      const target = 4 * 1024 * 1024 + 128 * 1024;
+      let sent = 0;
+      const pump = () => {
+        while (sent < target) {
+          sent += chunk.length;
+          if (!req5.write(chunk)) { req5.once('drain', pump); return; }
+        }
+      };
+      pump();
+    });
+    assert.strictEqual(overCap.status, 200, 'chunked over-cap POST answers HTTP 200 (got ' + overCap.status + ')');
+    assert.ok(overCap.json && overCap.json.error, 'chunked over-cap POST returns a JSON-RPC error object (raw: ' + String(overCap.text).slice(0, 200) + ')');
+    assert.strictEqual(overCap.json.error.code, -32700, 'chunked over-cap error code is -32700 (got ' + overCap.json.error.code + ')');
+    assert.ok(/too large/i.test(overCap.json.error.message || ''), 'error message names the cause (got "' + overCap.json.error.message + '")');
+    pass.push('POST /mcp chunked over-cap body → clean 200 + -32700 (no ECONNRESET), message: "' + overCap.json.error.message + '"');
   } finally {
     // Always tear the host down, even if an assertion threw, so the test process can exit.
     await server.stop();

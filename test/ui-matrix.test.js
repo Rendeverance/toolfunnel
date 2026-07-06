@@ -17,6 +17,10 @@
  *   G — promoting > 10 tools raises the context-bloat warning.
  *   H — POST /api/mcp/discover connects the bundled mock upstream and returns mock_ping (surfaced),
  *       with its lean/hot state; an unknown upstream is a clean 404.
+ *   J — the bind guard: the UI has NO auth path, so start() on a non-loopback host (0.0.0.0, a LAN
+ *       address) is hard-refused; loopback hosts still bind.
+ *   K — isLoopbackBindHost is STRICT (empty/whitespace ≠ loopback) where the Host-HEADER check is
+ *       deliberately lenient (a missing header defers to the bind address).
  *
  * NON-DESTRUCTIVE: tools/tools.state.json + mcp/expose.json are snapshotted and restored. Node built-ins only.
  *
@@ -33,7 +37,7 @@ const STATE_PATH = path.join(REPO_ROOT, 'tools', 'tools.state.json');
 const EXPOSE_PATH = path.join(REPO_ROOT, 'mcp', 'expose.json');
 const MOCK_SERVER = path.join(REPO_ROOT, 'mcp', 'servers', 'mock-upstream', 'server.js');
 
-const { createUiServer } = require('../src/ui/server');
+const { createUiServer, isLoopbackHost, isLoopbackBindHost } = require('../src/ui/server');
 
 const results = [];
 function check(name, fn) {
@@ -213,6 +217,40 @@ function req(base, method, p, body) {
       assert.strictEqual(surfI.curatedDirect, 2, 'expected curatedDirect 2; got ' + surfI.curatedDirect);
       assert.strictEqual(surfI.promotedTotal, 2, 'promotedTotal must include curated-direct; got ' + surfI.promotedTotal);
     });
+
+    // J — the bind guard. The UI can spawn processes and write scripts with no auth whatsoever,
+    // so a non-loopback bind must be REFUSED at start(), mirroring the HTTP transport's guard.
+    let rejectedAny = null;
+    try { await createUiServer({ host: '0.0.0.0', port: 0, root: REPO_ROOT }).start(); }
+    catch (err) { rejectedAny = err; }
+    check('J: start() on 0.0.0.0 is hard-refused (unauthenticated UI is loopback-only)', () => {
+      assert.ok(rejectedAny, 'start() resolved on 0.0.0.0 — the bind guard is missing');
+      assert.ok(/non-loopback/i.test(rejectedAny.message), 'unexpected refusal message: ' + rejectedAny.message);
+    });
+    let rejectedLan = null;
+    try { await createUiServer({ host: '192.168.1.20', port: 0, root: REPO_ROOT }).start(); }
+    catch (err) { rejectedLan = err; }
+    check('J: start() on a LAN address is hard-refused too', () => {
+      assert.ok(rejectedLan, 'start() resolved on a LAN address — the bind guard is missing');
+    });
+    const lhServer = createUiServer({ host: 'localhost', port: 0, root: REPO_ROOT });
+    const lhInfo = await lhServer.start();
+    await lhServer.stop();
+    check('J: a localhost bind still resolves (127.0.0.1 is proven by the main fixture server)', () => {
+      assert.ok(lhInfo && typeof lhInfo.url === 'string' && lhInfo.port > 0, 'localhost bind failed: ' + JSON.stringify(lhInfo));
+    });
+
+    // K — the two seams diverge exactly where they should.
+    check('K: isLoopbackBindHost is strict (empty ≠ loopback) where the header check stays lenient', () => {
+      assert.strictEqual(isLoopbackBindHost('127.0.0.1'), true, '127.0.0.1 should pass');
+      assert.strictEqual(isLoopbackBindHost('::1'), true, '::1 should pass');
+      assert.strictEqual(isLoopbackBindHost('0:0:0:0:0:0:0:1'), true, 'long-form IPv6 loopback should pass');
+      assert.strictEqual(isLoopbackBindHost(''), false, 'an empty BIND host must not be loopback');
+      assert.strictEqual(isLoopbackBindHost('   '), false, 'a whitespace BIND host must not be loopback');
+      assert.strictEqual(isLoopbackBindHost(undefined), false, 'a missing BIND host must not be loopback');
+      assert.strictEqual(isLoopbackBindHost('0.0.0.0'), false, '0.0.0.0 must not be loopback');
+      assert.strictEqual(isLoopbackHost(''), true, 'HEADER semantics must stay lenient (bind addr is the boundary)');
+    });
   } catch (err) {
     fatal = err;
   } finally {
@@ -225,10 +263,10 @@ function req(base, method, p, body) {
   if (fatal) console.log('FATAL: ' + ((fatal && fatal.stack) || fatal));
 
   const passed = results.filter((r) => r.ok).length;
-  const expected = 12;
+  const expected = 16;
   const ok = !fatal && passed === results.length && results.length === expected;
   if (ok) {
-    console.log(`\nPASS: ui-matrix test — ${passed}/${expected} assertions passed (hot/hidden axes, surface summary + warnings, live discover)`);
+    console.log(`\nPASS: ui-matrix test — ${passed}/${expected} assertions passed (hot/hidden axes, surface summary + warnings, live discover, loopback bind guard)`);
     process.exit(0);
   } else {
     console.log(`\nFAIL: ui-matrix test — ${passed}/${results.length} assertions passed`);

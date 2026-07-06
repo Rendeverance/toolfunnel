@@ -49,9 +49,15 @@ const CLIENT_INFO = Object.freeze({ name: 'toolfunnel', version: '3.0.0-client' 
  * and an explicit `.cmd` throws EINVAL (the CVE-2024-27980 mitigation). Most MCP servers launch via
  * exactly such shims (`npx`, `npm`, `uvx`, `pnpm`, …), so on Windows route anything that isn't already
  * a concrete `.exe`/`.com` through cmd.exe, which resolves PATHEXT shims. The args stay DISCRETE
- * (Node escapes each one under shell:false) so nothing is shell-concatenated — no injection surface on
- * this privileged path, and none of the `shell:true` DEP0190 hazard. close()'s taskkill /T still reaps
- * the whole cmd → shim → server process tree.
+ * (never shell-concatenated into one string) and there is none of the `shell:true` DEP0190 hazard.
+ * HONEST CAVEAT: because the spawned binary here is cmd.exe itself (an .exe), Node applies its
+ * STANDARD argv quoting — not cmd.exe ^-metacharacter escaping (that special-casing only fires when
+ * the command IS the .cmd/.bat). An arg containing cmd metacharacters (& | > < ") outside quotes can
+ * therefore still be reinterpreted by cmd.exe. These args come from the operator's own expose.json,
+ * so this is a correctness caveat on operator-authored config, not a privilege boundary; the fully
+ * escaped alternative (resolve the real interpreter à la auth/install.js's `node + npm-cli.js` and
+ * spawn it directly) is the upgrade path if it ever bites. close()'s taskkill /T still reaps the
+ * whole cmd → shim → server process tree.
  *
  * @param {string} command  the configured upstream command (e.g. "npx", "node", an abs path)
  * @param {string[]} args   the configured argv

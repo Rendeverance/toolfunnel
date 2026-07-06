@@ -522,9 +522,6 @@ class Aggregator {
     const upstream = this._store.getUpstream(upstreamId);
     if (!upstream || upstream.enabled !== true) return; // detached/disabled — stop trying
     const MAX_FAST_ATTEMPTS = 6; // exponential phase; beyond it, a slow keepalive at the 30s cap
-    if (attempt === MAX_FAST_ATTEMPTS) {
-      logger.log({ type: 'mcp', event: 'reconnect_slow', upstream: upstreamId, attempts: attempt });
-    }
     const delay = Math.min(1000 * Math.pow(2, attempt), 30000);
     const timer = setTimeout(async () => {
       this._reconnectTimers.delete(upstreamId);
@@ -537,6 +534,12 @@ class Aggregator {
         this._signalToolsChanged(upstreamId);
       } catch (err) {
         logger.log({ type: 'mcp', event: 'reconnect_failed', upstream: upstreamId, attempt, error: errMsg(err) });
+        // Log the fast→slow transition exactly ONCE — when the counter FIRST reaches the cap. The
+        // old guard sat on the re-entry side, where the capped counter re-satisfied it every 30s
+        // forever against a permanently-dead upstream (log spam, not information).
+        if (attempt + 1 === MAX_FAST_ATTEMPTS) {
+          logger.log({ type: 'mcp', event: 'reconnect_slow', upstream: upstreamId, attempts: MAX_FAST_ATTEMPTS });
+        }
         // Keep escalating to the cap, then keep retrying slowly (cap the counter so the delay stays
         // at 30s) — never permanently give up while the upstream stays enabled.
         this._scheduleReconnect(upstreamId, Math.min(attempt + 1, MAX_FAST_ATTEMPTS));
