@@ -1,0 +1,62 @@
+{
+  "version": 1,
+  "description": "Demo register: three ordinary scripts in three languages + one gated tool. No SDK, no framework, no build step - each tool is one JSON entry.",
+  "tools": [
+    {
+      "id": "summarize",
+      "name": "Summarize",
+      "summary": "First-sentence summary + word count of a block of text (Python).",
+      "category": "text",
+      "instructions": "Args: { text: string }. Returns { summary, words }.",
+      "inputSchema": {
+        "type": "object",
+        "properties": { "text": { "type": "string", "description": "The text to summarise." } },
+        "required": ["text"],
+        "additionalProperties": false
+      },
+      "invoke": { "type": "shell", "command": "python tools/scripts/summarize.py" }
+    },
+    {
+      "id": "sentiment",
+      "name": "Sentiment",
+      "summary": "Crude positive/negative word tally for a block of text (Bash).",
+      "category": "text",
+      "instructions": "Args: { text: string }. Returns { positive, negative, verdict }.",
+      "inputSchema": {
+        "type": "object",
+        "properties": { "text": { "type": "string", "description": "The text to score." } },
+        "required": ["text"],
+        "additionalProperties": false
+      },
+      "invoke": { "type": "shell", "command": "bash tools/scripts/sentiment.sh" }
+    },
+    {
+      "id": "slugify",
+      "name": "Slugify",
+      "summary": "Turn any text into a URL-safe slug (Node).",
+      "category": "text",
+      "instructions": "Args: { text: string }. Returns the kebab-case slug string.",
+      "inputSchema": {
+        "type": "object",
+        "properties": { "text": { "type": "string", "description": "The text to slugify." } },
+        "required": ["text"],
+        "additionalProperties": false
+      },
+      "invoke": { "type": "script", "path": "scripts/slugify.js" }
+    },
+    {
+      "id": "cleanup",
+      "name": "Cleanup",
+      "summary": "Delete build artifacts (DESTRUCTIVE - gated by a PreToolUse policy hook).",
+      "category": "ops",
+      "instructions": "Args: { path: string }. Deletes build artifacts under the given path. This tool exists to demonstrate the gate: the shipped hooks.manifest.json DENIES it, and the deny happens server-side - no client cooperation required.",
+      "inputSchema": {
+        "type": "object",
+        "properties": { "path": { "type": "string", "description": "Directory to clean." } },
+        "required": ["path"],
+        "additionalProperties": false
+      },
+      "invoke": { "type": "shell", "command": "echo would-delete-artifacts" }
+    }
+  ]
+}

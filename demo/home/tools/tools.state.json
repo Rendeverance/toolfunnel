@@ -1,0 +1,10 @@
+{
+  "summarize": { "hot": true },
+  "sentiment": { "hot": true },
+  "slugify": { "hot": true },
+  "cleanup": { "hot": true },
+  "toolfunnel_list_tools": { "hot": false },
+  "toolfunnel_tool_instructions": { "hot": false },
+  "toolfunnel_run_tool": { "hot": false },
+  "toolfunnel_howto": { "hot": false }
+}

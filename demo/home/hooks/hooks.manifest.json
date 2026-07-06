@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "hooks": [
+    {
+      "id": "pre-tool-use/deny-cleanup",
+      "event": "PreToolUse",
+      "matcher": "cleanup|Cleanup",
+      "type": "command",
+      "command": "node \"${HOOKS_DIR}/scripts/deny-cleanup.js\"",
+      "script": "scripts/deny-cleanup.js",
+      "timeout": 5,
+      "enabled": true,
+      "description": "Policy: destructive cleanup is denied. The deny is SERVER-SIDE - it travels with this pack and holds on any MCP client."
+    }
+  ]
+}
