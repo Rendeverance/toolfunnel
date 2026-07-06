@@ -2,8 +2,9 @@
 
 This is the instruction served by `toolfunnel_howto({ topic: "create-tool" })`. It tells you — the
 model — how to add a new tool to the register so it becomes callable through `toolfunnel_run_tool`
-(and listable via `toolfunnel_list_tools` / `toolfunnel_tool_instructions`). No restart is needed: the register
-is read live every time the meta-tools are called.
+(and listable via `toolfunnel_list_tools` / `toolfunnel_tool_instructions`). No restart is needed: a
+running gateway watches `tools.register.json` and hot-reloads its register on change (debounced
+~150 ms), the same way `mcp/expose.json` and the hook files reload.
 
 A tool is exactly two things:
 1. **A register entry** in `tools/tools.register.json` (structured metadata + how to invoke it).
@@ -23,6 +24,12 @@ A tool is exactly two things:
   "summary": "Uppercases the supplied text and echoes it back.",
   "category": "demo",
   "instructions": "Pass { text: string }. Returns the text uppercased. Use this only as a sanity check of the run path.",
+  "inputSchema": {
+    "type": "object",
+    "properties": { "text": { "type": "string", "description": "The text to uppercase." } },
+    "required": ["text"],
+    "additionalProperties": false
+  },
   "invoke": { "type": "script", "path": "scripts/echo-upper.sh" }
 }
 ```
@@ -36,6 +43,7 @@ Field-by-field — these names are fixed (registry.js reads exactly these):
 | `summary` | string | One line. This is ALL that `toolfunnel_list_tools` returns for the tool — keep it tight and discriminating so the model can pick the right tool from the brief alone. |
 | `category` | string | Grouping label (e.g. `demo`, `memory`, `messaging`, `media`). Used by `toolfunnel_list_tools({ category })` to filter. |
 | `instructions` | string | Full usage doc returned by `toolfunnel_tool_instructions({ name })`. Describe the args object, what comes back, and any safety caveats. This is the long-tail payload — be complete here, terse in `summary`. |
+| `inputSchema` | object (optional) | A JSON Schema for the tool's args. **This is what makes the tool a first-class MCP citizen when promoted hot:** the top-level `tools/list` advertises it VERBATIM, so a connected client knows the exact arg shape without reading `instructions`. Omit it and a hot-promoted tool falls back to a free-form `{ "type": "object" }` (callable, but the client gets no arg hints). Must be an object — the register rejects any other shape at authoring time. |
 | `invoke` | object | How `run` executes the tool. See below. |
 
 ### The `invoke` object — two forms
@@ -128,5 +136,17 @@ matches its `tool_name` (see `toolfunnel_howto({ topic: "add-hook" })`), not omi
 5. Test with `toolfunnel_run_tool({ name, args })`. Verify the gate behaves: a benign call returns
    `{ ok:true, output }`; if a matching PreToolUse hook should deny it, confirm it does.
 
-No reconnect is needed — the register is dynamic. (Only *curated-direct* tools negotiated at MCP
-connect need a reconnect; register tools reached via the meta-tools are always live.)
+No reconnect is needed — the register is dynamic: the running gateway hot-reloads
+`tools.register.json` on change and emits `notifications/tools/list_changed`, exactly like an
+`expose.json` or hook edit.
+
+---
+
+## 5. Promoting your tool to the top-level surface (the "instant MCP" recipe)
+
+By default your tool lives behind the lean meta-tools (discovered via `toolfunnel_list_tools`).
+Set `hot: true` for its id in `tools/tools.state.json` (or via the UI / `tf_tool_set`) and it is
+advertised DIRECTLY in the MCP `tools/list` — under its own `id`, with your `summary` as the
+description and your `inputSchema` as the advertised schema. Author a real `inputSchema` before
+promoting: that schema is the difference between a client calling your tool correctly first time
+and it guessing at a free-form object.

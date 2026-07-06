@@ -190,16 +190,27 @@ const ids = (arr) => (Array.isArray(arr) ? arr.map((x) => x && x.id) : []);
     // ── 2. TOOLS round-trip: add → list → disable → enable → remove. ───────────────────
     {
       const TOOL_ID = '__tf_test_tool';
+      const TOOL_SCHEMA = {
+        type: 'object',
+        properties: { text: { type: 'string' } },
+        required: ['text'],
+        additionalProperties: false,
+      };
       const add = payloadOf(await runTool('tf_tool_add', {
         id: TOOL_ID,
         name: TOOL_ID,
         summary: 'sacrificial test tool',
         category: 'testing',
         instructions: 'temp',
+        inputSchema: TOOL_SCHEMA,
         invoke: { type: 'script', path: 'scripts/echo.js' },
       }));
       check('TOOLS: tf_tool_add succeeded', () => {
         assert.ok(add && add.ok === true && add.id === TOOL_ID, 'add payload = ' + JSON.stringify(add));
+      });
+      check('TOOLS: tf_tool_add persisted the authored inputSchema (round-trip)', () => {
+        assert.deepStrictEqual(add && add.inputSchema, TOOL_SCHEMA,
+          'inputSchema did not round-trip; add payload = ' + JSON.stringify(add));
       });
 
       const listAfterAdd = await tfList('tools');

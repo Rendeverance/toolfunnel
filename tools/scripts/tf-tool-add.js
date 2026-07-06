@@ -8,9 +8,10 @@
  * -------
  * The write-side counterpart to the read-only status / inventory tools: it lets
  * the manager surface a NEW tool in the register at runtime (no reconnect — the
- * meta-tools re-read the register every call). Optionally it also writes the
- * host-local script the new entry invokes, so a single call can create both the
- * register entry AND its backing script atomically.
+ * running gateway watches tools.register.json and hot-reloads its register on
+ * change). Optionally it also writes the host-local script the new entry invokes,
+ * so a single call can create both the register entry AND its backing script
+ * atomically.
  *
  * This is a "gateway-run" tool: it mutates ToolFunnel's OWN config (the register
  * and, optionally, a script under the scripts root). It runs through the same
@@ -20,9 +21,12 @@
  * Contract with the register (registry.js `defaultRunScript`)
  * ----------------------------------------------------------
  *   - Structured args arrive as JSON in env TOOLFUNNEL_TOOL_ARGS ({} / absent => null).
- *   - Args: { id, name, summary?, category?, instructions?,
+ *   - Args: { id, name, summary?, category?, instructions?, inputSchema?,
  *             invoke: { type:'script'|'shell', path?|command? },
  *             scriptText? }
+ *       inputSchema (a JSON Schema object) is what a HOT-promoted tool advertises verbatim in
+ *       the top-level tools/list — dropping it here was the gap between "your own tools" and
+ *       "your own tools AND schemas".
  *       When scriptText is a string AND invoke.type === 'script', the script is
  *       written first (registry.writeScript), THEN the entry is added.
  *   - Prints a SINGLE JSON object to stdout and exits 0 — ALWAYS exit 0, even on
@@ -83,10 +87,10 @@ function run(args) {
   if (!args || typeof args !== 'object' || Array.isArray(args)) {
     return {
       ok: false,
-      error: 'args must be an object { id, name, summary?, category?, instructions?, invoke, scriptText? }',
+      error: 'args must be an object { id, name, summary?, category?, instructions?, inputSchema?, invoke, scriptText? }',
     };
   }
-  const { id, name, summary, category, instructions, invoke, scriptText } = args;
+  const { id, name, summary, category, instructions, inputSchema, invoke, scriptText } = args;
 
   // Build a clean register entry (only carry through the optional fields when
   // present so the persisted entry stays tidy). registry.add validates shape.
@@ -94,6 +98,8 @@ function run(args) {
   if (summary !== undefined) entry.summary = summary;
   if (category !== undefined) entry.category = category;
   if (instructions !== undefined) entry.instructions = instructions;
+  if (inputSchema !== undefined) entry.inputSchema = inputSchema; // validated by registry.add
+
 
   const registry = loadRegistry(REGISTER_PATH, { scriptsRoot: SCRIPTS_ROOT });
 

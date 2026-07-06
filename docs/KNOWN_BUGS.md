@@ -1,8 +1,10 @@
-# ToolFunnel — Known Bugs & 0.4.0 Backlog
+# ToolFunnel — 0.4.0 Board (bugs + features)
 
-> Findings from a full source review on **2026-07-03** (v0.3.0, commit `1c5841c`).
-> Each item is ranked, located, explained, and paired with a proposed fix.
-> Ordered by severity: fix #1 before a public release; the rest are polish.
+> Items 1–5: findings from a full source review on **2026-07-03** (v0.3.0, commit `1c5841c`),
+> each ranked, located, explained, and paired with a proposed fix.
+> **All five FIXED 2026-07-06** in commit `6c9821c` (suite 23/23) — the detail sections below are
+> kept as the record of what was wrong and why the fix took the shape it did.
+> Items 6–9: the 0.4.0 feature board (identity, verification passes, packaging).
 >
 > **Context for future-me:** the core gate architecture reviewed as *sound* — see
 > "What is already solid" at the bottom before re-auditing. Do not re-review the
@@ -10,15 +12,57 @@
 
 ---
 
-## Severity ranking (fix order)
+## The board
 
-| # | Severity | Area | One-liner |
-|---|----------|------|-----------|
-| 1 | **High** | UI server | Config UI can bind off-loopback with NO auth and NO refusal — unauthenticated LAN RCE surface |
-| 2 | Low | mcp-client (win) | `winLaunch` cmd.exe metacharacter interpretation — "no injection surface" comment is overstated |
-| 3 | Low | aggregator | `_scheduleReconnect` logs `reconnect_slow` every 30s forever instead of once at the transition |
-| 4 | Low | http-transport | Streaming (chunked) over-cap body doesn't get the clean `-32700` that declared-Content-Length does |
-| 5 | Defensive | auth/resource-server | OIDC discovery follows redirects with no origin-check on the discovered `jwks_uri` |
+| # | Kind | Area | One-liner | Status |
+|---|------|------|-----------|--------|
+| 1 | **High** bug | UI server | Config UI could bind off-loopback with NO auth and NO refusal — unauthenticated LAN RCE surface | **FIXED** `6c9821c` |
+| 2 | Low bug | mcp-client (win) | `winLaunch` cmd.exe metacharacter interpretation — "no injection surface" comment was overstated | **FIXED** `6c9821c` (honest caveat) |
+| 3 | Low bug | aggregator | `_scheduleReconnect` logged `reconnect_slow` every 30s forever instead of once at the transition | **FIXED** `6c9821c` |
+| 4 | Low bug | http-transport | Streaming (chunked) over-cap body didn't get the clean `-32700` — and the "engineered" declared-CL path had the same RST flaw | **FIXED** `6c9821c` (half-close) |
+| 5 | Defensive | auth/resource-server | OIDC discovery followed redirects with no origin-check on the discovered `jwks_uri` | **FIXED** `6c9821c` (origin pin) |
+| 6 | Feature | mcp/server | Configurable server identity — `serverName`/`serverVersion` **and the default `--http`/`--ui` ports** — so a wrapped MCP introduces itself under ITS name and ships its own port defaults. Defaults unchanged. | 0.4.0 |
+| 7 | Verify | protocol/register | Confirm the SCHEMA a hot-promoted register tool advertises is the author's real inputSchema (README promises "your own tools and schemas") | 0.4.0 |
+| 8 | Verify | reload | Confirm `tools.register.json` edits are picked up live — the file-watchers are proven for `mcp/expose.json` + hooks; direct register edits may need a reload path | 0.4.0 |
+| 9 | Feature | packaging | External config home (`TOOLFUNNEL_HOME` / `--config-dir`) + the full packaging story — see below | 0.4.0 |
+
+---
+
+## 9. The packaging story (the 0.4.0 headline)
+
+**The problem:** an npm/npx install keeps its config *inside the package directory* — an
+`npm update` EATS the user's tools, hooks, and curation. Config must live in a home of its own.
+
+**Four pieces, in dependency order:**
+
+1. **Config home** — `TOOLFUNNEL_HOME` env var / `--config-dir` flag; default stays the repo root
+   for a git clone (unchanged), but an npm-installed gateway defaults to a per-user home. The
+   enabler for everything below.
+2. **Tool-pack** — a pack IS a zipped config home. Docs, not code: the layout already travels
+   (`tools/` + `tools.register.json` + `mcp/expose.json` + `hooks/`).
+3. **npm-wrap** — docs + a worked example, no core code: a third party publishes THEIR package
+   with **`toolfunnel` as a dependency (caret range — DEPEND, NEVER COPY)**, their pack bundled,
+   and a 2-line `bin` that points toolfunnel at the bundled config home → `npx their-mcp`.
+   - Their own runtime deps go in THEIR `package.json` — npm installs the whole tree on npx;
+     script tools resolve `require()` relative to themselves. We add no machinery.
+   - Why depend-not-copy: every install of their MCP is a toolfunnel download; our security
+     fixes reach every wrapped MCP via normal `npm update`; no stale forks. (This batch's UI-bind
+     fix is the worked example of why.)
+4. **requires-preflight** — a `requires` field in the pack manifest (JSON only) checked with
+   `child_process` version probes + a hand-rolled version compare; friendly missing-runtime
+   errors ("this pack needs python ≥3.10").
+
+**★ HARD CONSTRAINT: ToolFunnel itself gains ZERO runtime dependencies from any of this.**
+JSON manifest (no yaml), hand-rolled version compare (no semver), node built-ins only.
+
+**Packs are COMPOSITE** (already true today — `mcp/expose.json` lives in the config home):
+own scripts + upstream MCP references + curation in one pack.
+- Upstreams travel as REFERENCES (npx self-fetches them; pin versions in the pack).
+- Curation travels — ship the 4 chosen tools, not the whole upstream server.
+- **THE GATE TRAVELS** — a shipped pack enforces its policy hooks on the recipient's machine
+  regardless of which MCP client they use. Nobody else can say this sentence.
+- Audit honesty: packs spawn commands. The docs say it plainly — read the `expose.json` of
+  anything you install.
 
 ---
 

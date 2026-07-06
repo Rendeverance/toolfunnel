@@ -15,6 +15,11 @@
  *   PART C — LOG:     with the activity log enabled, the reload's connect is recorded — a
  *                     {type:'mcp'} connect/reload line for the upstream AND a {type:'client'}
  *                     connect line from initialize (the connect-logging requirement).
+ *   PART D — REGISTER: tools.register.json is hot-reloaded too. A new entry (WITH an authored
+ *                     inputSchema) written by "another process" + a hot promotion in
+ *                     tools.state.json appears in the top-level tools/list of the RUNNING gateway,
+ *                     advertising the authored schema VERBATIM ("your own tools and schemas" —
+ *                     the register was previously a startup snapshot: the one unwatched config).
  *
  * NON-DESTRUCTIVE: mcp/expose.json and logs/log.config.json are snapshotted up front and restored
  * (or re-absent) in `finally`; the dedicated test log file is removed. Paths are DERIVED from this
@@ -32,6 +37,8 @@ const REPO_ROOT = path.resolve(__dirname, '..');
 const ENTRY = path.join(REPO_ROOT, 'bin', 'toolfunnel.js');
 const EXPOSE_PATH = path.join(REPO_ROOT, 'mcp', 'expose.json');
 const MOCK_SERVER = path.join(REPO_ROOT, 'mcp', 'servers', 'mock-upstream', 'server.js');
+const REGISTER_PATH = path.join(REPO_ROOT, 'tools', 'tools.register.json');
+const TOOL_STATE_PATH = path.join(REPO_ROOT, 'tools', 'tools.state.json');
 const LOG_CONFIG_PATH = path.join(REPO_ROOT, 'logs', 'log.config.json');
 const TEST_LOG_REL = 'logs/test-reload.' + process.pid + '.jsonl';
 const TEST_LOG_PATH = path.join(REPO_ROOT, TEST_LOG_REL);
@@ -148,6 +155,8 @@ const EMPTY_EXPOSE = JSON.stringify({ version: 1, upstreams: [], expose: [] }, n
 (async () => {
   const exposeSnap = snapshot(EXPOSE_PATH);
   const logCfgSnap = snapshot(LOG_CONFIG_PATH);
+  const registerSnap = snapshot(REGISTER_PATH);
+  const stateSnap = snapshot(TOOL_STATE_PATH);
   let child = null;
   let fatal = null;
 
@@ -224,6 +233,45 @@ const EMPTY_EXPOSE = JSON.stringify({ version: 1, upstreams: [], expose: [] }, n
       assert.ok(logLines.some((r) => r && r.type === 'client' && r.event === 'connect'),
         'no {type:"client", event:"connect"} line; got: ' + JSON.stringify(logLines.filter((r) => r && r.type === 'client')));
     });
+
+    // PART D — REGISTER hot-reload: add an entry to tools.register.json from "another process"
+    // (this test), promote it hot, and the RUNNING gateway must advertise it — with the authored
+    // inputSchema verbatim — in the top-level tools/list. No restart.
+    const PROBE_SCHEMA = {
+      type: 'object',
+      properties: { text: { type: 'string', description: 'probe text' } },
+      required: ['text'],
+      additionalProperties: false,
+    };
+    const registerData = JSON.parse(fs.readFileSync(REGISTER_PATH, 'utf8'));
+    registerData.tools.push({
+      id: 'reloadprobe',
+      name: 'Reload Probe',
+      summary: 'reload.test.js PART D fixture — never invoked.',
+      category: 'test',
+      inputSchema: PROBE_SCHEMA,
+      invoke: { type: 'script', path: 'scripts/reload-probe.js' }, // list-only; never called
+    });
+    fs.writeFileSync(REGISTER_PATH, JSON.stringify(registerData, null, 2) + '\n');
+    fs.writeFileSync(TOOL_STATE_PATH, JSON.stringify({ reloadprobe: { hot: true } }, null, 2) + '\n');
+
+    const regDeadline = Date.now() + RELOAD_BUDGET_MS;
+    let probeDef = null;
+    while (Date.now() < regDeadline) {
+      await sleep(300);
+      const list = await client.request('tools/list', {});
+      const tools = (list && list.result && list.result.tools) || [];
+      probeDef = tools.find((t) => t && t.name === 'reloadprobe') || null;
+      if (probeDef) break;
+    }
+    check('REGISTER: a live-added + hot-promoted register tool appears in tools/list (NO restart)', () => {
+      assert.ok(probeDef, 'reloadprobe never appeared within ' + RELOAD_BUDGET_MS + 'ms of writing the register');
+    });
+    check('REGISTER: the authored inputSchema is advertised VERBATIM (not the free-form fallback)', () => {
+      assert.ok(probeDef, 'no def to inspect (previous check failed)');
+      assert.deepStrictEqual(probeDef.inputSchema, PROBE_SCHEMA,
+        'advertised schema differs from the authored one; got: ' + JSON.stringify(probeDef && probeDef.inputSchema));
+    });
   } catch (err) {
     fatal = err;
   } finally {
@@ -233,6 +281,8 @@ const EMPTY_EXPOSE = JSON.stringify({ version: 1, upstreams: [], expose: [] }, n
     }
     restore(EXPOSE_PATH, exposeSnap);
     restore(LOG_CONFIG_PATH, logCfgSnap);
+    restore(REGISTER_PATH, registerSnap);
+    restore(TOOL_STATE_PATH, stateSnap);
     try { if (fs.existsSync(TEST_LOG_PATH)) fs.unlinkSync(TEST_LOG_PATH); } catch (_e) { /* best-effort */ }
   }
 
@@ -243,15 +293,16 @@ const EMPTY_EXPOSE = JSON.stringify({ version: 1, upstreams: [], expose: [] }, n
   if (fatal) console.log('FATAL: ' + ((fatal && fatal.stack) || fatal));
 
   const passed = results.filter((r) => r.ok).length;
-  const ok = !fatal && passed === results.length && results.length === 7;
+  const ok = !fatal && passed === results.length && results.length === 9;
   const exposeRestored = snapshot(EXPOSE_PATH) === exposeSnap;
-  console.log('restore: expose.json ' + (exposeRestored ? 'OK' : 'MISMATCH'));
+  const registerRestored = snapshot(REGISTER_PATH) === registerSnap;
+  console.log('restore: expose.json ' + (exposeRestored ? 'OK' : 'MISMATCH') + ', tools.register.json ' + (registerRestored ? 'OK' : 'MISMATCH'));
 
-  if (ok && exposeRestored) {
-    console.log(`\nPASS: reload test — ${passed}/7 assertions passed (live attach with no restart; list_changed emitted; forwarded call works; connect logged; config restored)`);
+  if (ok && exposeRestored && registerRestored) {
+    console.log(`\nPASS: reload test — ${passed}/9 assertions passed (live attach + live register add with no restart; list_changed emitted; forwarded call works; authored schema advertised; connect logged; config restored)`);
     process.exit(0);
   } else {
-    console.log(`\nFAIL: reload test — ${passed}/${results.length} assertions passed${exposeRestored ? '' : ' (EXPOSE RESTORE MISMATCH)'}`);
+    console.log(`\nFAIL: reload test — ${passed}/${results.length} assertions passed${exposeRestored ? '' : ' (EXPOSE RESTORE MISMATCH)'}${registerRestored ? '' : ' (REGISTER RESTORE MISMATCH)'}`);
     process.exit(1);
   }
 })().catch((e) => {

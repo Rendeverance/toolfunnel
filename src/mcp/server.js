@@ -949,6 +949,31 @@ async function reloadExpose(build, send) {
 }
 
 /**
+ * Re-read tools.register.json and swap the ONE live Registry's index IN PLACE (Registry.reload —
+ * last-good on any failure). In-place mutation is the point: the Registry instance is CAPTURED by
+ * the protocol adapter at build time, so swapping internals means every reader — the lean
+ * meta-tools, run_tool resolution, and the top-level hot surface — sees the new entries on its
+ * next call with no rewiring. Emits list_changed: a hot-promoted local tool's definition may have
+ * appeared, changed, or gone. NEVER throws.
+ *
+ * @param {{registry?:object}} build
+ * @param {(obj:object)=>void} send  the stdio writer, for the list_changed notification
+ * @returns {void}
+ */
+function reloadRegister(build, send) {
+  try {
+    if (build && build.registry && typeof build.registry.reload === 'function' && build.registry.reload()) {
+      emitToolsListChanged(send);
+      logErr('reloadRegister: tools.register.json reloaded');
+    } else {
+      logErr('reloadRegister: reload failed (bad JSON / invalid entry / mid-write?) — keeping the last-good register');
+    }
+  } catch (err) {
+    logErr('reloadRegister: unexpected failure (keeping current register):', (err && err.message) || String(err));
+  }
+}
+
+/**
  * Re-read the hooks manifest + state overlay and swap a fresh HookEngine into `build`. The next
  * gated call (toolfunnel_run_tool / curated-direct) uses the new engine, so an added/changed/toggled
  * hook takes effect with no restart. NEVER throws (a bad manifest keeps the current engine).
@@ -1002,6 +1027,23 @@ function startConfigWatchers(build, send) {
     if (hooksTimer && typeof hooksTimer.unref === 'function') hooksTimer.unref();
   }
 
+  let registerTimer = null;
+  function scheduleRegister() {
+    if (registerTimer) clearTimeout(registerTimer);
+    registerTimer = setTimeout(() => { registerTimer = null; reloadRegister(build, send); }, DEBOUNCE_MS);
+    if (registerTimer && typeof registerTimer.unref === 'function') registerTimer.unref();
+  }
+
+  // tools.state.json needs NO reload (it is read fresh per tools/list & tools/call) — but a
+  // hot/hidden/enabled toggle CHANGES the top-level surface, so a connected client must be told
+  // to re-fetch. Notification only.
+  let stateTimer = null;
+  function scheduleStateNotify() {
+    if (stateTimer) clearTimeout(stateTimer);
+    stateTimer = setTimeout(() => { stateTimer = null; emitToolsListChanged(send); }, DEBOUNCE_MS);
+    if (stateTimer && typeof stateTimer.unref === 'function') stateTimer.unref();
+  }
+
   try {
     const w = fs.watch(mcpDir, (_event, filename) => {
       // null filename (some platforms don't report it) → reload to be safe; else only expose.json.
@@ -1024,6 +1066,23 @@ function startConfigWatchers(build, send) {
     logErr('startConfigWatchers: watching', hooksDir, 'for hook changes');
   } catch (err) {
     logErr('startConfigWatchers: cannot watch', hooksDir + ':', (err && err.message) || String(err));
+  }
+
+  // The register + state overlay live in tools/. Register edits (tf_tool_add from its child
+  // process, the UI, a hand edit) were the ONE config surface with no watcher — a running gateway
+  // served its startup snapshot until restart, which broke the "add a tool live" story the moment
+  // the server outlived the edit. State toggles only need the list_changed nudge (read-fresh).
+  const toolsDir = path.dirname(REGISTER_PATH);
+  try {
+    const w = fs.watch(toolsDir, (_event, filename) => {
+      const base = filename ? path.basename(String(filename)) : '';
+      if (!filename || base === 'tools.register.json') scheduleRegister();
+      if (!filename || base === 'tools.state.json') scheduleStateNotify();
+    });
+    if (w && typeof w.unref === 'function') w.unref();
+    logErr('startConfigWatchers: watching', toolsDir, 'for register/state changes');
+  } catch (err) {
+    logErr('startConfigWatchers: cannot watch', toolsDir + ':', (err && err.message) || String(err));
   }
 }
 

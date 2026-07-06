@@ -84,7 +84,7 @@
       "name": "tf_tool_add",
       "summary": "Register a new tool entry in the gateway tool register.",
       "category": "management",
-      "instructions": "Add a register entry. Args: { id, name, summary?, category?, instructions?, invoke:{type:'script',path:'scripts/<file>'}|{type:'shell',command}, scriptText? }. If scriptText is given for a script invoke, the body is written to tools/scripts/<basename> first. Change is LIVE (no reconnect). Fails if id already exists.",
+      "instructions": "Add a register entry. Args: { id, name, summary?, category?, instructions?, inputSchema?, invoke:{type:'script',path:'scripts/<file>'}|{type:'shell',command}, scriptText? }. inputSchema is a JSON Schema object for the tool's args - a HOT-promoted tool advertises it verbatim in the top-level tools/list, so author it if the tool may be promoted. If scriptText is given for a script invoke, the body is written to tools/scripts/<basename> first. Change is LIVE (no reconnect). Fails if id already exists.",
       "invoke": {
         "type": "script",
         "path": "scripts/tf-tool-add.js"

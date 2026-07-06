@@ -130,6 +130,15 @@ function validateEntry(entry, { requireId = true } = {}) {
   if (inv.type === 'shell' && (typeof inv.command !== 'string' || inv.command.length === 0)) {
     throw new Error(`Registry: shell invoke needs a non-empty "command" (id=${entry.id})`);
   }
+  // Optional MCP input schema. When present it must be a plain object — a hot-promoted tool
+  // advertises it VERBATIM to MCP clients (tools/list), so a typo'd shape must fail loudly at
+  // authoring time rather than silently degrade to the free-form fallback at surface time.
+  if (
+    entry.inputSchema !== undefined &&
+    (typeof entry.inputSchema !== 'object' || entry.inputSchema === null || Array.isArray(entry.inputSchema))
+  ) {
+    throw new Error(`Registry: entry.inputSchema must be an object when present (id=${entry.id})`);
+  }
   return entry;
 }
 
@@ -281,6 +290,40 @@ class Registry {
     if (!this._byId.has(id)) throw new Error(`Registry.remove: unknown tool id "${id}"`);
     this._byId.delete(id);
     this._persist();
+    return true;
+  }
+
+  /**
+   * Re-read the register FILE and swap the in-memory index — the hot-reload seam. A running
+   * gateway holds ONE Registry instance (captured by the protocol adapter at build time), while
+   * tf_tool_add / the UI / a hand edit mutate the FILE from another process — without this, those
+   * edits are invisible until restart. LAST-GOOD semantics: the replacement index is built and
+   * fully validated FIRST; any read/parse/validation failure (including a mid-write partial file)
+   * leaves the current index untouched and returns false. NEVER throws.
+   * @returns {boolean} true when the on-disk register replaced the in-memory index
+   */
+  reload() {
+    let data;
+    try {
+      data = JSON.parse(fs.readFileSync(this._filePath, 'utf8'));
+    } catch (_e) {
+      return false; // unreadable / mid-write / bad JSON → keep last-good
+    }
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return false;
+    const tools = Array.isArray(data.tools) ? data.tools : [];
+    const next = new Map();
+    try {
+      for (const t of tools) {
+        validateEntry(t);
+        if (next.has(t.id)) throw new Error(`duplicate tool id "${t.id}"`);
+        next.set(t.id, cloneEntry(t));
+      }
+    } catch (_e) {
+      return false; // an invalid entry → keep last-good
+    }
+    if (typeof data.version === 'number') this._version = data.version;
+    if (typeof data.description === 'string') this._description = data.description;
+    this._byId = next;
     return true;
   }
 
