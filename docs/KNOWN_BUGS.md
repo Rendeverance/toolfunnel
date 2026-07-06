@@ -21,10 +21,10 @@
 | 3 | Low bug | aggregator | `_scheduleReconnect` logged `reconnect_slow` every 30s forever instead of once at the transition | **FIXED** `6c9821c` |
 | 4 | Low bug | http-transport | Streaming (chunked) over-cap body didn't get the clean `-32700` — and the "engineered" declared-CL path had the same RST flaw | **FIXED** `6c9821c` (half-close) |
 | 5 | Defensive | auth/resource-server | OIDC discovery followed redirects with no origin-check on the discovered `jwks_uri` | **FIXED** `6c9821c` (origin pin) |
-| 6 | Feature | mcp/server | Configurable server identity — `serverName`/`serverVersion` **and the default `--http`/`--ui` ports** — so a wrapped MCP introduces itself under ITS name and ships its own port defaults. Defaults unchanged. | 0.4.0 |
-| 7 | Verify | protocol/register | Confirm the SCHEMA a hot-promoted register tool advertises is the author's real inputSchema (README promises "your own tools and schemas") | 0.4.0 |
-| 8 | Verify | reload | Confirm `tools.register.json` edits are picked up live — the file-watchers are proven for `mcp/expose.json` + hooks; direct register edits may need a reload path | 0.4.0 |
-| 9 | Feature | packaging | External config home (`TOOLFUNNEL_HOME` / `--config-dir`) + the full packaging story — see below | 0.4.0 |
+| 6 | Feature | mcp/server | Configurable server identity — `serverName`/`serverVersion` **and the default `--http`/`--ui` ports** — so a wrapped MCP introduces itself under ITS name and ships its own port defaults. Defaults unchanged. | **DONE** `a734f4b` (toolfunnel.json) |
+| 7 | Verify | protocol/register | Confirm the SCHEMA a hot-promoted register tool advertises is the author's real inputSchema (README promises "your own tools and schemas") | **DONE** `4c219e4` — plumbing was sound; tf_tool_add DROPPED the field (fixed), validated + documented now |
+| 8 | Verify | reload | Confirm `tools.register.json` edits are picked up live — the file-watchers are proven for `mcp/expose.json` + hooks; direct register edits may need a reload path | **DONE** `4c219e4` — was a REAL BUG (startup snapshot); Registry.reload() + tools/ watcher + state list_changed |
+| 9 | Feature | packaging | External config home (`TOOLFUNNEL_HOME` / `--config-dir`) + the full packaging story — see below | **DONE** `108db4e` (home) + `bc88c53` (tf_pack + requires) + `a1fa845` (docs) |
 
 ---
 
