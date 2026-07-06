@@ -41,6 +41,10 @@ if (args.includes('--help') || args.includes('-h')) {
       '  toolfunnel install-oauth      Install the optional OAuth 2.1 dependency (jose)',
       '  toolfunnel --help             Show this help',
       '',
+      'Identity + port defaults can be set in an OPTIONAL toolfunnel.json at the gateway root:',
+      '  { "serverName": "my-mcp", "serverVersion": "1.0.0", "httpPort": 9998, "uiPort": 9777 }',
+      'A --port flag always wins over the config value.',
+      '',
     ].join('\n')
   );
   process.exit(0);
@@ -68,9 +72,12 @@ if (args[0] === 'install-oauth') {
     });
 } else if (args.includes('--ui')) {
   const { createUiServer } = require('../src/ui/server');
+  const { loadServerConfig } = require('../src/core/server-config');
+  const cfg = loadServerConfig(require('node:path').resolve(__dirname, '..'));
   const host = flagValue('--host', '127.0.0.1');
-  const parsedPort = parseInt(flagValue('--port', '9777'), 10);
-  const port = Number.isInteger(parsedPort) ? parsedPort : 9777;
+  // Precedence: --port flag > toolfunnel.json uiPort > 9777 (loadServerConfig folds in the default).
+  const parsedPort = parseInt(flagValue('--port', String(cfg.uiPort)), 10);
+  const port = Number.isInteger(parsedPort) ? parsedPort : cfg.uiPort;
   const server = createUiServer({ host, port });
   server
     .start()
@@ -88,9 +95,12 @@ if (args[0] === 'install-oauth') {
   process.on('SIGTERM', shutdown);
 } else if (args.includes('--http')) {
   const { createHttpMcpServer } = require('../src/mcp/http-transport');
+  const { loadServerConfig } = require('../src/core/server-config');
+  const cfg = loadServerConfig(require('node:path').resolve(__dirname, '..'));
   const host = flagValue('--host', '127.0.0.1');
-  const parsedPort = parseInt(flagValue('--port', '9998'), 10);
-  const port = Number.isInteger(parsedPort) ? parsedPort : 9998;
+  // Precedence: --port flag > toolfunnel.json httpPort > 9998 (loadServerConfig folds in the default).
+  const parsedPort = parseInt(flagValue('--port', String(cfg.httpPort)), 10);
+  const port = Number.isInteger(parsedPort) ? parsedPort : cfg.httpPort;
   const server = createHttpMcpServer({ host, port });
   server
     .start()

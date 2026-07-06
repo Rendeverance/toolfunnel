@@ -68,8 +68,14 @@ const SCRIPTS_ROOT = path.join(ROOT, 'tools', 'scripts');
 const EXPOSE_PATH = path.join(ROOT, 'mcp', 'expose.json');
 
 const PROTOCOL_VERSION = '2024-11-05';
-// Version is sourced from package.json so serverInfo can never drift from the released version.
-const SERVER_INFO = { name: 'toolfunnel', version: require('../../package.json').version };
+// Identity comes from the OPTIONAL toolfunnel.json at the root (absent → name "toolfunnel",
+// version from package.json — serverInfo can never drift from the released version). The config
+// seam is what lets a wrapped MCP introduce itself as ITSELF in the initialize handshake and
+// /health. Loaded once at module init: clients cache serverInfo from initialize, so identity is
+// deliberately NOT hot-reloaded (a mid-session identity swap would lie to connected clients).
+const { loadServerConfig } = require('../core/server-config');
+const SERVER_CONFIG = loadServerConfig(ROOT);
+const SERVER_INFO = { name: SERVER_CONFIG.serverName, version: SERVER_CONFIG.serverVersion };
 
 // ── Diagnostics → stderr only (stdout is the JSON-RPC channel; never pollute it). ─────────────
 function logErr(...parts) {

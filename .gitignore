@@ -8,6 +8,10 @@ package-lock.json
 # Root-anchored so it ignores ONLY the top-level config dir, NOT the engine code in src/auth/.
 /auth/
 
+# Optional gateway identity/port config (absent by default — the gateway IS "toolfunnel" without
+# it). User-created; a wrapped MCP ships its OWN copy in its own package, never in this repo.
+/toolfunnel.json
+
 # Logs
 *.log
 logs/
