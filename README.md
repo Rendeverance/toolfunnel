@@ -84,7 +84,7 @@ They're just here to get you started - turn any of them off or delete them as yo
 
 ### Management functions
 
-The gateway can manage **itself**. Eight first-party tools in the `management` category let an agent (or the web UI) add, curate, and toggle the gateway's own configuration. They are ordinary register tools - reached through `toolfunnel_run_tool`, so every call passes the same gate as any other gateway tool (a single PreToolUse matcher such as `tf_.*` locks the whole management surface down, since each is named `tf_*`).
+The gateway can manage **itself**. Nine first-party tools in the `management` category let an agent (or the web UI) add, curate, toggle, and package the gateway's own configuration. They are ordinary register tools - reached through `toolfunnel_run_tool`, so every call passes the same gate as any other gateway tool (a single PreToolUse matcher such as `tf_.*` locks the whole management surface down, since each is named `tf_*`).
 
 | Function       | What it does                                                                 |
 |----------------|------------------------------------------------------------------------------|
@@ -96,6 +96,7 @@ The gateway can manage **itself**. Eight first-party tools in the `management` c
 | `tf_hook_set`  | Enable, disable, or remove a hook (live toggles via the `hooks.state.json` overlay). |
 | `tf_list`      | List register tools, upstream MCPs, or hooks with their live active state (read-only). Hidden tools are omitted by default - pass `{ includeHidden: true }` to show them. |
 | `tf_log`       | Enable, disable, or check the [audit log](#activity--audit-log) (`{ action: enable\|disable\|status }`). |
+| `tf_pack`      | Package the live setup into a deployment artifact under `dist/` - a portable config home, or a publishable npm package wrapping toolfunnel. See [Packaging](#packaging-ship-your-own-mcp). |
 
 Tool / hook register edits are **live** (re-read per call, no reconnect). Upstream attach/curate changes are picked up live too: the gateway watches its config and reloads - reconnecting upstreams and emitting `notifications/tools/list_changed` - with no restart.
 
@@ -301,7 +302,7 @@ toolfunnel/
    └─ toolfunnel.log.jsonl  #   the JSONL records (default path)
 ```
 
-Rule of thumb: `src/` is the gateway machinery; `tools/`, `mcp/`, and `hooks/` are where your configuration lives. The engine resolves these top-level paths relative to the repo root.
+Rule of thumb: `src/` is the gateway machinery; `tools/`, `mcp/`, and `hooks/` are where your configuration lives. By default these resolve relative to the repo root — or point them anywhere with a **config home** (`--config-dir` / `TOOLFUNNEL_HOME`): an empty home is seeded from the shipped defaults on first use and never overwritten after, so an `npm update` can never eat your tools. See [docs/packaging.md](docs/packaging.md).
 
 ## Configuration
 
@@ -309,16 +310,29 @@ All config is plain JSON under the repo - edit it by hand, through the [config w
 
 | File                              | Purpose                                                                 |
 |-----------------------------------|-------------------------------------------------------------------------|
-| `tools/tools.register.json`   | The first-party tool register (`{ version, description, tools: [...] }`) - 7 demos + 8 management functions |
+| `tools/tools.register.json`   | The first-party tool register (`{ version, description, tools: [...] }`) - 7 demos + 9 management functions. Entries may carry an `inputSchema`, advertised verbatim when the tool is promoted hot |
 | `tools/tools.state.json`      | The visibility-matrix overlay, keyed by surfaced name → `{ enabled?, hidden?, hot? }`. Default-ON for `enabled` (empty `{}` enables everything), default-OFF for `hot`/`hidden` (meta-tools default `hot`-ON). Read fresh per call - no restart needed |
 | `hooks/hooks.manifest.json`   | The policy gate (`{ version, hooks: [] }`). An empty `hooks` array = allow-all |
 | `hooks/hooks.state.json`      | Optional live enable/disable overlay for hooks; an entry here wins over the manifest's seed `enabled` |
 | `mcp/expose.json`             | Upstream MCP servers + the curated set of their tools to expose (`{ version, upstreams: [], expose: [] }`). **Empty by default**, so the gateway connects to nothing |
 | `mcp/expose.example.json`     | An annotated sample showing how to wire an upstream and expose two of its tools |
 | `logs/log.config.json`        | The audit-log toggle (`{ enabled, path }`). **Default OFF**; created only when logging is enabled |
+| `toolfunnel.json`             | Optional identity + defaults: `{ serverName, serverVersion, httpPort, uiPort, requires }`. Absent = the gateway is plain `toolfunnel`. This is how a packaged MCP introduces itself as ITSELF |
+
+## Packaging: ship your own MCP
+
+Everything you build here — tools, curation, upstream selections, policy hooks, identity — lives
+in one folder (the config home), and one management call packages it:
+
+- `tf_pack { format: "home" }` → a portable setup: zip it, git it, or run it with `--config-dir`.
+- `tf_pack { format: "npm", name: "my-mcp" }` → a **publishable npm package** that depends on
+  toolfunnel (never forks it), bundles your setup, and gives your users `npx my-mcp` — your
+  server, your name in the handshake, your tools and schemas, **your gate enforced on their
+  machine regardless of client**.
+
+Declare runtime needs (`python`, `git`, …) in `toolfunnel.json` `requires` and the gateway warns
+at startup about anything missing. Full story: [docs/packaging.md](docs/packaging.md).
 
 ## License
 
 [MIT](LICENSE)
-</content>
-</invoke>

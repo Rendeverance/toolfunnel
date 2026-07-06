@@ -5,6 +5,37 @@ tools, hooks, and MCP configs into a **shareable package** and how import/export
 **byproduct** of the gateway design: because every unit is already structured and
 self-documented, a package is just a folder that lists its units and carries their files.
 
+---
+
+## 0. The WHOLE-SETUP path — `tf_pack` (start here)
+
+Since 0.4.0 the fastest way to ship is not per-unit packaging but the **whole setup**: your entire
+config home (tools + scripts, hot/hidden curation, upstream references, policy hooks, identity) is
+already the product. One call packages it into a deployment-ready artifact under `<home>/dist/`:
+
+- `tf_pack { format: "home" }` → a **portable config home**. Zip it, git-init it, or run it
+  directly: `toolfunnel --config-dir <dir>`. The receiving gateway seeds nothing — the pack IS the
+  config, including the hooks: **the gate travels**, enforcing your policy on the recipient's
+  machine regardless of which MCP client they use.
+- `tf_pack { format: "npm", name: "my-mcp" }` → a **publishable npm package**: a generated
+  `package.json` that depends on `toolfunnel` (caret range — DEPEND, never copy the engine), a
+  2-line bin launcher pointing `--config-dir` at the bundled home, and a README stub.
+  `cd dist/my-mcp && npm publish` → your users run `npx my-mcp` and get YOUR server, under YOUR
+  name (the bundled `toolfunnel.json` identity), with YOUR gate.
+
+Declare the runtimes your tools need in the home's `toolfunnel.json` — they travel with the pack
+and the receiving gateway warns at startup about anything missing:
+
+```json
+"requires": [ { "command": "python", "min": "3.10", "why": "the pdf tools" } ]
+```
+
+Audit honesty (both directions): packs spawn commands. Tell your users to read your pack's
+`expose.json` and `tools.register.json` — and read them yourself in anything you install.
+
+The per-UNIT packaging below remains the right shape for sharing a single tool/hook/MCP selection
+rather than a whole gateway.
+
 > Phase note: packages are Phase 2 (`packages/` directory). The structure below is what the importer
 > and exporter target; defining it now means the units authored today are already package-ready.
 
