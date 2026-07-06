@@ -103,6 +103,13 @@ pack = your tools + other people's servers, curated, renamed, and policed, as a 
 ## Audit honesty
 
 Packs spawn commands — that is what they are for. Before you run anyone's pack (including one of
-ours), read its `mcp/expose.json` and `tools/tools.register.json`: every command it can spawn is
-declared there in plain JSON. Ship your own packs expecting the same scrutiny, and say so in your
-README (the `tf_pack` stub already does).
+ours), read **three files** — every command it can run is declared in plain JSON:
+
+- `tools/tools.register.json` — the tool invokes (scripts and shell commands);
+- `mcp/expose.json` — the upstream server commands it will spawn;
+- `toolfunnel.json` — the `requires` probes. Note these run **at gateway startup** (each declared
+  program is executed once with its version flag), which is why a `requires` command must be a
+  bare program name — the gateway rejects paths, spaces, and shell characters outright.
+
+Ship your own packs expecting the same scrutiny, and say so in your README (the `tf_pack` stub
+already does).

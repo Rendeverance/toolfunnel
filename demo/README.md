@@ -29,21 +29,23 @@ A complete ToolFunnel **config home** — the thing `tf_pack` ships:
 
 ## Rendering the recordings
 
-The tapes are [vhs](https://github.com/charmbracelet/vhs) scripts — deterministic,
-re-renderable, reviewable in a diff:
+**The canonical renderer is `demo/render_gif.py`** (Python 3 + Pillow — the recording machine's
+tooling, never a ToolFunnel dependency). It runs the REAL client, the REAL `tf_pack`, screenshots
+the REAL web UI (headless Edge on Windows), and draws the terminal frames itself — deterministic,
+no browser-recording stack to fight:
 
 ```bash
-vhs demo/demo-hero.tape    # → demo/toolfunnel-demo.gif  (the README hero, ~20s)
-vhs demo/demo-full.tape    # → demo/toolfunnel-demo.mp4  (the full cut with the gate beat)
+python demo/render_gif.py     # → demo/toolfunnel-demo.gif (the README hero, ~60s)
 ```
 
-No local vhs? Docker renders both:
+The [vhs](https://github.com/charmbracelet/vhs) tapes are kept as an alternative for
+machines where vhs works well (it can be temperamental on Windows — which is why the Python
+renderer exists):
 
 ```bash
-docker run --rm -v "$PWD:/vhs" ghcr.io/charmbracelet/vhs demo/demo-hero.tape
-docker run --rm -v "$PWD:/vhs" ghcr.io/charmbracelet/vhs demo/demo-full.tape
+vhs demo/demo-hero.tape    # or:  docker run --rm -v "$PWD:/vhs" ghcr.io/charmbracelet/vhs demo/demo-hero.tape
+vhs demo/demo-full.tape
 ```
 
-Render from the **repo root** (the tapes use repo-relative paths). Only `node` is needed at
-record time — the Python/Bash tools are listed (that's the point) but the live call uses the
-Node tool, so the recording machine needs no extra runtimes.
+Render from the **repo root** (repo-relative paths). Only `node` is needed for the demo itself —
+the Python/Bash tools are listed (that's the point) but the live call uses the Node tool.

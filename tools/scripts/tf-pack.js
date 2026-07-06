@@ -203,8 +203,9 @@ function run(args) {
         `Set \`${envOverride}\` to a directory holding a copy of \`home/\`.`,
         '',
         '## Audit honesty',
-        'Packs spawn commands. Read `home/mcp/expose.json` and `home/tools/tools.register.json`',
-        'of anything you install — including this.',
+        'Packs spawn commands. Read `home/mcp/expose.json`, `home/tools/tools.register.json`,',
+        'and `home/toolfunnel.json` (its `requires` probes run at startup) of anything you',
+        'install — including this.',
         '',
       ].join('\n'));
       files += 1;

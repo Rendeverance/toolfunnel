@@ -1,4 +1,6 @@
 {
   "serverName": "my-tools",
-  "serverVersion": "1.0.0"
+  "serverVersion": "1.0.0",
+  "httpPort": 7331,
+  "uiPort": 7332
 }

@@ -4,6 +4,10 @@
 
 > A zero-dependency* MCP gateway: host your own tools, forward and curate tools from other MCP servers, expose them **leanly** to cut agent token cost, and gate every call through your own policy hooks before it runs.
 
+**Zero code, zero dependencies: your own MCP server in 60 seconds** — from three ordinary scripts to a named, packaged, policy-gated MCP server (everything on screen is real output; see [demo/](demo/)):
+
+![ToolFunnel in 60 seconds: scripts → register → identity → live MCP server → npm package](demo/toolfunnel-demo.gif)
+
 
 ## The problem
 
@@ -25,7 +29,7 @@ ToolFunnel is one small MCP server that sits between your agent and everything e
 2. **Forwards other MCP servers - leanly.** Attach an upstream MCP and its tools appear in the same lean register as your own (briefs + instructions-on-demand), runnable through `toolfunnel_run_tool` and the gate. Curate which appear, promote a chosen few to top-level "every-turn" tools, or leave them lean by default. Every forwarded call still passes the gate.
 3. **Lean register** - the agent sees short tool *briefs*; the full instructions for a tool are fetched **on demand**, so context stays small. *(This is the token saver.)*
 4. **Server-side policy gate** - every server-side execution path fires your PreToolUse / PostToolUse hooks **inside the gateway**, so your policy works on *any* client, not just hosts that support hooks. The gate travels with the gateway, and **fails closed**.
-5. **Configure by file, UI, or in-band** - plain JSON files, an optional loopback web UI (`node bin/toolfunnel.js --ui`), or eight in-band **management functions** all add / curate / toggle tools, upstreams, and hooks - live, no restart.
+5. **Configure by file, UI, or in-band** - plain JSON files, an optional loopback web UI (`node bin/toolfunnel.js --ui`), or nine in-band **management functions** all add / curate / toggle tools, upstreams, and hooks - live, no restart - and package the whole setup for deployment.
 6. **Audit when you want it** - a toggleable JSONL log (**default off**) records tool runs, every gate allow/deny decision, and every upstream connect / disconnect / reconnect.
 7. **Live & self-healing** - attach/curate/toggle tools, upstreams, and hooks on a *running* gateway with no restart; and if an attached MCP's process dies, the gateway detects it and reconnects in the background with backoff.
 

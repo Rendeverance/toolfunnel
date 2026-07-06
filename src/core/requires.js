@@ -96,8 +96,20 @@ function checkRequires(home) {
       continue;
     }
     const command = entry.command.trim();
+    // A requires command is a bare PROGRAM NAME, never a shell string. This is load-bearing on
+    // Windows: the cmd.exe shim fallback below hands the token to cmd, where an unquoted
+    // metacharacter ("x&evil") would CHAIN commands — a probe must never be able to run anything
+    // beyond `<program> <versionArg>`. Reject anything shell-shaped up front (also catches paths:
+    // declare tools by PATH name, which is the only portable claim a pack can make anyway).
+    if (!/^[A-Za-z0-9][A-Za-z0-9._+-]*$/.test(command)) {
+      problems.push({ command, problem: `requires.command "${command}" is not a bare program name (no paths, spaces, or shell characters)` });
+      continue;
+    }
     const why = typeof entry.why === 'string' && entry.why ? ` (needed for: ${entry.why})` : '';
-    const p = probe(command, typeof entry.versionArg === 'string' && entry.versionArg ? entry.versionArg : '--version');
+    const versionArg = typeof entry.versionArg === 'string' && /^--?[A-Za-z][A-Za-z-]*$/.test(entry.versionArg)
+      ? entry.versionArg
+      : '--version'; // same rule: a version FLAG, never a shell fragment
+    const p = probe(command, versionArg);
     if (!p.found) {
       problems.push({ command, problem: `"${command}" was not found on PATH${why}` });
       continue;

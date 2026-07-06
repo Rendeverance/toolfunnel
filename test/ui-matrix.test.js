@@ -53,8 +53,8 @@ function restore(p, snap) {
 }
 function writeState(obj) { fs.writeFileSync(STATE_PATH, JSON.stringify(obj, null, 2) + '\n'); }
 
-/** Minimal loopback JSON client. Resolves { status, json }. */
-function req(base, method, p, body) {
+/** Minimal loopback JSON client. Resolves { status, json }. `extraHeaders` for the CSRF tests. */
+function req(base, method, p, body, extraHeaders) {
   return new Promise((resolve, reject) => {
     const url = new URL(p, base);
     const payload = body == null ? null : Buffer.from(JSON.stringify(body), 'utf8');
@@ -63,7 +63,7 @@ function req(base, method, p, body) {
       hostname: url.hostname,
       port: url.port,
       path: url.pathname + url.search,
-      headers: { Accept: 'application/json' },
+      headers: Object.assign({ Accept: 'application/json' }, extraHeaders || {}),
     };
     if (payload) { opts.headers['Content-Type'] = 'application/json'; opts.headers['Content-Length'] = payload.length; }
     const r = http.request(opts, (res) => {
@@ -240,6 +240,30 @@ function req(base, method, p, body) {
       assert.ok(lhInfo && typeof lhInfo.url === 'string' && lhInfo.port > 0, 'localhost bind failed: ' + JSON.stringify(lhInfo));
     });
 
+    // L — the CSRF guard: the bind address stops the network, not the browser. A cross-origin
+    // Origin on a mutating request is rejected; the UI's own origin and non-browser clients
+    // (no Origin — every other POST in this file) pass. GETs stay open.
+    const csrfEvil = await req(url, 'POST', '/api/tools/state',
+      { id: 'uuid', hot: false }, { Origin: 'https://evil.example' });
+    check('L: a cross-origin POST is refused (CSRF guard)', () => {
+      assert.strictEqual(csrfEvil.status, 403, 'expected 403, got ' + csrfEvil.status);
+      assert.ok(/cross-origin/i.test((csrfEvil.json && csrfEvil.json.error) || ''), 'error names the guard: ' + JSON.stringify(csrfEvil.json));
+    });
+    const csrfSelf = await req(url, 'POST', '/api/tools/state',
+      { id: 'uuid', hot: false }, { Origin: url });
+    check('L: the UI\'s own loopback Origin passes', () => {
+      assert.strictEqual(csrfSelf.status, 200, 'expected 200, got ' + csrfSelf.status + ' ' + JSON.stringify(csrfSelf.json));
+    });
+    const csrfNull = await req(url, 'POST', '/api/tools/state',
+      { id: 'uuid', hot: false }, { Origin: 'null' });
+    check('L: a "null" (sandboxed/file) Origin is refused', () => {
+      assert.strictEqual(csrfNull.status, 403, 'expected 403, got ' + csrfNull.status);
+    });
+    const csrfGet = await req(url, 'GET', '/api/tools', null, { Origin: 'https://evil.example' });
+    check('L: GETs stay open regardless of Origin (read-only)', () => {
+      assert.strictEqual(csrfGet.status, 200, 'expected 200, got ' + csrfGet.status);
+    });
+
     // K — the two seams diverge exactly where they should.
     check('K: isLoopbackBindHost is strict (empty ≠ loopback) where the header check stays lenient', () => {
       assert.strictEqual(isLoopbackBindHost('127.0.0.1'), true, '127.0.0.1 should pass');
@@ -263,10 +287,10 @@ function req(base, method, p, body) {
   if (fatal) console.log('FATAL: ' + ((fatal && fatal.stack) || fatal));
 
   const passed = results.filter((r) => r.ok).length;
-  const expected = 16;
+  const expected = 20;
   const ok = !fatal && passed === results.length && results.length === expected;
   if (ok) {
-    console.log(`\nPASS: ui-matrix test — ${passed}/${expected} assertions passed (hot/hidden axes, surface summary + warnings, live discover, loopback bind guard)`);
+    console.log(`\nPASS: ui-matrix test — ${passed}/${expected} assertions passed (hot/hidden axes, surface summary + warnings, live discover, loopback bind guard, CSRF guard)`);
     process.exit(0);
   } else {
     console.log(`\nFAIL: ui-matrix test — ${passed}/${results.length} assertions passed`);

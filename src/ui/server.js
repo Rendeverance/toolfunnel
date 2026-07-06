@@ -1008,6 +1008,23 @@ function createUiServer(opts = {}) {
       const pathName = qIndex === -1 ? rawUrl : rawUrl.slice(0, qIndex);
       const method = (req.method || 'GET').toUpperCase();
 
+      // CSRF guard. The bind address stops the NETWORK, not the browser: any web page the
+      // operator visits can fire a no-cors POST at 127.0.0.1:<port>, and the mutating routes
+      // below write tool scripts and register process-spawning upstreams. Browsers ALWAYS send
+      // an Origin header on cross-origin POSTs, so: a PRESENT Origin must itself be loopback
+      // (the UI's own pages), while an ABSENT Origin (curl, CLI clients, non-browser tools) is
+      // allowed — for those, the bind address remains the boundary. GETs stay open (read-only).
+      if (method !== 'GET') {
+        const origin = req.headers && req.headers.origin;
+        if (origin) {
+          let originHost = null;
+          try { originHost = new URL(origin).host; } catch (_e) { /* malformed → reject below */ }
+          if (!originHost || !isLoopbackHost(originHost)) {
+            return sendJson(res, 403, { ok: false, error: 'forbidden: cross-origin request (CSRF guard)' });
+          }
+        }
+      }
+
       // ── Static assets ─────────────────────────────────────────────────────────────────────────
       if (method === 'GET' && (pathName === '/' || pathName === '/index.html')) {
         return sendStatic(res, 'index.html');

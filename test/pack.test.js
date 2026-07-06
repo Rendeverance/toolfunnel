@@ -73,13 +73,19 @@ function payloadOf(res) {
         { command: 'node', min: '10' },                                  // satisfiable everywhere this suite runs
         { command: 'definitely-not-a-real-command-xyz', why: 'testing' }, // not found
         { command: 'node', min: '999' },                                  // impossible min
+        { command: 'x&calc' },                                            // shell-shaped: must be REJECTED, never probed
+        { command: 'C:\\evil\\tool.exe' },                                // a path: same
       ],
     }, null, 2) + '\n');
     const problems = checkRequires(scratch);
     check('R: checkRequires — satisfied passes, missing + too-old are each ONE advisory problem', () => {
-      assert.strictEqual(problems.length, 2, 'problems: ' + JSON.stringify(problems));
       assert.ok(problems.some((p) => /not found/i.test(p.problem) && /testing/.test(p.problem)), 'missing-command problem absent: ' + JSON.stringify(problems));
       assert.ok(problems.some((p) => /999/.test(p.problem)), 'too-old problem absent: ' + JSON.stringify(problems));
+    });
+    check('R: a shell-shaped or path-shaped requires.command is REJECTED before any probe runs', () => {
+      assert.strictEqual(problems.length, 4, 'problems: ' + JSON.stringify(problems));
+      const bareName = problems.filter((p) => /bare program name/.test(p.problem));
+      assert.strictEqual(bareName.length, 2, 'expected 2 bare-name rejections; got ' + JSON.stringify(problems));
     });
     check('R: a home with no toolfunnel.json declares nothing (empty list, no throw)', () => {
       assert.deepStrictEqual(checkRequires(path.join(scratch, 'no-such-dir')), []);
@@ -152,7 +158,7 @@ function payloadOf(res) {
   if (fatal) console.log('FATAL: ' + ((fatal && fatal.stack) || fatal));
 
   const passed = results.filter((r) => r.ok).length;
-  const expected = 11;
+  const expected = 12;
   const ok = !fatal && passed === results.length && results.length === expected;
   if (ok) {
     console.log(`\nPASS: pack test — ${passed}/${expected} assertions passed (requires preflight; tf_pack home + npm formats; depend-not-copy; separate-location guarantee)`);

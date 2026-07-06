@@ -31,7 +31,9 @@ and the receiving gateway warns at startup about anything missing:
 ```
 
 Audit honesty (both directions): packs spawn commands. Tell your users to read your pack's
-`expose.json` and `tools.register.json` — and read them yourself in anything you install.
+`expose.json`, `tools.register.json`, AND `toolfunnel.json` (its `requires` probes execute at
+gateway startup — bare program names only, the loader rejects anything shell-shaped) — and read
+all three yourself in anything you install.
 
 The per-UNIT packaging below remains the right shape for sharing a single tool/hook/MCP selection
 rather than a whole gateway.
