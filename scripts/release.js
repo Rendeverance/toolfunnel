@@ -126,10 +126,15 @@ function npmRun(args) {
   const branch = git(['rev-parse', '--abbrev-ref', 'HEAD']);
   let behind = 'unknown';
   try {
-    git(['fetch', '--quiet']);
+    // A DRY RUN touches the network not at all — "nothing executed" includes the fetch. This is
+    // load-bearing beyond principle: on CI's fresh checkout, a preflight fetch pulled in the tag
+    // the release had just pushed, MID-TEST, so release.test.js's "dry-run created no tags"
+    // before/after comparison false-positived on every lane. Dry-run compares against the local
+    // (possibly stale) origin ref instead; the real run still fetches first.
+    if (!DRY) git(['fetch', '--quiet']);
     behind = git(['rev-list', '--count', `HEAD..origin/${branch}`]);
   } catch (_e) {
-    /* offline: leave 'unknown'; the push will surface it */
+    /* offline (or no origin ref yet): leave 'unknown'; the push will surface it */
   }
 
   let prevTag = '';
