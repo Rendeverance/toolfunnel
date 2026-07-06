@@ -49,10 +49,12 @@ const path = require('node:path');
 const { McpClient } = require('./mcp-client');
 const logger = require('../core/logger');
 
-// The sandbox root, resolved exactly the way server.js does (this file lives in
-// src/mcp/, so two levels up is the gateway root). Used as the isolation boundary the
-// default clientFactory enforces. A caller may override via opts.v3Root for tests.
-const DEFAULT_ROOT = path.resolve(__dirname, '..', '..');
+// The sandbox root = the CONFIG HOME (TOOLFUNNEL_HOME / --config-dir; defaults to the package
+// root — see src/core/config-home.js). Used as the isolation boundary the default clientFactory
+// enforces: a pack's path-shaped upstream args live under the home, so the home is the boundary.
+// A caller may override via opts.v3Root for tests.
+const { resolveConfigHome } = require('../core/config-home');
+const DEFAULT_ROOT = resolveConfigHome();
 
 /** True for a non-empty string. */
 function isNonEmptyString(v) {

@@ -53,7 +53,18 @@ const logger = require('../core/logger');
 const metrics = require('../core/metrics');
 
 // ── Path anchors (everything stays under the host root) ───────────────────────────────────────
-const ROOT = path.resolve(__dirname, '..', '..'); // <…>/<root>
+// The CODE lives in the package; the mutable CONFIG lives in the resolved config home — the same
+// directory in a git clone, distinct when TOOLFUNNEL_HOME / --config-dir points elsewhere (npm
+// installs, npm-wrapped MCPs — an `npm update` must never eat the user's tools). Every anchor
+// below derives from the HOME.
+const { PKG_ROOT, resolveConfigHome, ensureConfigHome } = require('../core/config-home');
+const ROOT = resolveConfigHome(); // <…>/<config home>
+// The process-tree contract for child tools (defaultRunScript spawns with process.env): a
+// management script SEEDED into an external home finds the engine code via TOOLFUNNEL_PKG, and
+// the resolved ABSOLUTE home is written back so no child re-resolves a relative value against a
+// different cwd.
+process.env.TOOLFUNNEL_PKG = PKG_ROOT;
+if (ROOT !== PKG_ROOT) process.env.TOOLFUNNEL_HOME = ROOT;
 const REGISTER_PATH = path.join(ROOT, 'tools', 'tools.register.json');
 // The ACTIVE/DISABLED overlay (tool-state.js). toolfunnel_list_tools filters DISABLED tools out so
 // they are not surfaced to the client. Read FRESH per list() call so UI toggles take effect with no
@@ -255,6 +266,11 @@ function makeRegistryAdapter(registry, opts) {
 //   - engine, ctx: threaded into gatedRun for the curated-direct path (a curated tool runs
 //                  THROUGH the same PreToolUse gate as toolfunnel_run_tool — the safety invariant).
 function buildProtocol() {
+  // Make the config home real before anything reads from it: seeds an external home's register/
+  // scripts/expose/hooks from the shipped defaults on first use. A no-op when home === package
+  // root; idempotent and never-overwriting afterwards. A failure falls through to loadRegistry's
+  // own clear error.
+  try { ensureConfigHome(ROOT); } catch (err) { logErr('config-home init failed:', (err && err.message) || String(err)); }
   const registry = loadRegistry(REGISTER_PATH, { scriptsRoot: SCRIPTS_ROOT });
   const loader = loadManifest(MANIFEST_PATH);
 

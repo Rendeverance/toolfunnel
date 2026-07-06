@@ -37,12 +37,11 @@
  */
 
 const path = require('node:path');
-const { loadManifest } = require('../../src/core/hook-loader');
+// Shared HOME/engine resolution (see tf-env.js): config beside us, engine from the package.
+const { HOME, srcRequire } = require('./tf-env');
+const { loadManifest } = srcRequire('core/hook-loader');
 
-/**
- * ToolFunnel root, two dirs up from this script (tools/scripts -> tools -> root).
- */
-const ROOT = path.resolve(__dirname, '..', '..');
+const ROOT = HOME;
 
 /** The hook manifest, relative to ROOT. */
 const MANIFEST = path.join(ROOT, 'hooks', 'hooks.manifest.json');

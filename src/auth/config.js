@@ -36,8 +36,10 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-/** Repo root: <root>/src/auth/config.js -> two dirs up. */
-const ROOT = path.resolve(__dirname, '..', '..');
+/** The CONFIG HOME (TOOLFUNNEL_HOME / --config-dir; defaults to the package root — see
+ *  src/core/config-home.js). Auth config is user-state, so it lives with the home. */
+const { resolveConfigHome } = require('../core/config-home');
+const ROOT = resolveConfigHome();
 
 /** The toggle/config file. NOT created until setConfig() writes it. */
 const CONFIG_PATH = path.join(ROOT, 'auth', 'auth.config.json');

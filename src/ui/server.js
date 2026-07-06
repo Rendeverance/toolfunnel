@@ -197,7 +197,8 @@ function logConfigChange(fields) {
  * @param {object}  [opts]
  * @param {string}  [opts.host]  bind address (default 127.0.0.1 — loopback only).
  * @param {number}  [opts.port]  bind port (default 9777; pass 0 for an OS-assigned port).
- * @param {string}  [opts.root]  repo root holding tools/ mcp/ hooks/ (default path.resolve(__dirname,'..','..')).
+ * @param {string}  [opts.root]  config root holding tools/ mcp/ hooks/ (default: the resolved
+ *                               config home — TOOLFUNNEL_HOME / --config-dir / the package root).
  * @returns {{ start: () => Promise<{url:string, port:number}>, stop: () => Promise<void>, get url():(string|null) }}
  */
 function createUiServer(opts = {}) {
@@ -205,8 +206,11 @@ function createUiServer(opts = {}) {
   const host = typeof o.host === 'string' && o.host.length > 0 ? o.host : DEFAULT_HOST;
   // A port of 0 is VALID (OS-assigned) so distinguish "not provided" from 0.
   const requestedPort = Number.isInteger(o.port) && o.port >= 0 ? o.port : DEFAULT_PORT;
-  // The repo root: tools.register.json etc. live under <root>/tools, <root>/mcp, <root>/hooks.
-  const root = typeof o.root === 'string' && o.root.length > 0 ? o.root : path.resolve(__dirname, '..', '..');
+  // The config root: tools.register.json etc. live under <root>/tools, <root>/mcp, <root>/hooks.
+  // Default = the resolved config home (see src/core/config-home.js), so a --config-dir /
+  // TOOLFUNNEL_HOME gateway and its UI edit the SAME stores.
+  const { resolveConfigHome } = require('../core/config-home');
+  const root = typeof o.root === 'string' && o.root.length > 0 ? o.root : resolveConfigHome();
 
   // ── Path anchors (everything resolved from the repo root) ────────────────────────────────────
   const REGISTER_PATH = path.join(root, 'tools', 'tools.register.json');

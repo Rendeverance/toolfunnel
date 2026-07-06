@@ -39,9 +39,16 @@ if (args.includes('--help') || args.includes('-h')) {
       '  toolfunnel --ui               Start the config web UI (127.0.0.1:9777)',
       '  toolfunnel --ui --port <n>    Bind a specific UI port (0 = OS-assigned)',
       '  toolfunnel install-oauth      Install the optional OAuth 2.1 dependency (jose)',
+      '  toolfunnel --config-dir <dir> Use <dir> as the CONFIG HOME (see below)',
       '  toolfunnel --help             Show this help',
       '',
-      'Identity + port defaults can be set in an OPTIONAL toolfunnel.json at the gateway root:',
+      'CONFIG HOME: the mutable config (tools/ mcp/ hooks/ auth/ logs/ toolfunnel.json) lives in',
+      'the config home — by default the package root (a git clone works as before), or the value',
+      'of --config-dir / the TOOLFUNNEL_HOME env var. An empty home is seeded from the shipped',
+      'defaults on first use and is NEVER overwritten after — so an npm update cannot eat your',
+      'tools. This is also how a wrapped MCP ships its own bundled setup.',
+      '',
+      'Identity + port defaults can be set in an OPTIONAL toolfunnel.json in the config home:',
       '  { "serverName": "my-mcp", "serverVersion": "1.0.0", "httpPort": 9998, "uiPort": 9777 }',
       'A --port flag always wins over the config value.',
       '',
@@ -49,6 +56,12 @@ if (args.includes('--help') || args.includes('-h')) {
   );
   process.exit(0);
 }
+
+// Resolve + seed the config home FIRST — before any src/ module is required — so every
+// module-load-time anchor (register/expose/hooks paths, auth + log config, identity) reads the
+// same resolved home. Precedence: --config-dir > TOOLFUNNEL_HOME env > the package root.
+const { initConfigHome } = require('../src/core/config-home');
+initConfigHome({ dir: flagValue('--config-dir', '') });
 
 if (args[0] === 'install-oauth') {
   // Opt-in OAuth: pull the single audited dependency (jose) on demand. Keeps the default install
@@ -73,7 +86,8 @@ if (args[0] === 'install-oauth') {
 } else if (args.includes('--ui')) {
   const { createUiServer } = require('../src/ui/server');
   const { loadServerConfig } = require('../src/core/server-config');
-  const cfg = loadServerConfig(require('node:path').resolve(__dirname, '..'));
+  const { resolveConfigHome } = require('../src/core/config-home');
+  const cfg = loadServerConfig(resolveConfigHome());
   const host = flagValue('--host', '127.0.0.1');
   // Precedence: --port flag > toolfunnel.json uiPort > 9777 (loadServerConfig folds in the default).
   const parsedPort = parseInt(flagValue('--port', String(cfg.uiPort)), 10);
@@ -96,7 +110,8 @@ if (args[0] === 'install-oauth') {
 } else if (args.includes('--http')) {
   const { createHttpMcpServer } = require('../src/mcp/http-transport');
   const { loadServerConfig } = require('../src/core/server-config');
-  const cfg = loadServerConfig(require('node:path').resolve(__dirname, '..'));
+  const { resolveConfigHome } = require('../src/core/config-home');
+  const cfg = loadServerConfig(resolveConfigHome());
   const host = flagValue('--host', '127.0.0.1');
   // Precedence: --port flag > toolfunnel.json httpPort > 9998 (loadServerConfig folds in the default).
   const parsedPort = parseInt(flagValue('--port', String(cfg.httpPort)), 10);

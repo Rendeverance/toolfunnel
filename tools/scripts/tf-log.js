@@ -21,7 +21,10 @@
  *   failure:        { ok:false, error }
  */
 
-const logger = require('../../src/core/logger');
+// Shared HOME/engine resolution (see tf-env.js): the logger module itself resolves the config
+// home from the env the gateway set, so requiring it from the right PACKAGE is all we need.
+const { srcRequire } = require('./tf-env');
+const logger = srcRequire('core/logger');
 
 /**
  * Parse TOOLFUNNEL_TOOL_ARGS (a JSON string; {} if absent). Throws on malformed JSON

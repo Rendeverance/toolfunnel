@@ -33,9 +33,11 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-// ROOT resolution mirrors src/mcp/server.js: this file lives at
-// <root>/src/packages/packager.js, so two levels up is the project root.
-const ROOT = path.resolve(__dirname, '..', '..'); // <…> project root
+// ROOT = the CONFIG HOME (TOOLFUNNEL_HOME / --config-dir; defaults to the package root — see
+// src/core/config-home.js). Packages are config-tree citizens: they export FROM and import INTO
+// the home's register/manifest/expose stores, and the packages/ tree itself lives in the home.
+const { resolveConfigHome } = require('../core/config-home');
+const ROOT = resolveConfigHome(); // <…> config home
 
 const PACKAGE_MANIFEST = 'package.json';
 

@@ -29,13 +29,11 @@
  */
 
 const path = require('node:path');
-const { loadExposeStore } = require('../../src/mcp/expose-store');
+// Shared HOME/engine resolution (see tf-env.js): config beside us, engine from the package.
+const { HOME, srcRequire } = require('./tf-env');
+const { loadExposeStore } = srcRequire('mcp/expose-store');
 
-/**
- * ToolFunnel root, resolved from THIS file's location:
- *   <root>/tools/scripts/tf-mcp-set.js -> root is two dirs up.
- */
-const ROOT = path.resolve(__dirname, '..', '..');
+const ROOT = HOME;
 
 /** The MCP config (upstreams + expose), per the host path contract. */
 const EXPOSE_PATH = path.join(ROOT, 'mcp', 'expose.json');

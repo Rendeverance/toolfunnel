@@ -45,18 +45,12 @@
  */
 
 const path = require('node:path');
-const { loadRegistry } = require('../../src/tools/registry');
-const { setToolEnabled, setToolHot, setToolHidden, clearToolState } = require('../../src/tools/tool-state');
+// Shared HOME/engine resolution (see tf-env.js): config beside us, engine from the package.
+const { HOME, srcRequire } = require('./tf-env');
+const { loadRegistry } = srcRequire('tools/registry');
+const { setToolEnabled, setToolHot, setToolHidden, clearToolState } = srcRequire('tools/tool-state');
 
-/**
- * The toolfunnel root, resolved from THIS file's location so the tool is portable
- * and stays inside the sandbox.
- *
- * This script lives at:  <root>/tools/scripts/tf-tool-set.js
- * so the root is two directories up from __dirname:
- *   scripts -> tools -> <root>
- */
-const ROOT = path.resolve(__dirname, '..', '..');
+const ROOT = HOME;
 const REGISTER_PATH = path.join(ROOT, 'tools', 'tools.register.json');
 const STATE_PATH = path.join(ROOT, 'tools', 'tools.state.json');
 const SCRIPTS_ROOT = path.join(ROOT, 'tools', 'scripts');

@@ -48,19 +48,16 @@
 
 const path = require('node:path');
 
-const { loadRegistry } = require('../../src/tools/registry');
-const { loadToolState, isToolEnabled, isToolHidden } = require('../../src/tools/tool-state');
-const { loadExposeStore } = require('../../src/mcp/expose-store');
-const { loadManifest } = require('../../src/core/hook-loader');
+// HOME/engine resolution shared by every tf-* script (see tf-env.js): the config lives beside
+// this script (the git-clone root OR a seeded external config home); the engine code is required
+// from the package that spawned us when it is not local.
+const { HOME, srcRequire } = require('./tf-env');
+const { loadRegistry } = srcRequire('tools/registry');
+const { loadToolState, isToolEnabled, isToolHidden } = srcRequire('tools/tool-state');
+const { loadExposeStore } = srcRequire('mcp/expose-store');
+const { loadManifest } = srcRequire('core/hook-loader');
 
-/**
- * The toolfunnel root, resolved from THIS file's location so the tool stays inside
- * the sandbox and is portable wherever the tree is copied.
- *
- * This script lives at:  <root>/tools/scripts/tf-list.js
- * so the root is two directories up from __dirname:  scripts -> tools -> <root>
- */
-const ROOT = path.resolve(__dirname, '..', '..');
+const ROOT = HOME;
 
 // Canonical store paths (see the script contract).
 const REGISTER_PATH = path.join(ROOT, 'tools', 'tools.register.json');
