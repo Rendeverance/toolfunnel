@@ -26,6 +26,15 @@ Policy: releases only ever **add**. Existing tags, GitHub Releases and published
 versions are never deleted, overwritten, or re-pointed. If a release is bad, ship a fixed
 version on top.
 
+Two invariants the pipeline holds itself to:
+
+- **A dry run touches the network not at all** — no fetch, no API calls, nothing. "Execute
+  nothing" is literal (learned 2026-07-06: a preflight fetch in dry-run pulled a just-pushed
+  tag into CI's fresh checkout mid-test and false-failed every lane).
+- **A push isn't done until the Actions run is green.** The local suite passing is necessary,
+  not sufficient — CI checks out fresh, shallow, and tag-less, and that difference is exactly
+  where the above class of bug lives.
+
 Directory listings (Glama, awesome-mcp-servers and similar) crawl the GitHub side on
 their own schedules — publishing a GitHub Release is the strongest signal they consume.
 Nothing extra to do per release.
