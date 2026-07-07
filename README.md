@@ -200,6 +200,8 @@ The mechanism is the lean register: a connected upstream normally injects every 
 
 ## Quickstart
 
+[![ToolFunnel MCP server on Glama](https://glama.ai/mcp/servers/Rendeverance/toolfunnel/badge)](https://glama.ai/mcp/servers/Rendeverance/toolfunnel)
+
 ```bash
 # 1. Get the code
 git clone <your-fork-or-clone-url> toolfunnel
