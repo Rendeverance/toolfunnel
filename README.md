@@ -2,7 +2,7 @@
 
 ![ToolFunnel](assets/logo.png) <!-- logo asset (assets/logo.png) is added separately -->
 
-> A zero-dependency* MCP gateway: host your own tools, forward and curate tools from other MCP servers, expose them **leanly** to cut agent token cost, and gate every call through your own policy hooks before it runs.
+> A zero-dependency MCP and Local tool gateway: host your own tools in any language, forward and curate tools from other MCP servers, expose them leanly to cut agent token cost, and gate every call through your own policy hooks before it runs + create your own MCP servers easily with zero code!
 
 **Zero code, zero dependencies: your own MCP server in 60 seconds** — from three ordinary scripts to a named, packaged, policy-gated MCP server (everything on screen is real output; see [demo/](demo/)):
 
