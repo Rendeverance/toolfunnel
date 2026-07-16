@@ -216,7 +216,9 @@ function makeRegistryAdapter(registry, opts) {
         if (!desc) return null;
 
         // Reference mode: nothing executes here. Hand back the instructions (no execute thunk)
-        // so protocol.runTool short-circuits BEFORE gatedRun — no spawn, no gate.
+        // so protocol.runTool takes the no-spawn path (execute() is never called). Note this is
+        // NOT ungated: protocol.runTool still fires PreToolUse on the instruction handoff, so a
+        // deny withholds the instructions. What's absent is server-side EXECUTION, not the gate.
         if (desc.mode === 'reference') {
           return {
             mode: 'reference',
@@ -934,6 +936,10 @@ function emitToolsListChanged(send) {
  * @returns {Promise<void>}
  */
 async function reloadExpose(build, send) {
+  // NEVER-throws contract. A null/absent build means the caller (e.g. the HTTP host mid-teardown,
+  // which nulls its build) has moved on — do nothing rather than deref null. (reloadHooks/
+  // reloadRegister already guard this; expose was the one unguarded reloader — a proven crash.)
+  if (!build || typeof build !== 'object') return;
   let store;
   try {
     store = loadExposeStore(EXPOSE_PATH);
@@ -953,12 +959,20 @@ async function reloadExpose(build, send) {
   } catch (err) {
     logErr('reloadExpose: connectAll threw (ignored):', (err && err.message) || String(err));
   }
-  const prev = build.aggregator;
-  build.aggregator = next; // swap BEFORE closing the old one (handleMessage reads build fresh)
-  if (prev && typeof prev.closeAll === 'function') {
-    try { await prev.closeAll(); } catch (_e) { /* closeAll never throws, but guard teardown */ }
+  // The swap/close/notify is guarded too: even a surprise (a build torn down DURING the async
+  // connectAll above) must be a caught no-op, not an escaped rejection that crashes the host.
+  try {
+    const prev = build.aggregator;
+    build.aggregator = next; // swap BEFORE closing the old one (handleMessage reads build fresh)
+    if (prev && typeof prev.closeAll === 'function') {
+      try { await prev.closeAll(); } catch (_e) { /* closeAll never throws, but guard teardown */ }
+    }
+    emitToolsListChanged(send);
+  } catch (err) {
+    logErr('reloadExpose: swap failed (keeping last-good):', (err && err.message) || String(err));
+    try { await next.closeAll(); } catch (_e) { /* orphan-avoidance; never throw */ }
+    return;
   }
-  emitToolsListChanged(send);
   // Activity log (self-gating): mark the reload trigger; the per-upstream connect/disconnect lines
   // (from the aggregator) carry the detail. Together they record the reconnect.
   logger.log({
@@ -1014,20 +1028,34 @@ function reloadHooks(build) {
 }
 
 /**
- * Watch the config directories and hot-reload on change. Watches the DIRECTORIES (robust to the
- * atomic temp+rename writes expose-store / hook-loader use, which replace the file inode) and
- * filters by basename. Debounced (a temp+rename burst → one reload), with a re-entrancy guard so a
- * mid-flight expose reload can't overlap itself. A watch failure (an fs that doesn't support
- * fs.watch) is logged and ignored — the server still runs, just without auto-reload. NEVER throws.
+ * Watch the config and hot-reload on change. TWO mechanisms, belt-and-braces:
+ *   1. fs.watch on the DIRECTORIES — fast, event-driven, filtered by basename.
+ *   2. fs.watchFile POLLING on each specific config file — the reliable fallback.
+ * The directory watch alone is NOT enough: fs.watch is event-based and on Windows frequently
+ * MISSES the atomic temp+rename writes the stores use (the target's inode is replaced without a
+ * usable change event on the directory), so a `tf_hook_set` / UI toggle could fail to hot-reload
+ * until restart. fs.watchFile polls each file's stat, so it catches every create/modify (including
+ * atomic rename) on every platform. Both paths feed the SAME debounced schedulers, so a change
+ * that trips both still collapses to one reload. Debounced (a temp+rename burst → one reload),
+ * with a re-entrancy guard so a mid-flight expose reload can't overlap itself. A watch failure (an
+ * fs that supports neither) is logged and ignored — the server still runs, just without
+ * auto-reload. NEVER throws.
  *
  * @param {object} build  the live build object (mutated by the reloaders)
  * @param {(obj:object)=>void} send  the stdio writer
  * @returns {void}
  */
-function startConfigWatchers(build, send) {
+function startConfigWatchers(buildArg, send) {
+  // buildArg may be the build OBJECT (stdio: one stable object, mutated in place) OR a GETTER
+  // () => build. The HTTP host REBUILDS its build (reload()/stop() reassign it), so it passes a
+  // getter — the reloaders then always target the LIVE build and a rebuild can never desync the
+  // watchers. Backward-compatible: a plain object is wrapped in a getter, so stdio is unchanged.
+  const getBuild = typeof buildArg === 'function' ? buildArg : () => buildArg;
   const DEBOUNCE_MS = 150;
   const mcpDir = path.dirname(EXPOSE_PATH);
   const hooksDir = path.dirname(MANIFEST_PATH);
+  const openWatchers = []; // fs.watch handles, closed by the returned stop()
+  const polledFiles = [];  // fs.watchFile paths, unwatched by the returned stop()
 
   let exposeTimer = null;
   let reloadingExpose = false;
@@ -1037,7 +1065,12 @@ function startConfigWatchers(build, send) {
       exposeTimer = null;
       if (reloadingExpose) { scheduleExpose(); return; } // a reload is mid-flight; re-arm
       reloadingExpose = true;
-      try { await reloadExpose(build, send); } finally { reloadingExpose = false; }
+      // reloadExpose is contracted never to throw, but a debounced setTimeout callback has no
+      // caller to catch an escaped rejection — so guard here too (an unhandled rejection would
+      // crash the host on default Node). Belt and braces.
+      try { await reloadExpose(getBuild(), send); }
+      catch (e) { logErr('scheduleExpose: reload rejected (should not):', (e && e.message) || String(e)); }
+      finally { reloadingExpose = false; }
     }, DEBOUNCE_MS);
     if (exposeTimer && typeof exposeTimer.unref === 'function') exposeTimer.unref(); // don't pin the loop
   }
@@ -1045,14 +1078,14 @@ function startConfigWatchers(build, send) {
   let hooksTimer = null;
   function scheduleHooks() {
     if (hooksTimer) clearTimeout(hooksTimer);
-    hooksTimer = setTimeout(() => { hooksTimer = null; reloadHooks(build); }, DEBOUNCE_MS);
+    hooksTimer = setTimeout(() => { hooksTimer = null; reloadHooks(getBuild()); }, DEBOUNCE_MS);
     if (hooksTimer && typeof hooksTimer.unref === 'function') hooksTimer.unref();
   }
 
   let registerTimer = null;
   function scheduleRegister() {
     if (registerTimer) clearTimeout(registerTimer);
-    registerTimer = setTimeout(() => { registerTimer = null; reloadRegister(build, send); }, DEBOUNCE_MS);
+    registerTimer = setTimeout(() => { registerTimer = null; reloadRegister(getBuild(), send); }, DEBOUNCE_MS);
     if (registerTimer && typeof registerTimer.unref === 'function') registerTimer.unref();
   }
 
@@ -1074,6 +1107,7 @@ function startConfigWatchers(build, send) {
     // unref so an FSWatcher never keeps the process alive after the client closes stdin — the
     // gateway must still exit naturally when its transport closes (it did before this feature).
     if (w && typeof w.unref === 'function') w.unref();
+    openWatchers.push(w);
     logErr('startConfigWatchers: watching', mcpDir, 'for expose.json changes');
   } catch (err) {
     logErr('startConfigWatchers: cannot watch', mcpDir + ':', (err && err.message) || String(err));
@@ -1085,6 +1119,7 @@ function startConfigWatchers(build, send) {
       if (!filename || base === 'hooks.manifest.json' || base === 'hooks.state.json') scheduleHooks();
     });
     if (w && typeof w.unref === 'function') w.unref();
+    openWatchers.push(w);
     logErr('startConfigWatchers: watching', hooksDir, 'for hook changes');
   } catch (err) {
     logErr('startConfigWatchers: cannot watch', hooksDir + ':', (err && err.message) || String(err));
@@ -1102,10 +1137,58 @@ function startConfigWatchers(build, send) {
       if (!filename || base === 'tools.state.json') scheduleStateNotify();
     });
     if (w && typeof w.unref === 'function') w.unref();
+    openWatchers.push(w);
     logErr('startConfigWatchers: watching', toolsDir, 'for register/state changes');
   } catch (err) {
     logErr('startConfigWatchers: cannot watch', toolsDir + ':', (err && err.message) || String(err));
   }
+
+  // ── Reliable fallback: fs.watchFile POLLS each config file's stat, so it catches every
+  // create/modify — including the atomic temp+rename writes that fs.watch misses on Windows.
+  // A 1s interval is ample for config (no sub-second reload need); the schedulers debounce, so a
+  // change caught by BOTH the directory watch and the file poll still yields a single reload.
+  // The state overlays (hooks.state.json / tools.state.json) may not exist yet — watchFile fires
+  // when they first appear (a tf_hook_set / tf_tool_set toggle CREATES them), which is the case
+  // the directory watch was dropping.
+  const pollWatch = (file, schedule) => {
+    try {
+      // Retain the listener ref so stop() can unwatchFile(file, listener) — a bare
+      // unwatchFile(file) would remove ALL listeners on that path, clobbering a second host/watcher
+      // set in the same process (parallel tests, an embedder running two hosts).
+      const listener = (curr, prev) => {
+        if (curr.mtimeMs !== prev.mtimeMs || curr.size !== prev.size) schedule();
+      };
+      const sw = fs.watchFile(file, { interval: 1000 }, listener);
+      if (sw && typeof sw.unref === 'function') sw.unref(); // never pin the event loop
+      polledFiles.push({ file, listener });
+    } catch (err) {
+      logErr('startConfigWatchers: cannot poll-watch', file + ':', (err && err.message) || String(err));
+    }
+  };
+  pollWatch(EXPOSE_PATH, scheduleExpose);
+  pollWatch(MANIFEST_PATH, scheduleHooks);
+  pollWatch(path.join(hooksDir, 'hooks.state.json'), scheduleHooks);
+  pollWatch(REGISTER_PATH, scheduleRegister);
+  pollWatch(path.join(toolsDir, 'tools.state.json'), scheduleStateNotify);
+  logErr('startConfigWatchers: fs.watchFile polling fallback armed (Windows-safe)');
+
+  // Teardown handle. The stdio path never calls it (the process dies when stdin closes and the
+  // watchers are all unref'd); the HTTP host calls it in stop() so a started→stopped host leaves
+  // no dangling directory watchers or file pollers.
+  return function stopConfigWatchers() {
+    // Clear any PENDING debounced reload so a change caught just before teardown can't fire a
+    // reload against a torn-down build after the caller has moved on. (It would be a caught no-op,
+    // but a truly-stopped watcher must not schedule work.)
+    for (const t of [exposeTimer, hooksTimer, registerTimer, stateTimer]) {
+      if (t) { try { clearTimeout(t); } catch (_e) { /* ignore */ } }
+    }
+    for (const w of openWatchers) {
+      try { if (w && typeof w.close === 'function') w.close(); } catch (_e) { /* ignore */ }
+    }
+    for (const p of polledFiles) {
+      try { fs.unwatchFile(p.file, p.listener); } catch (_e) { /* ignore */ }
+    }
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────

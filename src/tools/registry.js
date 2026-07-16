@@ -397,8 +397,10 @@ class Registry {
 
     // ---- reference mode: nothing runs here. ----------------------------------
     // The connected AI performs the action in its own environment. We hand back the
-    // tool's instructions (no `run`) so the run-path can short-circuit BEFORE the gate
-    // — a reference tool never spawns and never needs gating (nothing executes).
+    // tool's instructions (no `run`) so the run-path takes the no-spawn branch — a
+    // reference tool never spawns server-side. The instruction HANDOFF is still gated
+    // in protocol.runTool (a PreToolUse deny withholds the instructions); it's execution,
+    // not the gate, that's absent here.
     if (mode === 'reference') {
       return {
         type: 'reference',

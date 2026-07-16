@@ -300,6 +300,8 @@ function createHttpMcpServer(opts = {}) {
   /** @type {boolean} latch so stop() is idempotent and start() can't double-bind. */
   let started = false;
   let stopping = false;
+  /** @type {(() => void)|null} teardown for the config hot-reload watchers (armed in start()). */
+  let configWatchersStop = null;
   /**
    * The result of the LAST connectAll() (from start() or reload()), surfaced by health() so a
    * silent upstream connect-failure becomes VISIBLE (otherwise it only reaches stderr via log()).
@@ -412,6 +414,16 @@ function createHttpMcpServer(opts = {}) {
    */
   function broadcastToolsListChanged() {
     return pushToSse({ jsonrpc: JSONRPC, method: 'notifications/tools/list_changed' });
+  }
+
+  /**
+   * Wire the CURRENT build's aggregator "tools changed" signal (a background reconnect finally
+   * winning an upstream) to the SSE broadcast, so an HTTP client honouring listChanged re-fetches.
+   * Re-called after every build (re)creation because a fresh aggregator has no listener — the stdio
+   * path does the equivalent in main(). NEVER throws.
+   */
+  function wireAggregatorNotify() {
+    if (build && build.aggregator) build.aggregator.onToolsChanged = () => broadcastToolsListChanged();
   }
 
   // ── OAuth 2.1 resource-server gate (OPTIONAL; default OFF) ──────────────────────────────────
@@ -782,6 +794,7 @@ function createHttpMcpServer(opts = {}) {
     // the very first request. connectAll() NEVER throws (failures land in failed[]); with the
     // default EMPTY expose.json it is an instant no-op.
     build = buildFactory();
+    wireAggregatorNotify();
     if (build && build.aggregator && typeof build.aggregator.connectAll === 'function') {
       try {
         const res = await build.aggregator.connectAll();
@@ -829,6 +842,15 @@ function createHttpMcpServer(opts = {}) {
         boundPort = addr && typeof addr === 'object' ? addr.port : requestedPort;
         started = true;
         stopping = false;
+        // Arm config hot-reload now the build is live + bound. Pass a GETTER so the reloaders
+        // always target the CURRENT build (reload() rebuilds it); send = pushToSse so a
+        // hook/register/expose change broadcasts notifications/tools/list_changed to SSE clients.
+        // This is the wiring the HTTP host was missing — stdio's main() has always done it.
+        try {
+          configWatchersStop = require('./server').startConfigWatchers(() => build, (n) => pushToSse(n));
+        } catch (e) {
+          log('config watchers failed to arm (host runs, without hot-reload):', (e && e.message) || String(e));
+        }
         // Swap the one-shot bind-error handler for a steady-state one so a later socket error
         // (a client RST, etc.) is logged, not thrown.
         httpServer.on('error', (e) => log('http server error:', (e && e.message) || String(e)));
@@ -854,6 +876,14 @@ function createHttpMcpServer(opts = {}) {
       return;
     }
     stopping = true;
+
+    // 0. Disarm the config watchers FIRST, so no debounced reload can fire against the build we're
+    //    about to tear down (a reload mutating a half-closed aggregator would be a benign no-op, but
+    //    disarming first is the clean order).
+    if (configWatchersStop) {
+      try { configWatchersStop(); } catch (_e) { /* never throw */ }
+      configWatchersStop = null;
+    }
 
     // 1. Tear down SSE clients: clear their keep-alive timers and end the responses so their
     //    sockets close (an open SSE socket would otherwise keep the server from closing).
@@ -934,6 +964,7 @@ function createHttpMcpServer(opts = {}) {
     await closeAggregatorSafely();
     // 2. Rebuild from the edited config + reconnect.
     build = buildFactory();
+    wireAggregatorNotify();
     if (build && build.aggregator && typeof build.aggregator.connectAll === 'function') {
       try {
         const res = await build.aggregator.connectAll();
