@@ -12,15 +12,19 @@
 
 ## The problem
 
+Toolfunnel is designed to solve multiple issues in one package :)
+
 The Model Context Protocol (MCP) lets an AI agent call tools from many servers. But every connected server dumps **all** of its tool schemas into the model's context on every turn. Connect a handful of rich MCP servers and you've spent thousands of tokens describing tools the agent won't use this turn - slower, costlier, noisier.
 
-Similarly, working with AI I found myself generating many many tools, some of which I wanted to use with different AI workflows, some I didnt, and I didnt want to keep setting them up, I also didnt wish to keep many different setups for different workflows. Therefore ToolFunnel was born so that all of my multi-use tools and common MCP servers can be in one place, with any workflow, and I can easily select which I want to use with whatever workflow. You can also change or add tools during a session with simple toggles in the UI. I also wanted to wire up and test an MCP *live*, in the running session, without resetting the CLI or restarting anything - and have its tools show up in the tools list straight away; ToolFunnel does exactly that.
+Similarly, working with AI I found myself generating many many tools, some of which I wanted to use with different AI workflows, some I didnt, and I didnt want to keep setting them up, I also didnt wish to keep many different setups for different workflows. Therefore ToolFunnel was born so that all of my multi-use tools and common MCP servers can be in one place, with any workflow, and I can easily select which I want to use with whatever workflow and even change or add tools during a session with simple toggles in the UI. You can also wanted to wire up and test MCPs *live*, in the running session, without resetting the CLI or restarting anything - and have its tools show up in the tools list straight away; ToolFunnel does exactly that.
 
 Often also, there's also no consistent way to **govern** what an agent may run: hooks and policies live in the *host* (a specific CLI or otherwise), so they don't travel when you switch clients - with ToolFunnel, this is easy because your hooks travel with the tools - it can become your one swiss-army knife for many different workflows.
 
-Finally, I didnt want to audit huge numbers of dependencies - a personal choice, yes - so I wanted something that could be audited quickly and easily.
+Additionally, I wanted an easy and consistent way to package my own tools and create new MCP servers from other tools, whatever language they were written in. FastMCP could do that, but not everything is written in python. I also  didnt want to audit huge numbers of dependencies - a personal choice, yes - so I wanted something that could be audited quickly and easily.
 
-At the time of writing, I have 14 MCP tools and 93 local tools all accessed through toolfunnel, gated as required.
+Finally, when the MCP chenges were announced as breaking changes, it became apparent this would eventually break a lot of MCP servers and / or clients out there, many of which might not be actively maintained. Not only that but changing MCP protocol generations takes time and might take considerable effort depending on the complexity of the server - therefore I added a quick, simple single command tool that allows ToolFunnel to wrap and MCP and easily translate between new and legacy protocols - quick, low effort, maximom gain.
+
+At the time of writing, I have 14 MCP tools and 98 local tools all accessed through toolfunnel, gated as required.
 
 ## What ToolFunnel does
 
