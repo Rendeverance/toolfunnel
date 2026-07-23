@@ -1,14 +1,14 @@
 'use strict';
 
 /**
- * stdio.test.js — a REAL STDIO transport test for the gateway.
+ * stdio.test.js - a REAL STDIO transport test for the gateway.
  *
  * Unlike smoke.js (which drives buildProtocol()/handleMessage() in-process), this test exercises
- * the actual wire: it SPAWNS the gateway as a child process exactly as a host would —
+ * the actual wire: it SPAWNS the gateway as a child process exactly as a host would -
  *
  *     node <repo>/bin/toolfunnel.js          (no args = the stdio MCP server)
  *
- * — and talks to it over the child's stdin/stdout using the on-the-wire framing the server
+ * - and talks to it over the child's stdin/stdout using the on-the-wire framing the server
  * documents:
  *   - WRITE: LSP-style `Content-Length: <n>\r\n\r\n<body>` framing (the server reads BOTH this and
  *     newline-delimited JSON; we use the header framing because that's the "real" MCP client wire).
@@ -18,16 +18,16 @@
  * Sequence: (1) initialize, (2) tools/list, (3) tools/call { name:"toolfunnel_list_tools" }.
  *
  * Assertions:
- *   - initialize  → result.serverInfo.name === "toolfunnel"
- *   - tools/list  → includes toolfunnel_list_tools / _tool_instructions / _howto
- *   - list_tools  → returns lean briefs that INCLUDE the 7 first-party demo tools (echo, base64,
+ *   - initialize  -> result.serverInfo.name === "toolfunnel"
+ *   - tools/list  -> includes toolfunnel_list_tools / _tool_instructions / _howto
+ *   - list_tools  -> returns lean briefs that INCLUDE the 7 first-party demo tools (echo, base64,
  *                   hash, uuid, json, text-stats, danger). The register
  *                   also ships the management tools, so this is a presence/shape check, not an
  *                   exact-count check (the surface grows as tools are added).
  *
  * Teardown is windows-safe: the child is always killed on completion (success, failure, or
  * timeout), exactly once, and an exit listener confirms no zombie is left behind. Node built-ins
- * only (node:child_process, node:path, node:assert) — no npm deps, no SDK.
+ * only (node:child_process, node:path, node:assert) - no npm deps, no SDK.
  *
  * Run:  node test/stdio.test.js     (exit 0 = pass, non-zero = fail)
  */
@@ -82,7 +82,7 @@ function makeClient(child) {
       try {
         obj = JSON.parse(line);
       } catch (_e) {
-        // The server only writes JSON on stdout; a non-JSON line is unexpected — surface it.
+        // The server only writes JSON on stdout; a non-JSON line is unexpected - surface it.
         continue;
       }
       if (obj && Object.prototype.hasOwnProperty.call(obj, 'id') && pending.has(obj.id)) {
@@ -170,7 +170,7 @@ function makeClient(child) {
     }
   }
 
-  // Resolves once the child has fully exited — lets us confirm "no zombie left behind".
+  // Resolves once the child has fully exited - lets us confirm "no zombie left behind".
   const childExited = new Promise((resolve) => {
     child.on('exit', (code, signal) => {
       exitInfo = { code, signal };
@@ -200,7 +200,7 @@ function makeClient(child) {
       capabilities: {},
       clientInfo: { name: 'stdio.test.js', version: '0.0.0' },
     });
-    record('initialize → result.serverInfo.name === "toolfunnel"', () => {
+    record('initialize -> result.serverInfo.name === "toolfunnel"', () => {
       assert.ok(init && init.result, 'initialize returned no result');
       assert.ok(init.result.serverInfo, 'initialize result missing serverInfo');
       assert.strictEqual(
@@ -262,7 +262,7 @@ function makeClient(child) {
     teardown();
   }
 
-  // Confirm clean child teardown — wait for the exit event (no zombie). Bounded so a stubborn
+  // Confirm clean child teardown - wait for the exit event (no zombie). Bounded so a stubborn
   // child can't hang the test; on Windows kill() should terminate promptly.
   await Promise.race([
     childExited,
@@ -291,10 +291,10 @@ function makeClient(child) {
   );
 
   if (ok) {
-    console.log(`\nPASS: stdio transport test — ${passed}/3 assertions passed (initialize, tools/list, list_tools over real spawned child)`);
+    console.log(`\nPASS: stdio transport test - ${passed}/3 assertions passed (initialize, tools/list, list_tools over real spawned child)`);
     process.exit(0);
   } else {
-    console.log(`\nFAIL: stdio transport test — ${passed}/${results.length || 3} assertions passed`);
+    console.log(`\nFAIL: stdio transport test - ${passed}/${results.length || 3} assertions passed`);
     process.exit(1);
   }
 })().catch((e) => {

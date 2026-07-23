@@ -2,14 +2,14 @@
 'use strict';
 
 /**
- * tf-tool-set.js — a first-party MANAGEMENT tool that toggles or removes a tool.
+ * tf-tool-set.js - a first-party MANAGEMENT tool that toggles or removes a tool.
  *
  * Purpose
  * -------
  * The state-side counterpart to tf-tool-add: it flips a tool's ACTIVE/DISABLED
  * overlay flag (enable / disable) or fully removes a tool (drops the register
  * entry AND clears its state overlay). Register/state edits are visible to the
- * meta-tools on the next call — no reconnect.
+ * meta-tools on the next call - no reconnect.
  *
  * This is a "gateway-run" tool: it mutates ToolFunnel's OWN config (the per-tool
  * state overlay, and for `remove`, the register too). It runs through the same
@@ -21,12 +21,12 @@
  *   - Args: { id, action: 'enable' | 'disable' | 'hot' | 'unhot' | 'hide' | 'unhide' | 'remove' }.
  *       enable/disable -> setToolEnabled(state, id, bool)  (overlay merge; preserves hidden/hot)
  *       hot/unhot      -> setToolHot(state, id, bool)      (overlay merge; preserves enabled/hidden)
- *                         — promote/demote the tool on the TOP-LEVEL every-turn surface (the matrix).
+ *                         - promote/demote the tool on the TOP-LEVEL every-turn surface (the matrix).
  *       hide/unhide    -> setToolHidden(state, id, bool)   (overlay merge; preserves enabled/hot)
- *                         — declutter the MANAGER views only (tf_list + the UI); does NOT change
+ *                         - declutter the MANAGER views only (tf_list + the UI); does NOT change
  *                           what the connected AI sees (the lean list / top-level surface).
  *       remove         -> registry.remove(id) AND clearToolState(state, id)
- *   - Prints a SINGLE JSON object to stdout and exits 0 — ALWAYS exit 0, even on
+ *   - Prints a SINGLE JSON object to stdout and exits 0 - ALWAYS exit 0, even on
  *     a logical error (reported as { ok:false, error }), never a thrown exception.
  *
  * Output (stdout), exactly one JSON object:
@@ -39,9 +39,9 @@
  *
  * Safety invariants:
  *   - Touches ONLY config files inside the toolfunnel root, resolved from THIS
- *     script's own location (__dirname) — never a caller-supplied path.
+ *     script's own location (__dirname) - never a caller-supplied path.
  *   - NO network. Writes are atomic (temp + fsync + rename) via the store modules.
- *   - NEVER throws for ordinary bad input — only well-shaped JSON on stdout.
+ *   - NEVER throws for ordinary bad input - only well-shaped JSON on stdout.
  */
 
 const path = require('node:path');
@@ -96,7 +96,7 @@ function run(args) {
 
   if (action === 'hot' || action === 'unhot') {
     // Promote (hot) / demote (unhot) the tool on the TOP-LEVEL every-turn surface. Keyed by the
-    // surfaced name (a local id, an upstream surfaced name, or a meta-tool name) — the same key the
+    // surfaced name (a local id, an upstream surfaced name, or a meta-tool name) - the same key the
     // server's matrix assembler reads. The id is NOT verified against the register here: an upstream
     // surfaced name or a meta-tool name is a legitimate key with no register entry.
     const hot = action === 'hot';
@@ -105,7 +105,7 @@ function run(args) {
   }
 
   if (action === 'hide' || action === 'unhide') {
-    // Declutter the MANAGER views (tf_list + the UI) only — hide/unhide does NOT change the lean list
+    // Declutter the MANAGER views (tf_list + the UI) only - hide/unhide does NOT change the lean list
     // or the top-level surface the connected AI sees. Same id-not-verified policy as hot/unhot.
     const hidden = action === 'hide';
     const state = setToolHidden(STATE_PATH, id, hidden);

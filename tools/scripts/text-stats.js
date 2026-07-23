@@ -2,19 +2,19 @@
 'use strict';
 
 /**
- * text-stats.js — a safe, dependency-free local text-statistics tool.
+ * text-stats.js - a safe, dependency-free local text-statistics tool.
  *
  * Purpose
  * -------
  * Count characters, words, lines, and UTF-8 bytes for a string. A handy
  * Tool-Manager utility for sizing prompts, snippets, and payloads. Pure
- * string work — no network, no filesystem, no new deps.
+ * string work - no network, no filesystem, no new deps.
  *
  * Contract with the register (the register's `defaultRunScript`)
  * ----------------------------------------------------------
  *   - Structured args arrive as JSON in env TOOLFUNNEL_TOOL_ARGS.
  *   - Args: { text: <string> }.
- *   - Prints a SINGLE JSON object to stdout and exits 0 — ALWAYS exit 0, even
+ *   - Prints a SINGLE JSON object to stdout and exits 0 - ALWAYS exit 0, even
  *     on bad input (reported as { ok:false, error }), never a thrown exception.
  *
  * Output (stdout), exactly one JSON object:
@@ -22,19 +22,19 @@
  *   failure: { ok:false, error }
  *
  * Counting conventions (documented so callers know exactly what they get):
- *   - chars : JS string length (UTF-16 code units — the same number `"".length`
+ *   - chars : JS string length (UTF-16 code units - the same number `"".length`
  *             reports). Documented as such; for ASCII text it equals the visible
  *             character count.
  *   - words : maximal runs of non-whitespace separated by whitespace. The empty
  *             / all-whitespace string has 0 words.
  *   - lines : number of lines. The empty string is 0 lines; otherwise it is the
  *             count of newline-separated segments (a trailing newline does NOT
- *             add a phantom empty final line — `"a\n"` is 1 line, `"a\nb"` is 2).
+ *             add a phantom empty final line - `"a\n"` is 1 line, `"a\nb"` is 2).
  *   - bytes : UTF-8 byte length (Buffer.byteLength), the on-the-wire size.
  *
  * Safety invariants (mirror the isolation rule):
  *   - NO filesystem, NO network, NO process mutation. Pure CPU on the args.
- *   - NEVER throws for ordinary bad input — only well-shaped JSON on stdout.
+ *   - NEVER throws for ordinary bad input - only well-shaped JSON on stdout.
  */
 
 /**
@@ -68,7 +68,7 @@ function countLines(text) {
   // Trailing newline should not add an empty line: trim a single trailing '\n'
   // before splitting, then add 1 for the final (now-unterminated) line.
   const trimmed = normalised.endsWith('\n') ? normalised.slice(0, -1) : normalised;
-  // Each '\n' in `trimmed` separates two lines → lines = (#newlines) + 1.
+  // Each '\n' in `trimmed` separates two lines -> lines = (#newlines) + 1.
   let newlines = 0;
   for (let i = 0; i < trimmed.length; i += 1) {
     if (trimmed.charCodeAt(i) === 10) newlines += 1;
@@ -77,7 +77,7 @@ function countLines(text) {
 }
 
 /**
- * Count words: maximal non-whitespace runs. Empty / whitespace-only → 0.
+ * Count words: maximal non-whitespace runs. Empty / whitespace-only -> 0.
  *
  * @param {string} text
  * @returns {number}

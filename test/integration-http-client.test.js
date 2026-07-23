@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * integration-http-client.test.js — drive ToolFunnel's Streamable-HTTP transport with the OFFICIAL
+ * integration-http-client.test.js - drive ToolFunnel's Streamable-HTTP transport with the OFFICIAL
  * MCP SDK client (the canonical "real external client" we did NOT write). Proves interop with the
  * reference implementation end to end: connect (initialize) -> tools/list -> tools/call.
  *
@@ -15,7 +15,7 @@
  */
 
 if (process.env.TF_INTEGRATION !== '1') {
-  console.log('SKIP: integration-http-client — set TF_INTEGRATION=1 to run (uses the MCP SDK devDep).');
+  console.log('SKIP: integration-http-client - set TF_INTEGRATION=1 to run (uses the MCP SDK devDep).');
   process.exit(0);
 }
 
@@ -74,9 +74,9 @@ function check(name, cond, detail) { results.push({ name, ok: !!cond, detail });
   const failed = results.filter((r) => !r.ok).length;
   const ok = !fatal && failed === 0 && results.length > 0;
   console.log(ok
-    ? `\nPASS: integration-http-client — ${results.length}/${results.length} (official MCP SDK client interop over Streamable HTTP)`
-    : `\nFAIL: integration-http-client — ${failed}/${results.length} failed`);
-  // Set the code and let the loop drain naturally rather than process.exit() — an abrupt exit while
+    ? `\nPASS: integration-http-client - ${results.length}/${results.length} (official MCP SDK client interop over Streamable HTTP)`
+    : `\nFAIL: integration-http-client - ${failed}/${results.length} failed`);
+  // Set the code and let the loop drain naturally rather than process.exit() - an abrupt exit while
   // the SDK's fetch/undici handles are still closing trips a libuv UV_HANDLE_CLOSING assert on Windows
   // (a teardown race, not a functional fault). A short unref'd backstop force-exits if anything lingers.
   process.exitCode = ok ? 0 : 1;

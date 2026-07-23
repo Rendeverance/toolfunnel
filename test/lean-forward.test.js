@@ -1,26 +1,26 @@
 'use strict';
 
 /**
- * lean-forward.test.js — proves the LEAN upstream-forwarding path (slice 2): an attached upstream
+ * lean-forward.test.js - proves the LEAN upstream-forwarding path (slice 2): an attached upstream
  * MCP's tools are reachable through the 4 lean meta-tools (toolfunnel_list_tools / _tool_instructions
- * / _run_tool) BY DEFAULT, with no per-tool curation, executed through the same PreToolUse gate —
+ * / _run_tool) BY DEFAULT, with no per-tool curation, executed through the same PreToolUse gate -
  * instead of being injected top-level every turn.
  *
  * Spawns the REAL gateway (`node bin/toolfunnel.js`, stdio) with the bundled mock upstream attached
  * via a snapshotted expose.json that defines the upstream but ZERO expose[] entries (so any tool that
  * shows up is the lean FULL-discovered-set behaviour, not curated-direct). Asserts:
  *
- *   A — LIST:        toolfunnel_list_tools surfaces mock_ping/_add/_echo (surfaced name <id>_<tool>)
+ *   A - LIST:        toolfunnel_list_tools surfaces mock_ping/_add/_echo (surfaced name <id>_<tool>)
  *                    with category "mcp:mock", with NO expose[] curation.
- *   B — INSTRUCTIONS:toolfunnel_tool_instructions{name:'mock_ping'} synthesises docs from the
+ *   B - INSTRUCTIONS:toolfunnel_tool_instructions{name:'mock_ping'} synthesises docs from the
  *                    discovered description + inputSchema (mentions the upstream + the schema).
- *   C — RUN:         toolfunnel_run_tool{name:'mock_ping'} returns the upstream's "pong" CLEAN (the
+ *   C - RUN:         toolfunnel_run_tool{name:'mock_ping'} returns the upstream's "pong" CLEAN (the
  *                    envelope is unwrapped, not double-stringified); {name:'mock_add',a,b} -> sum.
- *   D — GATE PARITY: a PreToolUse deny whose matcher is the LEAN name 'mock_ping' BLOCKS the lean run
- *                    (isError, no "pong") while 'mock_add' still runs — the gate fires on the lean
+ *   D - GATE PARITY: a PreToolUse deny whose matcher is the LEAN name 'mock_ping' BLOCKS the lean run
+ *                    (isError, no "pong") while 'mock_add' still runs - the gate fires on the lean
  *                    name via protocol.runTool -> gatedRun, fail-closed, per-tool.
- *   E — CURATABLE:   with tools.state.json disabling 'mock_add', the lean list drops mock_add but
- *                    keeps mock_ping — the lean list is curatable per-tool, exactly like local tools.
+ *   E - CURATABLE:   with tools.state.json disabling 'mock_add', the lean list drops mock_add but
+ *                    keeps mock_ping - the lean list is curatable per-tool, exactly like local tools.
  *
  * NON-DESTRUCTIVE: mcp/expose.json, hooks/hooks.manifest.json and tools/tools.state.json are
  * snapshotted up front and restored (or re-absent) in `finally`. Paths derived from this file's
@@ -152,7 +152,7 @@ function denyManifest(matcher) {
     assert.ok(fs.existsSync(MOCK_SERVER), 'mock upstream missing at ' + MOCK_SERVER);
     assert.ok(fs.existsSync(DENY_HOOK), 'deny-hook fixture missing at ' + DENY_HOOK);
 
-    // ── A/B/C — mock attached, no deny, no curation ────────────────────────────────────────────
+    // ── A/B/C - mock attached, no deny, no curation ────────────────────────────────────────────
     fs.writeFileSync(EXPOSE_PATH, exposeConfig());
     fs.writeFileSync(MANIFEST_PATH, EMPTY_MANIFEST);
     restore(TOOL_STATE_PATH, null); // ensure no leftover state
@@ -190,20 +190,20 @@ function denyManifest(matcher) {
       });
 
       // A FAILED upstream call (the mock returns isError:true for non-numeric args) must surface as
-      // isError — not a false success. (Regression guard for the unwrapEnvelope isError-drop bug.)
+      // isError - not a false success. (Regression guard for the unwrapEnvelope isError-drop bug.)
       const addErr = await client.request('tools/call', { name: 'toolfunnel_run_tool', arguments: { name: 'mock_add', args: { a: 'x', b: 3 } } });
       check('RUN: a failed upstream call surfaces isError (not reported as success)', () => {
         assert.strictEqual(addErr.result && addErr.result.isError, true, 'expected isError:true for a bad-arg upstream call, got ' + JSON.stringify(addErr.result));
       });
     });
 
-    // ── D — gate parity: deny on the LEAN name blocks the lean run, per-tool ─────────────────────
+    // ── D - gate parity: deny on the LEAN name blocks the lean run, per-tool ─────────────────────
     fs.writeFileSync(MANIFEST_PATH, denyManifest('mock_ping')); // expose.json still the mock
     await withGateway(async (client) => {
       const blocked = await client.request('tools/call', { name: 'toolfunnel_run_tool', arguments: { name: 'mock_ping' } });
       check('GATE: a PreToolUse deny on the LEAN name blocks the lean run (fail-closed)', () => {
         assert.strictEqual(blocked.result && blocked.result.isError, true, 'expected isError for a blocked lean run, got ' + JSON.stringify(blocked.result));
-        assert.notStrictEqual(callText(blocked), 'pong', 'upstream answered "pong" — the gate FAILED OPEN on the lean path');
+        assert.notStrictEqual(callText(blocked), 'pong', 'upstream answered "pong" - the gate FAILED OPEN on the lean path');
       });
       const stillRuns = await client.request('tools/call', { name: 'toolfunnel_run_tool', arguments: { name: 'mock_add', args: { a: 4, b: 1 } } });
       check('GATE: a NON-matched lean tool (mock_add) still runs (per-tool gate)', () => {
@@ -211,7 +211,7 @@ function denyManifest(matcher) {
       });
     });
 
-    // ── E — the lean list is CURATABLE: disabling mock_add drops it (mock_ping stays) ────────────
+    // ── E - the lean list is CURATABLE: disabling mock_add drops it (mock_ping stays) ────────────
     fs.writeFileSync(MANIFEST_PATH, EMPTY_MANIFEST);
     fs.writeFileSync(TOOL_STATE_PATH, JSON.stringify({ mock_add: { enabled: false } }, null, 2) + '\n');
     await withGateway(async (client) => {
@@ -245,10 +245,10 @@ function denyManifest(matcher) {
 
   const ok = !fatal && passed === results.length && results.length === expected && exposeOk && manifestOk && stateOk;
   if (ok) {
-    console.log(`\nPASS: lean-forward test — ${passed}/${expected} assertions passed (lean list + instructions + forward/unwrap + gate parity on the lean name + curatable list; config restored)`);
+    console.log(`\nPASS: lean-forward test - ${passed}/${expected} assertions passed (lean list + instructions + forward/unwrap + gate parity on the lean name + curatable list; config restored)`);
     process.exit(0);
   } else {
-    console.log(`\nFAIL: lean-forward test — ${passed}/${results.length} assertions passed${(exposeOk && manifestOk && stateOk) ? '' : ' (CONFIG RESTORE MISMATCH)'}`);
+    console.log(`\nFAIL: lean-forward test - ${passed}/${results.length} assertions passed${(exposeOk && manifestOk && stateOk) ? '' : ' (CONFIG RESTORE MISMATCH)'}`);
     process.exit(1);
   }
 })().catch((e) => { console.log('LEAN-FORWARD TEST CRASHED: ' + ((e && e.stack) || e)); process.exit(1); });

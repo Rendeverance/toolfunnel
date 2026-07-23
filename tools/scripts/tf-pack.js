@@ -2,19 +2,19 @@
 'use strict';
 
 /**
- * tf-pack.js — a first-party MANAGEMENT tool that packages the LIVE setup for deployment.
+ * tf-pack.js - a first-party MANAGEMENT tool that packages the LIVE setup for deployment.
  *
  * Purpose
  * -------
- * Everything you built in this gateway — your tools + scripts, your hot/hidden curation, your
- * upstream selections, your policy hooks, your identity — IS a config home. This tool snapshots
+ * Everything you built in this gateway - your tools + scripts, your hot/hidden curation, your
+ * upstream selections, your policy hooks, your identity - IS a config home. This tool snapshots
  * it into a deployment-ready artifact in a SEPARATE location (never the live tree), so "ship what
  * I made" is one call instead of a hand-rolled copy job:
  *
  *   format "home" (default): <home>/dist/<name>/ = a portable config home. Zip it, git-init it,
  *     or point any toolfunnel at it via --config-dir / TOOLFUNNEL_HOME.
  *   format "npm": <home>/dist/<name>/ = a PUBLISHABLE npm package: package.json (with toolfunnel
- *     as a caret DEPENDENCY — depend, never copy: your users' installs count as toolfunnel
+ *     as a caret DEPENDENCY - depend, never copy: your users' installs count as toolfunnel
  *     downloads and our fixes reach them via npm update), a 2-line bin launcher pointing
  *     --config-dir at the bundled home/, and a README stub. `cd dist/<name> && npm publish` is
  *     your own MCP server on npm.
@@ -27,15 +27,15 @@
  *     out?: string,         // FOLDER NAME under <home>/dist/ (basename only; default: name)
  *     force?: boolean }     // overwrite files in an existing non-empty out dir
  *
- * What travels: tools/ (register + state overlay + scripts — the hot/hidden curation IS the
+ * What travels: tools/ (register + state overlay + scripts - the hot/hidden curation IS the
  * product), mcp/ (expose.json upstream references + any vendored servers), hooks/ (THE GATE
- * TRAVELS — the shipped pack enforces its policy on the recipient's machine regardless of
+ * TRAVELS - the shipped pack enforces its policy on the recipient's machine regardless of
  * client), toolfunnel.json (identity + requires; rewritten with the pack's name/version).
  * What NEVER travels: auth/ (environment-specific OAuth config), logs/, dist/ (recursion),
  * packages/, node_modules, .git.
  *
  * Output (stdout), exactly one JSON object:
- *   success: { ok:true, format, out, files, next:[…] }
+ *   success: { ok:true, format, out, files, next:[...] }
  *   failure: { ok:false, error }
  * Safety: writes ONLY under <home>/dist/<basename> (the live config is read, never touched);
  * refuses a non-empty destination without force:true; ALWAYS exits 0.
@@ -58,7 +58,7 @@ function parseStructuredArgs() {
   }
 }
 
-/** The home's toolfunnel.json as raw JSON (or {}). Read directly — we want the EXPLICIT fields,
+/** The home's toolfunnel.json as raw JSON (or {}). Read directly - we want the EXPLICIT fields,
  *  not the loader's folded-in defaults (a pack must not inherit toolfunnel's own version). */
 function homeIdentity() {
   try {
@@ -69,13 +69,13 @@ function homeIdentity() {
   }
 }
 
-/** npm-legal name: lowercase, spaces/illegals → '-', collapsed. */
+/** npm-legal name: lowercase, spaces/illegals -> '-', collapsed. */
 function sanitizeName(name) {
   const s = String(name).toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^[-._]+|[-._]+$/g, '');
   return s || 'my-mcp';
 }
 
-/** Recursively copy `srcDir` → `destDir`, skipping EXCLUDE_DIRS at the top level and dotfiles
+/** Recursively copy `srcDir` -> `destDir`, skipping EXCLUDE_DIRS at the top level and dotfiles
  *  everywhere. Overwrites only when `force`. Returns the number of files written. */
 function copyTree(srcDir, destDir, force, topLevel) {
   let count = 0;
@@ -102,7 +102,7 @@ function copyTree(srcDir, destDir, force, topLevel) {
   return count;
 }
 
-/** The 4 config pillars → destHome. Identity is rewritten (name/version/description overlay). */
+/** The 4 config pillars -> destHome. Identity is rewritten (name/version/description overlay). */
 function snapshotHome(destHome, force, identity) {
   let files = 0;
   for (const dir of ['tools', 'mcp', 'hooks']) {
@@ -124,9 +124,9 @@ function run(args) {
     : (typeof id.serverVersion === 'string' && id.serverVersion.trim() ? id.serverVersion.trim() : '0.1.0');
   const description = typeof a.description === 'string' && a.description.trim()
     ? a.description.trim()
-    : `${name} — an MCP server built on toolfunnel.`;
+    : `${name} - an MCP server built on toolfunnel.`;
 
-  // The destination: ALWAYS <home>/dist/<basename> — the separate-location guarantee. `out` is a
+  // The destination: ALWAYS <home>/dist/<basename> - the separate-location guarantee. `out` is a
   // folder NAME (basename strips traversal), never a path, so the live tree can't be targeted.
   const outName = path.basename(String(a.out || name));
   const outDir = path.join(HOME, 'dist', outName);
@@ -135,7 +135,7 @@ function run(args) {
     return { ok: false, error: `out "${a.out}" escapes <home>/dist` };
   }
   if (!force && fs.existsSync(outDir) && fs.readdirSync(outDir).length > 0) {
-    return { ok: false, error: `destination is not empty: ${outDir} — pass force:true to overwrite (files are replaced, extras are kept)` };
+    return { ok: false, error: `destination is not empty: ${outDir} - pass force:true to overwrite (files are replaced, extras are kept)` };
   }
 
   // The identity the pack CARRIES (preserves requires + any custom fields; stamps name/version).
@@ -145,7 +145,7 @@ function run(args) {
   const next = [];
   if (format === 'home') {
     files = snapshotHome(outDir, force, identity);
-    next.push(`portable config home written — zip it, git-init it, or run: toolfunnel --config-dir "${outDir}"`);
+    next.push(`portable config home written - zip it, git-init it, or run: toolfunnel --config-dir "${outDir}"`);
   } else {
     // npm: bundled home + generated package.json + 2-line bin + README stub.
     files = snapshotHome(path.join(outDir, 'home'), force, identity);
@@ -174,7 +174,7 @@ function run(args) {
     fs.writeFileSync(path.join(binDir, `${name}.js`), [
       '#!/usr/bin/env node',
       "'use strict';",
-      `// ${name} — an MCP server built on toolfunnel, launched against its own bundled config home.`,
+      `// ${name} - an MCP server built on toolfunnel, launched against its own bundled config home.`,
       `// Set ${envOverride} to run from an external copy of the home (survives npm updates).`,
       "const path = require('node:path');",
       `const home = process.env.${envOverride} || path.join(__dirname, '..', 'home');`,
@@ -190,7 +190,7 @@ function run(args) {
         '',
         description,
         '',
-        'An MCP server packaged with [toolfunnel](https://github.com/Rendeverance/toolfunnel) —',
+        'An MCP server packaged with [toolfunnel](https://github.com/Rendeverance/toolfunnel) -',
         'the bundled `home/` carries the tools, curation, upstream references, AND the policy',
         'hooks: the gate travels with the pack and enforces itself on any MCP client.',
         '',
@@ -205,13 +205,13 @@ function run(args) {
         '## Audit honesty',
         'Packs spawn commands. Read `home/mcp/expose.json`, `home/tools/tools.register.json`,',
         'and `home/toolfunnel.json` (its `requires` probes run at startup) of anything you',
-        'install — including this.',
+        'install - including this.',
         '',
       ].join('\n'));
       files += 1;
     }
     files += 2; // package.json + bin
-    next.push(`publishable npm package written — review it, then: cd "${outDir}" && npm publish`);
+    next.push(`publishable npm package written - review it, then: cd "${outDir}" && npm publish`);
     next.push(`try it locally first: node "${path.join(outDir, 'bin', `${name}.js`)}"`);
   }
 

@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * hook-runner.js — run ONE command hook and return a structured result.
+ * hook-runner.js - run ONE command hook and return a structured result.
  *
  * Authoritative contract: docs/HOOK_ENGINE.md §3 (two output protocols) and §4
  * (the exact result shape). This module is backend-agnostic and has ZERO host-framework
@@ -24,7 +24,7 @@ const INJECTABLE_EVENTS = new Set(['SessionStart', 'UserPromptSubmit']);
 /**
  * Decide whether a parsed stdout object should be treated as the §3-B JSON
  * protocol. We only switch to the JSON interpretation when the object actually
- * carries one of the protocol's known keys — otherwise an arbitrary JSON blob a
+ * carries one of the protocol's known keys - otherwise an arbitrary JSON blob a
  * hook happens to print should fall through to the exit-code protocol (§3:
  * "Exit-code protocol wins if stdout is not valid JSON").
  *
@@ -60,7 +60,7 @@ function tryParseJsonProtocol(stdout) {
   try {
     parsed = JSON.parse(trimmed);
   } catch (_e) {
-    return null; // not valid JSON → exit-code protocol wins
+    return null; // not valid JSON -> exit-code protocol wins
   }
   return isKnownJsonProtocol(parsed) ? parsed : null;
 }
@@ -109,7 +109,7 @@ function runHook(hookSpec, payload, opts = {}) {
       return;
     }
 
-    // timeout is stored in SECONDS in the manifest → convert to ms (§4).
+    // timeout is stored in SECONDS in the manifest -> convert to ms (§4).
     // Fall back to a sane default if absent or non-positive.
     const timeoutSec =
       typeof hookSpec.timeout === 'number' && hookSpec.timeout > 0 ? hookSpec.timeout : 60;
@@ -122,7 +122,7 @@ function runHook(hookSpec, payload, opts = {}) {
       opts.projectDir ||
       (opts.env && opts.env.CLAUDE_PROJECT_DIR) ||
       process.env.CLAUDE_PROJECT_DIR ||
-      // Project root is two levels above the hooks dir (<root>/src/hooks → <root>).
+      // Project root is two levels above the hooks dir (<root>/src/hooks -> <root>).
       path.resolve(hooksDir, '..', '..');
 
     const childEnv = Object.assign({}, process.env, opts.env || {}, {
@@ -164,7 +164,7 @@ function runHook(hookSpec, payload, opts = {}) {
     let settled = false;
 
     // Kill the WHOLE child tree. On Windows, killing the shell (cmd.exe) does NOT
-    // kill its node/bash grandchildren — they orphan and hold the stdio pipes open,
+    // kill its node/bash grandchildren - they orphan and hold the stdio pipes open,
     // which prevents the parent process (and node:test) from ever exiting. taskkill
     // /T tears down the tree so the pipes close and nothing lingers. (Real hooks
     // that hang would orphan the same way, so this matters beyond the test suite.)
@@ -223,7 +223,7 @@ function runHook(hookSpec, payload, opts = {}) {
     }
 
     // Write the payload to the child's stdin, then close it. Guard against EPIPE
-    // (child may exit before reading) — that must not throw the runner.
+    // (child may exit before reading) - that must not throw the runner.
     if (child.stdin) {
       child.stdin.on('error', () => {
         /* swallow EPIPE / write-after-end; the exit code is what matters */
@@ -232,7 +232,7 @@ function runHook(hookSpec, payload, opts = {}) {
         child.stdin.write(JSON.stringify(payload == null ? {} : payload));
         child.stdin.end();
       } catch (_e) {
-        // ignore — stdin write race; child outcome still resolves below
+        // ignore - stdin write race; child outcome still resolves below
       }
     }
 
@@ -269,7 +269,7 @@ function runHook(hookSpec, payload, opts = {}) {
 
       // --- Protocol interpretation (§3) ---
       // Exit 2 is ALWAYS stderr-blocking, and stdout/JSON is ignored on any
-      // non-zero exit — this matches real Claude Code (the JSON protocol is
+      // non-zero exit - this matches real Claude Code (the JSON protocol is
       // processed ONLY on a clean exit 0; on exit 2 the reason is stderr).
       if (r.exitCode === 2) {
         r.blocked = true;
@@ -278,7 +278,7 @@ function runHook(hookSpec, payload, opts = {}) {
         return;
       }
 
-      // B) Advanced / JSON protocol (§3-B) — honored only on exit 0.
+      // B) Advanced / JSON protocol (§3-B) - honored only on exit 0.
       const json = r.exitCode === 0 ? tryParseJsonProtocol(stdout) : null;
 
       if (json) {
@@ -288,7 +288,7 @@ function runHook(hookSpec, payload, opts = {}) {
             : null;
 
         // PreToolUse blocks via hookSpecificOutput.permissionDecision
-        // (allow|deny|ask), NOT top-level decision — this is the real Claude Code
+        // (allow|deny|ask), NOT top-level decision - this is the real Claude Code
         // mechanism. "deny" blocks (reason = permissionDecisionReason). "allow"
         // passes. "ask" has no interactive prompt in the autonomous host, so it
         // is treated as non-blocking with the reason captured for context.
@@ -316,7 +316,7 @@ function runHook(hookSpec, payload, opts = {}) {
           r.reason = jsonReason; // block reason from JSON.reason (§4)
         }
         if (cont === false) {
-          r.stopLoop = true; // continue:false → stop the whole loop (§3-B, §4)
+          r.stopLoop = true; // continue:false -> stop the whole loop (§3-B, §4)
         }
         // additionalContext is the injected text when present (§3-B, §4).
         if (additional !== null) {
@@ -335,7 +335,7 @@ function runHook(hookSpec, payload, opts = {}) {
           r.inject = out.length > 0 ? out : null;
         }
       }
-      // Any other non-zero (non-2) code → non-blocking error: stderr captured,
+      // Any other non-zero (non-2) code -> non-blocking error: stderr captured,
       // blocked stays false, reason stays null (§3-A).
 
       finish(r);

@@ -1,14 +1,14 @@
 'use strict';
 
 /**
- * gate.test.js — proves the SAFETY CRUX of the gateway: the hook gate BLOCKS.
+ * gate.test.js - proves the SAFETY CRUX of the gateway: the hook gate BLOCKS.
  *
  * The load-bearing invariant (src/mcp/gated-run.js, docs/hooks-and-gating.md):
  *
  *     A PreToolUse deny MUST prevent execute() from ever being called.
  *
- * This test exercises the real wiring end to end — loadManifest → HookEngine → gatedRun,
- * with a real child-process hook spawned by the runner — and asserts both directions:
+ * This test exercises the real wiring end to end - loadManifest -> HookEngine -> gatedRun,
+ * with a real child-process hook spawned by the runner - and asserts both directions:
  *
  *   BLOCK : a fixture manifest with an enabled, MATCHING deny hook ⇒ result.blocked===true,
  *           result.ok===false, and the execute() side effect (a sentinel temp file) is
@@ -43,7 +43,7 @@ const REPO_ROOT = path.resolve(__dirname, '..');
 const DENY_MANIFEST = path.join(__dirname, 'fixtures', 'deny.manifest.json');
 const ALLOW_MANIFEST = path.join(__dirname, 'fixtures', 'allow.manifest.json');
 
-// The SHIPPED manifest — read-only here, to prove the default ships allow-all.
+// The SHIPPED manifest - read-only here, to prove the default ships allow-all.
 const SHIPPED_MANIFEST = path.join(REPO_ROOT, 'hooks', 'hooks.manifest.json');
 
 // Common hook context for every gated run (the task's fixed shape; cwd = the repo root).
@@ -79,7 +79,7 @@ function makeExecute(sentinelPath) {
   let calls = 0;
   const execute = () => {
     calls += 1;
-    fs.writeFileSync(sentinelPath, 'SIDE EFFECT — execute() ran\n', 'utf8');
+    fs.writeFileSync(sentinelPath, 'SIDE EFFECT - execute() ran\n', 'utf8');
     return { ok: true, ran: true, calls };
   };
   return {
@@ -132,7 +132,7 @@ function engineFor(manifestPath) {
         assert.strictEqual(spy.ranCount(), 0, 'execute() was called ' + spy.ranCount() + ' time(s)');
       });
       check('BLOCK: the sentinel side-effect file was NOT written', () => {
-        assert.strictEqual(spy.wroteFile(), false, 'sentinel file exists — the gate FAILED OPEN');
+        assert.strictEqual(spy.wroteFile(), false, 'sentinel file exists - the gate FAILED OPEN');
       });
     }
 
@@ -143,14 +143,14 @@ function engineFor(manifestPath) {
       check('ALLOW(shipped): hooks/hooks.manifest.json ships NO ENABLED hooks (allow-all preserved)', () => {
         assert.strictEqual(shipped.version, 1, 'shipped manifest version changed');
         assert.ok(Array.isArray(shipped.hooks),
-          'shipped manifest hooks must be an array — got ' + JSON.stringify(shipped.hooks));
+          'shipped manifest hooks must be an array - got ' + JSON.stringify(shipped.hooks));
         // The allow-all invariant is NOT "no hooks" but "no ENABLED hooks": the engine fires only
         // specs with enabled===true (src/core/hook-loader.enabledHooksFor). The shipped manifest may
         // carry DISABLED example hooks (so they surface in the UI Hooks tab for one-click enabling)
-        // without changing the default — a fresh install still ships allow-all.
+        // without changing the default - a fresh install still ships allow-all.
         const enabled = shipped.hooks.filter((h) => h && h.enabled === true);
         assert.strictEqual(enabled.length, 0,
-          'shipped manifest has ENABLED hooks (would break the default allow-all) — got ' + JSON.stringify(enabled));
+          'shipped manifest has ENABLED hooks (would break the default allow-all) - got ' + JSON.stringify(enabled));
       });
 
       const sentinel = freshSentinel('allow-shipped');
@@ -175,7 +175,7 @@ function engineFor(manifestPath) {
         assert.strictEqual(spy.ranCount(), 1, 'execute() ran ' + spy.ranCount() + ' time(s)');
       });
       check('ALLOW(shipped): the sentinel side-effect file WAS written', () => {
-        assert.strictEqual(spy.wroteFile(), true, 'sentinel file missing — execute() did not run');
+        assert.strictEqual(spy.wroteFile(), true, 'sentinel file missing - execute() did not run');
       });
       check('ALLOW(shipped): execute() output is returned', () => {
         assert.deepStrictEqual(res.output, { ok: true, ran: true, calls: 1 },
@@ -205,7 +205,7 @@ function engineFor(manifestPath) {
       });
       check('ALLOW(non-matching): execute() ran and wrote the sentinel', () => {
         assert.strictEqual(spy.ranCount(), 1, 'execute() ran ' + spy.ranCount() + ' time(s)');
-        assert.strictEqual(spy.wroteFile(), true, 'sentinel file missing — execute() did not run');
+        assert.strictEqual(spy.wroteFile(), true, 'sentinel file missing - execute() did not run');
       });
     }
   } catch (err) {
@@ -234,11 +234,11 @@ function engineFor(manifestPath) {
   const ok = !fatal && failed === 0 && results.length > 0;
 
   if (ok) {
-    console.log(`\nPASS: gate test — ${passed}/${results.length} assertions passed ` +
+    console.log(`\nPASS: gate test - ${passed}/${results.length} assertions passed ` +
       `(PreToolUse deny blocks execute(); empty/non-matching manifest allows; shipped manifest untouched)`);
     process.exit(0);
   } else {
-    console.log(`\nFAIL: gate test — ${passed}/${results.length} assertions passed, ${failed} failed`);
+    console.log(`\nFAIL: gate test - ${passed}/${results.length} assertions passed, ${failed} failed`);
     process.exit(1);
   }
 })().catch((e) => {

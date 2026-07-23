@@ -1,24 +1,24 @@
 'use strict';
 
 /**
- * reload.test.js — proves LIVE config hot-reload: attach an upstream MCP to a RUNNING gateway by
+ * reload.test.js - proves LIVE config hot-reload: attach an upstream MCP to a RUNNING gateway by
  * writing expose.json, with NO restart and NO user intervention.
  *
  * It spawns the REAL gateway (`node bin/toolfunnel.js`, stdio) with an EMPTY expose.json, then
  * writes a new expose.json attaching the bundled mock upstream and asserts the gateway heals itself:
  *
- *   PART A — BEFORE:  tools/list does NOT advertise the forwarded tool (clean start).
- *   PART B — RELOAD:  after writing expose.json, the gateway (via its fs.watch config watcher)
+ *   PART A - BEFORE:  tools/list does NOT advertise the forwarded tool (clean start).
+ *   PART B - RELOAD:  after writing expose.json, the gateway (via its fs.watch config watcher)
  *                     reconnects, EMITS notifications/tools/list_changed, tools/list now advertises
- *                     the forwarded tool, and calling it returns the upstream's real answer — all
+ *                     the forwarded tool, and calling it returns the upstream's real answer - all
  *                     WITHOUT restarting the gateway.
- *   PART C — LOG:     with the activity log enabled, the reload's connect is recorded — a
+ *   PART C - LOG:     with the activity log enabled, the reload's connect is recorded - a
  *                     {type:'mcp'} connect/reload line for the upstream AND a {type:'client'}
  *                     connect line from initialize (the connect-logging requirement).
- *   PART D — REGISTER: tools.register.json is hot-reloaded too. A new entry (WITH an authored
+ *   PART D - REGISTER: tools.register.json is hot-reloaded too. A new entry (WITH an authored
  *                     inputSchema) written by "another process" + a hot promotion in
  *                     tools.state.json appears in the top-level tools/list of the RUNNING gateway,
- *                     advertising the authored schema VERBATIM ("your own tools and schemas" —
+ *                     advertising the authored schema VERBATIM ("your own tools and schemas" -
  *                     the register was previously a startup snapshot: the one unwatched config).
  *
  * NON-DESTRUCTIVE: mcp/expose.json and logs/log.config.json are snapshotted up front and restored
@@ -141,7 +141,7 @@ function exposeConfigWithMock() {
       command: process.execPath,
       args: [MOCK_SERVER],
       enabled: true,
-      description: 'reload.test.js fixture — the bundled mock upstream.',
+      description: 'reload.test.js fixture - the bundled mock upstream.',
     }],
     expose: [
       { upstream: 'mockreload', tool: 'ping', as: 'mockreload_ping', category: 'test', enabled: true },
@@ -178,14 +178,14 @@ const EMPTY_EXPOSE = JSON.stringify({ version: 1, upstreams: [], expose: [] }, n
       protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'reload.test.js', version: '0.0.0' },
     });
 
-    // PART A — BEFORE: the forwarded tool is NOT advertised on a clean (empty) start.
+    // PART A - BEFORE: the forwarded tool is NOT advertised on a clean (empty) start.
     const before = await client.request('tools/list', {});
     check('BEFORE: tools/list does NOT advertise mockreload_ping (clean start)', () => {
       assert.ok(!listToolNames(before).includes('mockreload_ping'),
         'mockreload_ping present before attach; got: ' + JSON.stringify(listToolNames(before)));
     });
 
-    // PART B — RELOAD: attach the mock by WRITING expose.json. The gateway's watcher reconnects.
+    // PART B - RELOAD: attach the mock by WRITING expose.json. The gateway's watcher reconnects.
     fs.writeFileSync(EXPOSE_PATH, exposeConfigWithMock());
 
     // Poll tools/list until the forwarded tool appears (robust to fs.watch + debounce latency).
@@ -203,7 +203,7 @@ const EMPTY_EXPOSE = JSON.stringify({ version: 1, upstreams: [], expose: [] }, n
       assert.ok(client.sawListChanged(), 'no tools/list_changed notification was observed');
     });
 
-    // The forwarded call returns the UPSTREAM's real answers — proving it actually connected live.
+    // The forwarded call returns the UPSTREAM's real answers - proving it actually connected live.
     const ping = await client.request('tools/call', { name: 'mockreload_ping', arguments: {} });
     check('RELOAD: forwarded mockreload_ping returns the upstream\'s "pong"', () => {
       assert.notStrictEqual(ping.result && ping.result.isError, true, 'ping isError: ' + JSON.stringify(ping.result));
@@ -214,7 +214,7 @@ const EMPTY_EXPOSE = JSON.stringify({ version: 1, upstreams: [], expose: [] }, n
       assert.strictEqual(textOf(add), '5', 'expected "5", got ' + JSON.stringify(textOf(add)));
     });
 
-    // PART C — LOG: the activity log recorded the connect (upstream) AND the client connect.
+    // PART C - LOG: the activity log recorded the connect (upstream) AND the client connect.
     // Give the JSONL append a beat to flush, then read the dedicated test log.
     await sleep(150);
     let logLines = [];
@@ -234,9 +234,9 @@ const EMPTY_EXPOSE = JSON.stringify({ version: 1, upstreams: [], expose: [] }, n
         'no {type:"client", event:"connect"} line; got: ' + JSON.stringify(logLines.filter((r) => r && r.type === 'client')));
     });
 
-    // PART D — REGISTER hot-reload: add an entry to tools.register.json from "another process"
-    // (this test), promote it hot, and the RUNNING gateway must advertise it — with the authored
-    // inputSchema verbatim — in the top-level tools/list. No restart.
+    // PART D - REGISTER hot-reload: add an entry to tools.register.json from "another process"
+    // (this test), promote it hot, and the RUNNING gateway must advertise it - with the authored
+    // inputSchema verbatim - in the top-level tools/list. No restart.
     const PROBE_SCHEMA = {
       type: 'object',
       properties: { text: { type: 'string', description: 'probe text' } },
@@ -247,7 +247,7 @@ const EMPTY_EXPOSE = JSON.stringify({ version: 1, upstreams: [], expose: [] }, n
     registerData.tools.push({
       id: 'reloadprobe',
       name: 'Reload Probe',
-      summary: 'reload.test.js PART D fixture — never invoked.',
+      summary: 'reload.test.js PART D fixture - never invoked.',
       category: 'test',
       inputSchema: PROBE_SCHEMA,
       invoke: { type: 'script', path: 'scripts/reload-probe.js' }, // list-only; never called
@@ -299,10 +299,10 @@ const EMPTY_EXPOSE = JSON.stringify({ version: 1, upstreams: [], expose: [] }, n
   console.log('restore: expose.json ' + (exposeRestored ? 'OK' : 'MISMATCH') + ', tools.register.json ' + (registerRestored ? 'OK' : 'MISMATCH'));
 
   if (ok && exposeRestored && registerRestored) {
-    console.log(`\nPASS: reload test — ${passed}/9 assertions passed (live attach + live register add with no restart; list_changed emitted; forwarded call works; authored schema advertised; connect logged; config restored)`);
+    console.log(`\nPASS: reload test - ${passed}/9 assertions passed (live attach + live register add with no restart; list_changed emitted; forwarded call works; authored schema advertised; connect logged; config restored)`);
     process.exit(0);
   } else {
-    console.log(`\nFAIL: reload test — ${passed}/${results.length} assertions passed${exposeRestored ? '' : ' (EXPOSE RESTORE MISMATCH)'}${registerRestored ? '' : ' (REGISTER RESTORE MISMATCH)'}`);
+    console.log(`\nFAIL: reload test - ${passed}/${results.length} assertions passed${exposeRestored ? '' : ' (EXPOSE RESTORE MISMATCH)'}${registerRestored ? '' : ' (REGISTER RESTORE MISMATCH)'}`);
     process.exit(1);
   }
 })().catch((e) => {

@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * drift.js — tool register drift detector.
+ * drift.js - tool register drift detector.
  *
  * The register can go stale when entries are not maintained alongside the files
  * they describe (a config file left unmaintained over time, tools missing). A
@@ -10,7 +10,7 @@
  * against the register and surface drift so it can never silently rot again.
  *
  * Mirrors the host's auto-detect (the folder is the source of truth for what
- * EXISTS; the register carries config). Read-only — it never edits anything,
+ * EXISTS; the register carries config). Read-only - it never edits anything,
  * inside or outside the gateway (honours the isolation rule: MAY READ the live
  * scripts directory, MUST NOT write it).
  *
@@ -33,10 +33,10 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-// dirs/files that are not tools — never count as drift
+// dirs/files that are not tools - never count as drift
 const SKIP_DIRS = new Set(['.archive', 'node_modules', 'scripts', 'docs', 'setup']);
 const TOOL_EXTS = new Set(['.js']);
-// obvious non-tool scripts (probes/tests) — surfaced separately, not as "missing"
+// obvious non-tool scripts (probes/tests) - surfaced separately, not as "missing"
 const NONTOOL_RE = /^(test_|_)/i;
 
 /** Every .js basename (lowercased) referenced by the register's path + invoke fields. */
@@ -45,7 +45,7 @@ function registeredBasenames(data) {
   const tools = Array.isArray(data && data.tools) ? data.tools : [];
   const grab = (s) => {
     if (typeof s !== 'string') return;
-    // filename run ending in .js — NO spaces in the class (so "wraps helper.js"
+    // filename run ending in .js - NO spaces in the class (so "wraps helper.js"
     // yields "helper.js", not the whole phrase). path/dir prefixes are excluded too.
     const m = s.match(/[A-Za-z0-9_.\-]+\.js/g);
     if (m) for (const f of m) set.add(path.basename(f).toLowerCase());

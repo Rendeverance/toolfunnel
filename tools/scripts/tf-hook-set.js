@@ -2,18 +2,18 @@
 'use strict';
 
 /**
- * tf-hook-set.js — management tool: enable, disable, or remove a hook entry.
+ * tf-hook-set.js - management tool: enable, disable, or remove a hook entry.
  *
  * A first-party "gateway-run" management function: it configures ToolFunnel's
  * OWN hook manifest / enabled-state overlay. Discovered via list_tools and
- * executed via run_tool through the PreToolUse gate — it is NOT a new
+ * executed via run_tool through the PreToolUse gate - it is NOT a new
  * MCP-protocol command.
  *
  * Contract with the register (`defaultRunScript`)
  * ----------------------------------------------------------
  *   - Structured args arrive as JSON in env TOOLFUNNEL_TOOL_ARGS ({} if absent).
  *   - Args: { id, action: "enable" | "disable" | "remove" }.
- *   - Prints EXACTLY ONE JSON object to stdout and exits 0 — ALWAYS exit 0, even
+ *   - Prints EXACTLY ONE JSON object to stdout and exits 0 - ALWAYS exit 0, even
  *     on a logical error, which is reported as { ok:false, error }.
  *
  * Output (stdout), exactly one JSON object:
@@ -22,14 +22,14 @@
  *   failure:        { ok:false, error }
  *
  * Mapping (verified against src/core/hook-loader.js):
- *   - enable  → loader.setEnabled(id, true)   (persists the state overlay + manifest)
- *   - disable → loader.setEnabled(id, false)
- *   - remove  → loader.removeEntry(id)        (returns false if the id was absent;
+ *   - enable  -> loader.setEnabled(id, true)   (persists the state overlay + manifest)
+ *   - disable -> loader.setEnabled(id, false)
+ *   - remove  -> loader.removeEntry(id)        (returns false if the id was absent;
  *               that is information, not a fault, so ok stays true)
  *
  * Safety invariants:
  *   - Touches only ToolFunnel's own manifest / state (resolved from __dirname).
- *   - NO network. NEVER throws for ordinary conditions — only JSON on stdout.
+ *   - NO network. NEVER throws for ordinary conditions - only JSON on stdout.
  */
 
 const path = require('node:path');

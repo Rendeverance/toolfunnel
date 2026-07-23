@@ -1,12 +1,12 @@
 'use strict';
 
 /**
- * reference-gate.test.js — proves the REFERENCE-mode HANDOFF GATE.
+ * reference-gate.test.js - proves the REFERENCE-mode HANDOFF GATE.
  *
  * A reference tool executes NOTHING server-side: toolfunnel_run_tool hands back the tool's
  * instructions so the connected AI performs the action in ITS OWN environment. Prior to this
  * wave the reference branch short-circuited BEFORE the gate fired. It now fires PreToolUse
- * ADVISORILY — a deny gates the instructions HANDOFF, not the AI's own-environment execution:
+ * ADVISORILY - a deny gates the instructions HANDOFF, not the AI's own-environment execution:
  *
  *   DENY  : a fixture manifest with an enabled, MATCHING deny hook ⇒ run_tool returns
  *           { ok:false, blocked:true, mode:"reference", reason }, hands over NO instructions,
@@ -20,7 +20,7 @@
  * (register snapshot/restore of a sacrificial reference tool). The shipped manifest is only
  * ever READ; the deny hook + its manifest are FIXTURES under test/fixtures/. The register is
  * SNAPSHOTTED up front and RESTORED byte-for-byte in a finally; the sacrificial spy script +
- * any marker it could write are deleted too — a failure mid-flight still leaves the real config
+ * any marker it could write are deleted too - a failure mid-flight still leaves the real config
  * exactly as found.
  *
  * Convention (matches the sibling tests): a standalone node script, exit 0 = pass, non-zero =
@@ -50,16 +50,16 @@ const SPY_MARKER = path.join(SCRIPTS_DIR, '__tf_test_ref_gate_spy.marker');
 // Fixtures (NEVER the shipped manifest).
 const DENY_MANIFEST = path.join(__dirname, 'fixtures', 'reference-deny.manifest.json');
 const ALLOW_NOMATCH_MANIFEST = path.join(__dirname, 'fixtures', 'allow.manifest.json');
-// The SHIPPED manifest — read-only here, to prove the default ships allow-all.
+// The SHIPPED manifest - read-only here, to prove the default ships allow-all.
 const SHIPPED_MANIFEST = path.join(ROOT, 'hooks', 'hooks.manifest.json');
 
 const REF_ID = '__tf_test_ref_gate';
-const REF_INSTRUCTIONS = 'REFERENCE INSTRUCTIONS — do the thing in your own environment';
-const REF_MESSAGE = 'reference tool — perform this in your own environment per the instructions';
+const REF_INSTRUCTIONS = 'REFERENCE INSTRUCTIONS - do the thing in your own environment';
+const REF_MESSAGE = 'reference tool - perform this in your own environment per the instructions';
 const DENY_REASON = 'blocked by test'; // what fixtures/scripts/deny-hook.js returns
 
 // A spy script: if it is EVER spawned it leaves a marker file beside itself. Its presence after
-// a run is unambiguous proof the invoke was executed — a reference tool must never reach it.
+// a run is unambiguous proof the invoke was executed - a reference tool must never reach it.
 const SPY_BODY = [
   "'use strict';",
   "const fs = require('node:fs');",
@@ -100,7 +100,7 @@ function cleanupSpy() {
 }
 
 // Add the sacrificial reference tool to the register on disk (a fresh build reads it). Its invoke
-// points at the spy on purpose — a reference tool must NOT spawn it, gated or not.
+// points at the spy on purpose - a reference tool must NOT spawn it, gated or not.
 function addReferenceTool() {
   const data = JSON.parse(fs.readFileSync(REGISTER, 'utf8'));
   data.tools.push({
@@ -116,7 +116,7 @@ function addReferenceTool() {
 }
 
 // Build the real protocol wiring but over a CHOSEN hook manifest (fixture or shipped), exactly
-// as server.buildProtocol() does — registry adapter + gatedRun + HookEngine + ctx → makeProtocol.
+// as server.buildProtocol() does - registry adapter + gatedRun + HookEngine + ctx -> makeProtocol.
 function protocolOver(manifestPath) {
   const registry = loadRegistry(REGISTER, { scriptsRoot: SCRIPTS_DIR });
   const loader = loadManifest(manifestPath);
@@ -162,7 +162,7 @@ async function runRef(manifestPath, args) {
         assert.ok(!(res && 'instructions' in res), 'blocked reference result leaked instructions: ' + JSON.stringify(res));
       });
       check('DENY: the invoke was NEVER spawned (spy marker absent)', () => {
-        assert.ok(!fs.existsSync(SPY_MARKER), 'spy marker exists — a blocked reference tool spawned its invoke');
+        assert.ok(!fs.existsSync(SPY_MARKER), 'spy marker exists - a blocked reference tool spawned its invoke');
       });
     }
 
@@ -173,14 +173,14 @@ async function runRef(manifestPath, args) {
       check('ALLOW(shipped): hooks/hooks.manifest.json ships NO ENABLED hooks (allow-all preserved)', () => {
         assert.strictEqual(shipped.version, 1, 'shipped manifest version changed');
         assert.ok(Array.isArray(shipped.hooks),
-          'shipped manifest hooks must be an array — got ' + JSON.stringify(shipped.hooks));
+          'shipped manifest hooks must be an array - got ' + JSON.stringify(shipped.hooks));
         // The allow-all invariant is NOT "no hooks" but "no ENABLED hooks": the engine fires only
         // specs with enabled===true (src/core/hook-loader.enabledHooksFor). The shipped manifest may
         // carry DISABLED example hooks (so they surface in the UI Hooks tab for one-click enabling)
-        // without changing the default — a fresh install still ships allow-all.
+        // without changing the default - a fresh install still ships allow-all.
         const enabled = shipped.hooks.filter((h) => h && h.enabled === true);
         assert.strictEqual(enabled.length, 0,
-          'shipped manifest has ENABLED hooks (would break the default allow-all) — got ' + JSON.stringify(enabled));
+          'shipped manifest has ENABLED hooks (would break the default allow-all) - got ' + JSON.stringify(enabled));
       });
 
       cleanupSpyMarker();
@@ -204,7 +204,7 @@ async function runRef(manifestPath, args) {
         assert.ok(!(res && 'output' in res), 'reference result leaked an output: ' + JSON.stringify(res));
       });
       check('ALLOW(shipped): the invoke was NEVER spawned (spy marker absent)', () => {
-        assert.ok(!fs.existsSync(SPY_MARKER), 'spy marker exists — an allowed reference tool spawned its invoke');
+        assert.ok(!fs.existsSync(SPY_MARKER), 'spy marker exists - an allowed reference tool spawned its invoke');
       });
     }
 
@@ -220,7 +220,7 @@ async function runRef(manifestPath, args) {
         assert.strictEqual(res && res.instructions, REF_INSTRUCTIONS, 'instructions = ' + JSON.stringify(res && res.instructions));
       });
       check('ALLOW(non-matching): the invoke was NEVER spawned (spy marker absent)', () => {
-        assert.ok(!fs.existsSync(SPY_MARKER), 'spy marker exists — reference tool spawned its invoke');
+        assert.ok(!fs.existsSync(SPY_MARKER), 'spy marker exists - reference tool spawned its invoke');
       });
     }
   } catch (err) {
@@ -257,11 +257,11 @@ async function runRef(manifestPath, args) {
   const ok = !fatal && failed === 0 && results.length > 0;
 
   if (ok) {
-    console.log(`\nPASS: reference-gate test — ${passed}/${results.length} assertions passed ` +
+    console.log(`\nPASS: reference-gate test - ${passed}/${results.length} assertions passed ` +
       `(PreToolUse deny gates the reference HANDOFF; allow/empty manifest returns instructions; reference never spawns; register restored)`);
     process.exit(0);
   } else {
-    console.log(`\nFAIL: reference-gate test — ${passed}/${results.length} assertions passed, ${failed} failed`);
+    console.log(`\nFAIL: reference-gate test - ${passed}/${results.length} assertions passed, ${failed} failed`);
     process.exit(1);
   }
 })().catch((e) => {

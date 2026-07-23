@@ -2,21 +2,21 @@
 'use strict';
 
 /**
- * hash-tool.js — a safe, dependency-free local cryptographic-digest tool.
+ * hash-tool.js - a safe, dependency-free local cryptographic-digest tool.
  *
  * Purpose
  * -------
  * Hash UTF-8 text with a chosen algorithm (sha256 default; sha1 / md5 also
  * offered) and return the lowercase hex digest. Useful from the Tool Manager
  * for checksums, fingerprinting, and quick integrity checks. Uses ONLY the
- * Node built-in `node:crypto` — no network, no filesystem, no new deps.
+ * Node built-in `node:crypto` - no network, no filesystem, no new deps.
  *
  * Contract with the register (the register's `defaultRunScript`)
  * ----------------------------------------------------------
  *   - Structured args arrive as JSON in env TOOLFUNNEL_TOOL_ARGS.
  *   - Args: { algo?: "sha256" | "sha1" | "md5", text: <string> }.
  *     `algo` defaults to "sha256" when omitted.
- *   - Prints a SINGLE JSON object to stdout and exits 0 — ALWAYS exit 0, even
+ *   - Prints a SINGLE JSON object to stdout and exits 0 - ALWAYS exit 0, even
  *     on bad input (reported as { ok:false, error }), never a thrown exception.
  *
  * Output (stdout), exactly one JSON object:
@@ -27,7 +27,7 @@
  *   - NO filesystem, NO network, NO process mutation. Pure CPU on the args.
  *   - Only an explicit allow-list of algorithms is accepted, so the tool can
  *     never be coaxed into an unexpected / unavailable OpenSSL algorithm name.
- *   - NEVER throws for ordinary bad input — only well-shaped JSON on stdout.
+ *   - NEVER throws for ordinary bad input - only well-shaped JSON on stdout.
  */
 
 const crypto = require('node:crypto');

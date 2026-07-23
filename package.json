@@ -1,6 +1,6 @@
 {
   "name": "toolfunnel",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "A zero-dependency MCP gateway: host your own tools, forward and curate tools from other MCP servers, expose them leanly to cut agent token cost, and gate every call through your own policy hooks before it runs.",
   "keywords": [
     "mcp",

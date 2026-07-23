@@ -1,34 +1,34 @@
 'use strict';
 
 /**
- * logging.test.js — proves the toggleable JSONL activity/audit log (src/core/logger.js)
+ * logging.test.js - proves the toggleable JSONL activity/audit log (src/core/logger.js)
  * actually records what runs through the gateway, honours its on/off toggle, and is
- * controllable as a first-party tool — all WITHOUT leaving any live state behind.
+ * controllable as a first-party tool - all WITHOUT leaving any live state behind.
  *
  * The logger is DEFAULT OFF and self-gating: log() is a silent no-op until setConfig has
  * written logs/log.config.json with { enabled:true }. The gateway emits exactly two record
  * kinds on the run path:
- *   - { type:'gate', decision:'allow'|'deny', ... }  — written by src/mcp/gated-run.js for
+ *   - { type:'gate', decision:'allow'|'deny', ... }  - written by src/mcp/gated-run.js for
  *     EVERY gated call, before the blocked-return, so both outcomes are captured.
- *   - { type:'tool', name, ok, blocked, ... }        — written by src/mcp/protocol.js after
+ *   - { type:'tool', name, ok, blocked, ... }        - written by src/mcp/protocol.js after
  *     a run_tool dispatch resolves.
  *
  * Steps (the task contract):
- *   1. ENABLE  : setConfig({enabled:true, path:<temp .jsonl>}) → dispatch toolfunnel_run_tool
- *                {name:'echo'} → the log gains a {type:'tool'} line AND a
+ *   1. ENABLE  : setConfig({enabled:true, path:<temp .jsonl>}) -> dispatch toolfunnel_run_tool
+ *                {name:'echo'} -> the log gains a {type:'tool'} line AND a
  *                {type:'gate',decision:'allow'} line.
  *   2. DENY    : a fixture PreToolUse deny hook matching 'echo' (mirrors gate.test.js's
- *                fixture approach — loadManifest + HookEngine + gatedRun against a fixture
- *                manifest, reusing test/fixtures/scripts/deny-hook.js) → the gated echo run
+ *                fixture approach - loadManifest + HookEngine + gatedRun against a fixture
+ *                manifest, reusing test/fixtures/scripts/deny-hook.js) -> the gated echo run
  *                is BLOCKED (execute() never runs) AND a {type:'gate',decision:'deny'} line
  *                is written. The fixture is then removed.
- *   3. DISABLE : setConfig({enabled:false}) → dispatch echo again → NO new lines are appended
+ *   3. DISABLE : setConfig({enabled:false}) -> dispatch echo again -> NO new lines are appended
  *                (the raw line count is unchanged).
- *   4. TF_LOG  : the first-party tf_log tool through run_tool: enable → status reports
- *                enabled:true; disable → status reports enabled:false.
+ *   4. TF_LOG  : the first-party tf_log tool through run_tool: enable -> status reports
+ *                enabled:true; disable -> status reports enabled:false.
  *   5. RESTORE : logs/log.config.json is restored from the up-front snapshot (or deleted if it
  *                did not exist), the temp log is deleted, and a logs/ dir created only for the
- *                config is removed — live state is left exactly as found.
+ *                config is removed - live state is left exactly as found.
  *
  * The temp log lives under the OS temp dir (an ABSOLUTE path the logger uses verbatim), so the
  * repo's logs/ dir only ever holds the config file we snapshot/restore. Restore runs in a
@@ -58,7 +58,7 @@ const ROOT = path.resolve(__dirname, '..');
 const LOGS_DIR = path.join(ROOT, 'logs');
 const CONFIG_PATH = path.join(LOGS_DIR, 'log.config.json');
 
-// A fresh, unique, ABSOLUTE temp log — the logger uses an absolute path verbatim, so this
+// A fresh, unique, ABSOLUTE temp log - the logger uses an absolute path verbatim, so this
 // keeps the repo's logs/ dir clean (config file only). Guaranteed-absent at start.
 const TEMP_LOG = path.join(os.tmpdir(), `toolfunnel-logging-${process.pid}-${crypto.randomUUID()}.jsonl`);
 
@@ -109,7 +109,7 @@ function snapshotConfig() {
     : { existed: false, content: null };
 }
 
-// Whether logs/ pre-existed — if WE created it (only for the config file), remove it on restore.
+// Whether logs/ pre-existed - if WE created it (only for the config file), remove it on restore.
 const LOGS_DIR_EXISTED = fs.existsSync(LOGS_DIR);
 
 function restoreConfig(snap) {
@@ -142,7 +142,7 @@ function restoreConfig(snap) {
 }
 
 // ── temp-log readers ────────────────────────────────────────────────────────────────────────
-/** Raw non-empty lines of the temp log (missing file → []). */
+/** Raw non-empty lines of the temp log (missing file -> []). */
 function readRawLines() {
   try {
     return fs
@@ -166,7 +166,7 @@ function readRecords() {
   return out;
 }
 
-// ── the gated meta-tool path (a fresh build per call → always reads current on-disk config) ──
+// ── the gated meta-tool path (a fresh build per call -> always reads current on-disk config) ──
 async function dispatchRun(name, args) {
   const { protocol } = buildProtocol();
   return protocol.dispatch('toolfunnel_run_tool', { name, args: args || {} });
@@ -187,7 +187,7 @@ function payloadOf(res) {
   const snap = snapshotConfig();
 
   try {
-    // ── 1. ENABLE → run echo → a tool line AND a gate-allow line are written. ───────────────
+    // ── 1. ENABLE -> run echo -> a tool line AND a gate-allow line are written. ───────────────
     {
       logger.setConfig({ enabled: true, path: TEMP_LOG });
 
@@ -240,11 +240,11 @@ function payloadOf(res) {
         );
       });
 
-      // Remove the fixture (mirrors gate.test.js — fixtures are transient).
+      // Remove the fixture (mirrors gate.test.js - fixtures are transient).
       fs.unlinkSync(FIXTURE_MANIFEST);
     }
 
-    // ── 3. DISABLE → run echo → NO new lines are appended. ───────────────────────────────────
+    // ── 3. DISABLE -> run echo -> NO new lines are appended. ───────────────────────────────────
     {
       logger.setConfig({ enabled: false });
 
@@ -260,7 +260,7 @@ function payloadOf(res) {
       });
     }
 
-    // ── 4. TF_LOG via run_tool: enable → status enabled; disable → status disabled. ──────────
+    // ── 4. TF_LOG via run_tool: enable -> status enabled; disable -> status disabled. ──────────
     {
       const en = payloadOf(await dispatchRun('tf_log', { action: 'enable' }));
       check('TF_LOG: enable succeeded (ok:true, enabled:true)', () => {
@@ -283,7 +283,7 @@ function payloadOf(res) {
   } catch (err) {
     fatal = err;
   } finally {
-    // ── 5. RESTORE — config + temp log + fixture + any logs/ dir we created. Idempotent. ─────
+    // ── 5. RESTORE - config + temp log + fixture + any logs/ dir we created. Idempotent. ─────
     try {
       restoreConfig(snap);
     } catch (_e) {
@@ -305,12 +305,12 @@ function payloadOf(res) {
 
   if (ok) {
     console.log(
-      `\nPASS: logging test — ${passed}/${results.length} assertions passed ` +
+      `\nPASS: logging test - ${passed}/${results.length} assertions passed ` +
         `(enable logs tool+gate-allow; deny logs gate-deny + blocks; disable is silent; tf_log toggles; config restored)`
     );
     process.exit(0);
   } else {
-    console.log(`\nFAIL: logging test — ${passed}/${results.length} assertions passed, ${failed} failed`);
+    console.log(`\nFAIL: logging test - ${passed}/${results.length} assertions passed, ${failed} failed`);
     process.exit(1);
   }
 })().catch((e) => {

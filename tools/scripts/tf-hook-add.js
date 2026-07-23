@@ -2,19 +2,19 @@
 'use strict';
 
 /**
- * tf-hook-add.js — management tool: add a hook entry to the hook manifest.
+ * tf-hook-add.js - management tool: add a hook entry to the hook manifest.
  *
  * A first-party "gateway-run" management function: it configures ToolFunnel's
  * OWN hook manifest (and, optionally, drops an inline hook script into the
  * scripts copy dir). Discovered via list_tools and executed via run_tool
- * through the PreToolUse gate — it is NOT a new MCP-protocol command.
+ * through the PreToolUse gate - it is NOT a new MCP-protocol command.
  *
  * Contract with the register (`defaultRunScript`)
  * ----------------------------------------------------------
  *   - Structured args arrive as JSON in env TOOLFUNNEL_TOOL_ARGS ({} if absent).
  *   - Args: { id, event, matcher?, command, script?, timeout?, enabled?=true,
  *             description?, scriptText? }.
- *   - Prints EXACTLY ONE JSON object to stdout and exits 0 — ALWAYS exit 0, even
+ *   - Prints EXACTLY ONE JSON object to stdout and exits 0 - ALWAYS exit 0, even
  *     on a logical error, which is reported as { ok:false, error }.
  *
  * Output (stdout), exactly one JSON object:
@@ -25,7 +25,7 @@
  * -------------------------------------------------------
  *   HookLoader.writeScript(id, text) resolves the script path from the spec and
  *   THROWS for an unknown id (getSpec must find the row). Since addEntry rejects
- *   duplicate ids, this tool only ever creates NEW hooks — so the manifest row
+ *   duplicate ids, this tool only ever creates NEW hooks - so the manifest row
  *   must be registered FIRST, then the inline script can be written. If the
  *   inline write fails, the just-added entry is rolled back so the add stays
  *   atomic (the intent behind a write-then-register ordering).
@@ -33,7 +33,7 @@
  * Safety invariants:
  *   - Touches only ToolFunnel's own manifest + scripts dir (resolved from
  *     __dirname, never a caller-supplied absolute path).
- *   - NO network. NEVER throws for ordinary conditions — only JSON on stdout.
+ *   - NO network. NEVER throws for ordinary conditions - only JSON on stdout.
  */
 
 const path = require('node:path');
@@ -91,7 +91,7 @@ function run(args) {
   }
 
   // enabled defaults to TRUE (opt-out) for this tool, unlike the loader's
-  // addEntry default of false — so it is passed explicitly.
+  // addEntry default of false - so it is passed explicitly.
   const enabled = args.enabled === undefined ? true : args.enabled === true;
 
   // Build the spec from only the supplied optional fields (keeps the manifest
@@ -105,7 +105,7 @@ function run(args) {
   const loader = loadManifest(MANIFEST);
 
   // Register first (see Ordering note in the header). addEntry validates
-  // id/event/command and rejects duplicate ids by throwing — caught in main.
+  // id/event/command and rejects duplicate ids by throwing - caught in main.
   const stored = loader.addEntry(spec);
 
   let scriptWritten = false;
@@ -139,7 +139,7 @@ function main() {
     try {
       payload = run(parsed.value);
     } catch (err) {
-      // addEntry throws on validation / duplicate-id failures — report them as
+      // addEntry throws on validation / duplicate-id failures - report them as
       // a logical error, still exit 0.
       payload = { ok: false, error: (err && err.message) || String(err) };
     }

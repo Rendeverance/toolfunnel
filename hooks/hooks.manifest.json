@@ -21,7 +21,7 @@
       "script": "scripts/example-audit.js",
       "timeout": 10,
       "enabled": false,
-      "description": "EXAMPLE (disabled by default). A PostToolUse observer: runs AFTER a tool executes (advisory — it cannot un-run the call) and receives the tool result on stdin. The stub exits 0 (clean pass); replace its body to forward results to your own audit sink, metrics, or SIEM. Enable it in the UI Hooks tab (or set enabled:true here)."
+      "description": "EXAMPLE (disabled by default). A PostToolUse observer: runs AFTER a tool executes (advisory - it cannot un-run the call) and receives the tool result on stdin. The stub exits 0 (clean pass); replace its body to forward results to your own audit sink, metrics, or SIEM. Enable it in the UI Hooks tab (or set enabled:true here)."
     }
   ]
 }

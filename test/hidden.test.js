@@ -1,17 +1,17 @@
 'use strict';
 
 /**
- * hidden.test.js — proves the `hidden` matrix axis is WIRED (manager-view declutter), not just
+ * hidden.test.js - proves the `hidden` matrix axis is WIRED (manager-view declutter), not just
  * write-and-report-only. `hidden` must NOT affect what the connected AI sees (the lean list /
- * top-level surface) — only the MANAGER views (tf_list + the UI). This test exercises the two
+ * top-level surface) - only the MANAGER views (tf_list + the UI). This test exercises the two
  * server-side consumers directly as scripts (the register's script contract: structured args in
  * env TOOLFUNNEL_TOOL_ARGS, one JSON line on stdout, exit 0):
  *
- *   A — tf_tool_set { action:'hide' }   sets hidden:true in the overlay (preserving other axes).
- *   B — tf_list { kind:'tools' }         OMITS the hidden tool by default (the declutter).
- *   C — tf_list { kind:'tools', includeHidden:true } INCLUDES it (annotated hidden:true).
- *   D — tf_tool_set { action:'unhide' } clears it; tf_list shows it again.
- *   E — hide preserves a co-set axis (enabled) — independent merge, not replace.
+ *   A - tf_tool_set { action:'hide' }   sets hidden:true in the overlay (preserving other axes).
+ *   B - tf_list { kind:'tools' }         OMITS the hidden tool by default (the declutter).
+ *   C - tf_list { kind:'tools', includeHidden:true } INCLUDES it (annotated hidden:true).
+ *   D - tf_tool_set { action:'unhide' } clears it; tf_list shows it again.
+ *   E - hide preserves a co-set axis (enabled) - independent merge, not replace.
  *
  * NON-DESTRUCTIVE: tools/tools.state.json is snapshotted and restored. Node built-ins only.
  *
@@ -62,7 +62,7 @@ function toolIds(listResult) {
   try {
     writeState({}); // clean defaults: nothing hidden
 
-    // A — hide via tf_tool_set.
+    // A - hide via tf_tool_set.
     const hide = runScript(TF_SET, { id: TARGET, action: 'hide' });
     check('A: tf_tool_set {action:hide} sets hidden:true', () => {
       assert.strictEqual(hide.ok, true, 'hide not ok: ' + JSON.stringify(hide));
@@ -70,7 +70,7 @@ function toolIds(listResult) {
       assert.ok(hide.state && hide.state[TARGET] && hide.state[TARGET].hidden === true, 'overlay not set: ' + JSON.stringify(hide.state));
     });
 
-    // B — tf_list omits the hidden tool by default (the declutter consumer).
+    // B - tf_list omits the hidden tool by default (the declutter consumer).
     const def = runScript(TF_LIST, { kind: 'tools' });
     check('B: tf_list {kind:tools} OMITS the hidden tool by default', () => {
       assert.strictEqual(def.ok, true, 'list not ok: ' + JSON.stringify(def));
@@ -79,7 +79,7 @@ function toolIds(listResult) {
       assert.ok(toolIds(def).length > 0, 'list unexpectedly empty');
     });
 
-    // C — includeHidden:true brings it back, annotated hidden:true.
+    // C - includeHidden:true brings it back, annotated hidden:true.
     const inc = runScript(TF_LIST, { kind: 'tools', includeHidden: true });
     check('C: tf_list {includeHidden:true} INCLUDES the hidden tool, annotated hidden:true', () => {
       assert.ok(toolIds(inc).includes(TARGET), TARGET + ' missing with includeHidden; got ' + JSON.stringify(toolIds(inc)));
@@ -87,7 +87,7 @@ function toolIds(listResult) {
       assert.strictEqual(t && t.hidden, true, 'annotation hidden!=true: ' + JSON.stringify(t));
     });
 
-    // D — unhide restores it to the default list.
+    // D - unhide restores it to the default list.
     const unhide = runScript(TF_SET, { id: TARGET, action: 'unhide' });
     const back = runScript(TF_LIST, { kind: 'tools' });
     check('D: tf_tool_set {action:unhide} clears it; tf_list shows it again', () => {
@@ -96,7 +96,7 @@ function toolIds(listResult) {
       assert.ok(toolIds(back).includes(TARGET), TARGET + ' should be back; got ' + JSON.stringify(toolIds(back)));
     });
 
-    // E — hide preserves a co-set axis (independence): disable, then hide, enabled stays false.
+    // E - hide preserves a co-set axis (independence): disable, then hide, enabled stays false.
     writeState({});
     runScript(TF_SET, { id: TARGET, action: 'disable' });
     const hide2 = runScript(TF_SET, { id: TARGET, action: 'hide' });
@@ -118,10 +118,10 @@ function toolIds(listResult) {
   const expected = 5;
   const ok = !fatal && passed === results.length && results.length === expected;
   if (ok) {
-    console.log(`\nPASS: hidden test — ${passed}/${expected} assertions passed (hidden axis declutters tf_list, settable via tf_tool_set, axis-independent)`);
+    console.log(`\nPASS: hidden test - ${passed}/${expected} assertions passed (hidden axis declutters tf_list, settable via tf_tool_set, axis-independent)`);
     process.exit(0);
   } else {
-    console.log(`\nFAIL: hidden test — ${passed}/${results.length} assertions passed`);
+    console.log(`\nFAIL: hidden test - ${passed}/${results.length} assertions passed`);
     process.exit(1);
   }
 })().catch((e) => { console.log('HIDDEN TEST CRASHED: ' + ((e && e.stack) || e)); process.exit(1); });

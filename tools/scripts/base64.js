@@ -2,20 +2,20 @@
 'use strict';
 
 /**
- * base64-tool.js — a safe, dependency-free local Base64 codec tool.
+ * base64-tool.js - a safe, dependency-free local Base64 codec tool.
  *
  * Purpose
  * -------
  * Encode UTF-8 text to standard Base64, or decode Base64 back to UTF-8 text.
  * A genuinely useful utility for the Tool Manager: inspecting / producing
  * Base64 blobs is a frequent chore and this gives a gated, no-side-effect way
- * to do it. Uses ONLY Node built-ins (Buffer) — no network, no filesystem.
+ * to do it. Uses ONLY Node built-ins (Buffer) - no network, no filesystem.
  *
  * Contract with the register (the register's `defaultRunScript`)
  * ----------------------------------------------------------
  *   - Structured args arrive as JSON in env TOOLFUNNEL_TOOL_ARGS.
  *   - Args: { op: "encode" | "decode", text: <string> }.
- *   - Prints a SINGLE JSON object to stdout and exits 0 — ALWAYS exit 0, even
+ *   - Prints a SINGLE JSON object to stdout and exits 0 - ALWAYS exit 0, even
  *     on bad input. Bad input is reported as { ok:false, error } rather than a
  *     thrown exception, because the gated run-path treats exit-0-with-parseable
  *     stdout as a completed run.
@@ -35,7 +35,7 @@
  *
  * Safety invariants (mirror the isolation rule):
  *   - NO filesystem, NO network, NO process mutation. Pure CPU on the args.
- *   - NEVER throws for ordinary bad input — only well-shaped JSON on stdout.
+ *   - NEVER throws for ordinary bad input - only well-shaped JSON on stdout.
  */
 
 /**
@@ -69,7 +69,7 @@ function decodeTolerant(text) {
   // newlines (MIME wrapping), so remove all ASCII whitespace before validating.
   const stripped = String(text).replace(/\s+/g, '');
   if (stripped.length === 0) {
-    // Empty input decodes to empty string — a valid, unambiguous result.
+    // Empty input decodes to empty string - a valid, unambiguous result.
     return { ok: true, result: '' };
   }
   // Standard Base64 alphabet (with optional '=' padding). Reject anything else

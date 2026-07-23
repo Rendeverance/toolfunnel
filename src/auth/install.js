@@ -1,27 +1,27 @@
 'use strict';
 
 /**
- * auth/install.js — install the OPTIONAL OAuth dependency (`jose`) on demand.
+ * auth/install.js - install the OPTIONAL OAuth dependency (`jose`) on demand.
  *
  * The whole point of ToolFunnel's zero-dependency stance is that a default install pulls NOTHING.
- * OAuth is opt-in, so its one library is installed only when a user decides they need it — via the
+ * OAuth is opt-in, so its one library is installed only when a user decides they need it - via the
  * CLI (`toolfunnel install-oauth`) or the admin-UI button, both of which call installJose() here.
  *
  * It shells out to the user's own `npm` to install the PINNED jose version into the gateway
  * package's own node_modules (resolved from this file's location, NOT process.cwd(), so it lands
- * beside the engine wherever ToolFunnel is installed). It uses `--no-save` — the goal is simply to
+ * beside the engine wherever ToolFunnel is installed). It uses `--no-save` - the goal is simply to
  * make `require('jose')` resolvable; there is no manifest to update, and this keeps ToolFunnel's
  * own `dependencies: {}` untouched in every install shape.
  *
  * WINDOWS NOTE: do NOT spawn `npm.cmd`. Since the CVE-2024-27980 mitigation, spawning a `.cmd`
  * without a shell throws `EINVAL`; and spawning it WITH a shell is unreliable on portable Node
- * installs — the `npm.cmd` shim misresolves its own path under cmd.exe ("Cannot find module
- * …\node_modules\npm\bin\npm-cli.js"). The robust, cross-platform approach is to run npm's JS entry
- * (`npm-cli.js`, located beside the running node binary) with `process.execPath` directly —
+ * installs - the `npm.cmd` shim misresolves its own path under cmd.exe ("Cannot find module
+ * ...\node_modules\npm\bin\npm-cli.js"). The robust, cross-platform approach is to run npm's JS entry
+ * (`npm-cli.js`, located beside the running node binary) with `process.execPath` directly -
  * `shell:false`, no shim, no PATH lookup, no cwd sensitivity. We fall back to a shell-spawned `npm`
  * only if `npm-cli.js` can't be located; the spec is allowlist-validated so that fallback can't inject.
  *
- * NEVER throws — it resolves to a structured { ok, code, stdout, stderr, message } so the CLI/UI can
+ * NEVER throws - it resolves to a structured { ok, code, stdout, stderr, message } so the CLI/UI can
  * report the outcome cleanly even when npm is missing or the network is down.
  *
  * CommonJS only; Node built-ins (child_process, path, fs) + the pin from resource-server.js.
@@ -41,10 +41,10 @@ const PKG_ROOT = path.resolve(__dirname, '..', '..');
 const IS_WIN = process.platform === 'win32';
 const NPM_BIN = IS_WIN ? 'npm.cmd' : 'npm';
 
-/** A strict allowlist for an npm version spec. Covers what a single-package install actually uses —
- *  `name@<exact|caret|tilde|x-range|dist-tag>` and scoped names — and NOTHING a shell could act on, so
+/** A strict allowlist for an npm version spec. Covers what a single-package install actually uses -
+ *  `name@<exact|caret|tilde|x-range|dist-tag>` and scoped names - and NOTHING a shell could act on, so
  *  the fallback shell path can never inject. Comparator/whitespace ranges (`>=1 <2`, `1 || 2`) and the
- *  `*` wildcard are deliberately OUT: `> < = | *` and spaces are shell-meaningful. This is fine — the
+ *  `*` wildcard are deliberately OUT: `> < = | *` and spaces are shell-meaningful. This is fine - the
  *  gateway only ever installs the caret-pinned `jose@^5.10.0`. Anything outside the set is refused
  *  before npm is ever invoked. */
 const SPEC_RE = /^[A-Za-z0-9@._/^~+-]+$/;
@@ -71,7 +71,7 @@ function findNpmCli() {
 }
 
 /**
- * installJose — run `npm install jose@<PIN>` in the gateway package root. Resolves a structured
+ * installJose - run `npm install jose@<PIN>` in the gateway package root. Resolves a structured
  * result; never rejects. A 5-minute hard timeout guards against a hung registry.
  *
  * @param {object} [opts]
@@ -103,7 +103,7 @@ function installJose(opts) {
       settled = true;
       clearTimeout(timer);
       // On ANY failure, attach the guaranteed-correct manual fallback. Auto-install can't be made
-      // universal — npm-cli.js sits in different places relative to `node` across install methods
+      // universal - npm-cli.js sits in different places relative to `node` across install methods
       // (Homebrew/Volta/Docker/odd nvm). But the user definitely has a working npm (they used it to
       // install/run the gateway), so a copyable command they run in their OWN shell always works.
       // The UI + CLI surface result.message, so a failed auto-install becomes an actionable next
@@ -112,7 +112,7 @@ function installJose(opts) {
         result.manualCommand = 'npm install jose@' + JOSE_PIN;
         result.cwd = PKG_ROOT;
         if (typeof result.message === 'string' && result.message.indexOf('manually') === -1) {
-          result.message += ` — or install it manually: run \`${result.manualCommand}\` in ${PKG_ROOT}`;
+          result.message += ` - or install it manually: run \`${result.manualCommand}\` in ${PKG_ROOT}`;
         }
       }
       resolve(result);
@@ -127,7 +127,7 @@ function installJose(opts) {
     try {
       const npmCli = findNpmCli();
       if (npmCli) {
-        // PREFERRED: run npm's JS entry with the current node binary — no shell, no .cmd shim, no
+        // PREFERRED: run npm's JS entry with the current node binary - no shell, no .cmd shim, no
         // PATH/cwd sensitivity. This is what actually works on a portable/Windows Node install.
         child = spawn(process.execPath, [npmCli, 'install', spec, '--no-save'], {
           cwd: PKG_ROOT,

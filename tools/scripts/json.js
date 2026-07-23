@@ -2,21 +2,21 @@
 'use strict';
 
 /**
- * json-tool.js — a safe, dependency-free local JSON formatter / validator.
+ * json-tool.js - a safe, dependency-free local JSON formatter / validator.
  *
  * Purpose
  * -------
  * Validate a JSON string and either pretty-print it (default) or minify it.
  * Useful from the Tool Manager for tidying up JSON blobs or confirming a string
- * is valid JSON. Pure JSON.parse / JSON.stringify — no network, no filesystem.
+ * is valid JSON. Pure JSON.parse / JSON.stringify - no network, no filesystem.
  *
  * Contract with the register (the register's `defaultRunScript`)
  * ----------------------------------------------------------
  *   - Structured args arrive as JSON in env TOOLFUNNEL_TOOL_ARGS.
  *   - Args: { text: <string>, indent?: <integer 0..10>, minify?: <boolean> }.
  *       indent defaults to 2 (used for the pretty form).
- *       minify true → return the compact (no-whitespace) form instead.
- *   - Prints a SINGLE JSON object to stdout and exits 0 — ALWAYS exit 0, even
+ *       minify true -> return the compact (no-whitespace) form instead.
+ *   - Prints a SINGLE JSON object to stdout and exits 0 - ALWAYS exit 0, even
  *     for invalid JSON input (reported as { ok:false, error }).
  *
  * Output (stdout), exactly one JSON object:
@@ -27,7 +27,7 @@
  * Safety invariants (mirror the isolation rule):
  *   - NO filesystem, NO network, NO process mutation. Pure CPU on the args.
  *   - indent is clamped to a sane [0,10] range so a huge indent cannot blow up.
- *   - NEVER throws for ordinary bad input — only well-shaped JSON on stdout.
+ *   - NEVER throws for ordinary bad input - only well-shaped JSON on stdout.
  */
 
 const MAX_INDENT = 10;
@@ -76,7 +76,7 @@ function run(args) {
     indent = args.indent;
   }
 
-  // Parse the supplied JSON text — THIS is the validation step.
+  // Parse the supplied JSON text - THIS is the validation step.
   let parsed;
   try {
     parsed = JSON.parse(text);

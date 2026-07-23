@@ -1,15 +1,15 @@
 'use strict';
 
 /**
- * server.js — the OPTIONAL config web UI for the gateway (loopback-only).
+ * server.js - the OPTIONAL config web UI for the gateway (loopback-only).
  *
  * A zero-dependency node:http server that lets a human VIEW / SEARCH / CONFIGURE
  * the gateway's tools, upstream MCPs, and hooks without hand-editing JSON. It does
- * NOT reinvent any state: every read and write goes THROUGH the gateway's proven stores —
- *   - the tool register     (src/tools/registry.js     :: loadRegistry → add/update/remove/writeScript)
+ * NOT reinvent any state: every read and write goes THROUGH the gateway's proven stores -
+ *   - the tool register     (src/tools/registry.js     :: loadRegistry -> add/update/remove/writeScript)
  *   - the enabled overlay   (src/tools/tool-state.js    :: loadToolState / setToolEnabled / clearToolState)
- *   - the MCP expose store  (src/mcp/expose-store.js    :: loadExposeStore → addUpstream/addExpose/…)
- *   - the hook loader       (src/core/hook-loader.js    :: loadManifest → addEntry/setEnabled/removeEntry)
+ *   - the MCP expose store  (src/mcp/expose-store.js    :: loadExposeStore -> addUpstream/addExpose/...)
+ *   - the hook loader       (src/core/hook-loader.js    :: loadManifest -> addEntry/setEnabled/removeEntry)
  *   - the hook matcher      (src/core/matcher.js        :: matches)
  *   - the atomic writer     (src/tools/registry.js      :: atomicWriteJson)        [tool Pre/Post gate writes]
  * so a UI edit is byte-identical to a CLI edit and is visible to the running MCP
@@ -20,14 +20,14 @@
  *
  * SAFETY CONTRACT (mirrors src/mcp/http-transport.js):
  *   - start() HARD-REFUSES a non-loopback bind host. The UI has no auth path at all, and it can
- *     spawn processes (mcp add/discover) and write scripts (tools/hooks) — off-loopback it would be
+ *     spawn processes (mcp add/discover) and write scripts (tools/hooks) - off-loopback it would be
  *     an unauthenticated remote console. Loopback-only by design; no flag overrides it.
  *   - Binds 127.0.0.1 by default; a non-loopback Host header is rejected (DNS-rebind guard).
- *   - The request listener NEVER throws — a bad request becomes a clean JSON error.
+ *   - The request listener NEVER throws - a bad request becomes a clean JSON error.
  *   - start() rejects cleanly on EADDRINUSE (caller decides); stop() is idempotent.
  *   - Every store read is FRESH per request, so edits made elsewhere show immediately.
  *
- * CommonJS only. Node BUILT-INS only (node:http, node:fs, node:path) — no new npm dep,
+ * CommonJS only. Node BUILT-INS only (node:http, node:fs, node:path) - no new npm dep,
  * no CDN, no framework. The static assets under src/ui/public are vanilla HTML/CSS/JS.
  */
 
@@ -36,13 +36,14 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const { loadRegistry, atomicWriteJson, resolveMode } = require('../tools/registry');
-const { loadToolState, isToolEnabled, isToolHidden, isToolHot, setToolEnabled, setToolHidden, setToolHot, clearToolState } = require('../tools/tool-state');
+const { loadToolState, isToolEnabled, isToolHidden, isToolHot, setToolEnabled, setToolHidden, setToolHot, clearToolState, getPassthrough, setPassthrough } = require('../tools/tool-state');
 const { loadExposeStore } = require('../mcp/expose-store');
 const { Aggregator } = require('../mcp/aggregator');
 const { loadManifest } = require('../core/hook-loader');
 const { matches } = require('../core/matcher');
 const { META_TOOLS } = require('../mcp/protocol');
 const logger = require('../core/logger');
+const { loadServerConfig } = require('../core/server-config');
 const authConfig = require('../auth/config');
 const { isJoseInstalled, JOSE_PIN } = require('../auth/resource-server');
 const { installJose } = require('../auth/install');
@@ -54,7 +55,7 @@ const DEFAULT_PORT = 9777;
 const MAX_BODY_BYTES = 256 * 1024;
 const VALID_HOOK_EVENTS = new Set(['PreToolUse', 'PostToolUse']);
 
-// Static asset content types (vanilla, offline — no external fonts/CDN).
+// Static asset content types (vanilla, offline - no external fonts/CDN).
 const CONTENT_TYPES = Object.freeze({
   '.html': 'text/html; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
@@ -72,7 +73,7 @@ const CONTENT_TYPES = Object.freeze({
  * Is the Host header loopback? We bind 127.0.0.1 only, but a forwarded/rebound
  * request could still arrive with a non-loopback Host. Defence-in-depth: reject
  * anything whose host part is not a recognised loopback name (mirrors
- * http-transport.js::isLoopbackHost). A MISSING Host header is allowed — the bind
+ * http-transport.js::isLoopbackHost). A MISSING Host header is allowed - the bind
  * address is already the hard boundary.
  * @param {string|undefined} hostHeader
  * @returns {boolean}
@@ -84,7 +85,7 @@ function isLoopbackHost(hostHeader) {
     const end = host.indexOf(']');
     host = end === -1 ? host.slice(1) : host.slice(1, end);
   } else {
-    // Strip an optional :port ONLY when unambiguous — exactly one colon means "host:port". A string
+    // Strip an optional :port ONLY when unambiguous - exactly one colon means "host:port". A string
     // with MULTIPLE colons is a bare IPv6 literal (e.g. "::1"); compare it whole rather than slicing
     // it to "" at the first colon (which would mis-classify IPv6 loopback as non-loopback).
     const first = host.indexOf(':');
@@ -97,7 +98,7 @@ function isLoopbackHost(hostHeader) {
 /**
  * Is the BIND address loopback? STRICTER than the Host-header check above: a missing Host header
  * is legitimately loopback (the bind address is the boundary), but a missing/empty BIND address is
- * not a loopback claim — it must name a loopback host explicitly to pass.
+ * not a loopback claim - it must name a loopback host explicitly to pass.
  * @param {string|undefined} bindHost
  * @returns {boolean}
  */
@@ -111,7 +112,7 @@ function escapeRegex(str) {
 }
 
 /**
- * The SURFACED name a discovered upstream tool is exposed under — an ENABLED expose `as` for
+ * The SURFACED name a discovered upstream tool is exposed under - an ENABLED expose `as` for
  * (upstream, tool) if one exists, else the namespaced default `<upstream>_<tool>`. Mirrors
  * Aggregator._surfacedName so the UI's per-tool curation keys match what the running gateway reads.
  * @param {object} store           the ExposeStore (for exposedName)
@@ -140,7 +141,7 @@ function withTimeout(promise, ms, msg) {
   });
 }
 
-/** Diagnostics → stderr (never the response). NEVER throws. */
+/** Diagnostics -> stderr (never the response). NEVER throws. */
 function logErr(...parts) {
   try {
     process.stderr.write('[toolfunnel-ui] ' + parts.join(' ') + '\n');
@@ -149,7 +150,7 @@ function logErr(...parts) {
   }
 }
 
-// ── Config-change audit (UI → activity log) ─────────────────────────────────────────────────────
+// ── Config-change audit (UI -> activity log) ─────────────────────────────────────────────────────
 // A management console mutates the gateway's security posture (which tools are visible/hot, which
 // MCPs are attached, which hooks gate, whether OAuth is on). Auditing those changes is arguably more
 // important than logging individual tool runs. This maps each config-MUTATING POST path to an audit
@@ -167,6 +168,8 @@ const CONFIG_EVENTS = {
   '/api/hooks/state': (b) => ({ event: 'hook_state', id: b.id, action: b.action }),
   '/api/mcp/add': (b) => ({ event: 'mcp_add', id: b.upstream && b.upstream.id }),
   '/api/mcp/state': (b) => ({ event: 'mcp_state', id: b.id, action: b.action }),
+  '/api/wrap': (b) => ({ event: 'wrap', upstream: (b && b.upstream) || null }),
+  '/api/identity': () => ({ event: 'identity_config' }),
   '/api/auth/config': (b) => ({ event: 'auth_config', enabled: b.enabled, issuer: b.issuer }),
   '/api/logs/config': (b) => ({ event: 'log_config', enabled: b.enabled }),
   '/api/oauth/install': () => ({ event: 'oauth_install' }),
@@ -175,7 +178,7 @@ const CONFIG_EVENTS = {
 /**
  * Write a config-change audit record (type:'config', via:'ui'). Drops undefined fields so a partial
  * change (e.g. only `hot` toggled) records only what actually changed. Self-gating via logger.log
- * (no-op unless logging is enabled). NEVER throws — an audit failure must not break a config write.
+ * (no-op unless logging is enabled). NEVER throws - an audit failure must not break a config write.
  * @param {object} fields  { event, ...changed }
  */
 function logConfigChange(fields) {
@@ -192,13 +195,13 @@ function logConfigChange(fields) {
 }
 
 /**
- * createUiServer — construct (but do NOT start) the config web UI server.
+ * createUiServer - construct (but do NOT start) the config web UI server.
  *
  * @param {object}  [opts]
- * @param {string}  [opts.host]  bind address (default 127.0.0.1 — loopback only).
+ * @param {string}  [opts.host]  bind address (default 127.0.0.1 - loopback only).
  * @param {number}  [opts.port]  bind port (default 9777; pass 0 for an OS-assigned port).
  * @param {string}  [opts.root]  config root holding tools/ mcp/ hooks/ (default: the resolved
- *                               config home — TOOLFUNNEL_HOME / --config-dir / the package root).
+ *                               config home - TOOLFUNNEL_HOME / --config-dir / the package root).
  * @returns {{ start: () => Promise<{url:string, port:number}>, stop: () => Promise<void>, get url():(string|null) }}
  */
 function createUiServer(opts = {}) {
@@ -221,12 +224,13 @@ function createUiServer(opts = {}) {
   // Where a Pre/Post hook script for a tool must be authored. The manifest command carries the
   // PORTABLE ${HOOKS_DIR} token (expanded by the hook-loader at load); this is its real on-disk dir.
   const HOOK_SCRIPTS_DIR = path.join(root, 'hooks', 'scripts');
+  const TOOLFUNNEL_JSON = path.join(root, 'toolfunnel.json');
   const PUBLIC_DIR = path.join(__dirname, 'public');
 
   // ── Mutable runtime state ─────────────────────────────────────────────────────────────────────
   /** @type {import('node:http').Server|null} */
   let httpServer = null;
-  /** @type {number|null} the actual bound port (resolved after listen — matters for port 0). */
+  /** @type {number|null} the actual bound port (resolved after listen - matters for port 0). */
   let boundPort = null;
   let started = false;
 
@@ -236,7 +240,7 @@ function createUiServer(opts = {}) {
 
   // ── Store-backed config reads (FRESH per call so external edits show immediately) ──────────────
 
-  /** Read the hook manifest defensively → { version, hooks:[] }. Never throws. */
+  /** Read the hook manifest defensively -> { version, hooks:[] }. Never throws. */
   function readManifest() {
     try {
       const d = JSON.parse(fs.readFileSync(MANIFEST_PATH, 'utf8'));
@@ -247,7 +251,7 @@ function createUiServer(opts = {}) {
         };
       }
     } catch (_e) {
-      /* missing/malformed → empty manifest */
+      /* missing/malformed -> empty manifest */
     }
     return { version: 1, hooks: [] };
   }
@@ -266,7 +270,7 @@ function createUiServer(opts = {}) {
     return (entry && entry.name) || (entry && entry.id) || '';
   }
 
-  // GET /api/tools → [{ id,name,summary,category, mode, enabled, hidden, hot, pre, post }]
+  // GET /api/tools -> [{ id,name,summary,category, mode, enabled, hidden, hot, pre, post }]
   function apiTools() {
     const registry = loadRegistry(REGISTER_PATH, { scriptsRoot: SCRIPTS_ROOT });
     const state = loadToolState(TOOL_STATE_PATH);
@@ -283,9 +287,9 @@ function createUiServer(opts = {}) {
         // register so registry.mode never throws here.
         mode: registry.mode(b.id),
         // The visibility MATRIX axes (all keyed by the tool id):
-        //   enabled — LEAN-VISIBLE in toolfunnel_list_tools + runnable (default ON).
-        //   hidden  — manager-list declutter only (default OFF).
-        //   hot     — promoted to the TOP-LEVEL every-turn surface (default OFF; opt-in).
+        //   enabled - LEAN-VISIBLE in toolfunnel_list_tools + runnable (default ON).
+        //   hidden  - manager-list declutter only (default OFF).
+        //   hot     - promoted to the TOP-LEVEL every-turn surface (default OFF; opt-in).
         enabled: isToolEnabled(state, b.id),
         hidden: isToolHidden(state, b.id),
         hot: isToolHot(state, b.id, false),
@@ -295,7 +299,7 @@ function createUiServer(opts = {}) {
     });
   }
 
-  // POST /api/tools/state {id, enabled?, hidden?, hot?} → persist whichever axes are present. Each
+  // POST /api/tools/state {id, enabled?, hidden?, hot?} -> persist whichever axes are present. Each
   // is an independent merge-write (preserves the others). Backward-compatible: {id, enabled} still
   // just flips enabled. `id` may be a local tool id, an upstream surfaced name, or a meta-tool name
   // (the `hot` axis is keyed by the surfaced name the matrix assembler reads).
@@ -307,7 +311,7 @@ function createUiServer(opts = {}) {
     let touched = false;
     // Wrap the atomic writes (they can throw on EACCES/EPERM/ENOSPC) so the handler honours the
     // POST contract "never throws" and returns a clean {ok:false} with a useful message, like the
-    // other write handlers — rather than escaping to the generic outer 500.
+    // other write handlers - rather than escaping to the generic outer 500.
     try {
       if (Object.prototype.hasOwnProperty.call(body, 'enabled')) { setToolEnabled(TOOL_STATE_PATH, id, !!body.enabled); touched = true; }
       if (Object.prototype.hasOwnProperty.call(body, 'hidden')) { setToolHidden(TOOL_STATE_PATH, id, !!body.hidden); touched = true; }
@@ -321,16 +325,16 @@ function createUiServer(opts = {}) {
     return { status: 200, json: { ok: true } };
   }
 
-  // GET /api/surface → the TOP-LEVEL (every-turn) surface summary + footgun warnings.
-  //   meta          — the 4 meta-tools with their hot state (default ON; hot:false hides one).
-  //   promotedLocal — register tools promoted hot AND enabled.
-  //   promotedOther — other hot+enabled state keys (upstream surfaced names) — a count proxy (the
+  // GET /api/surface -> the TOP-LEVEL (every-turn) surface summary + footgun warnings.
+  //   meta          - the 4 meta-tools with their hot state (default ON; hot:false hides one).
+  //   promotedLocal - register tools promoted hot AND enabled.
+  //   promotedOther - other hot+enabled state keys (upstream surfaced names) - a count proxy (the
   //                   UI server can't enumerate live upstream tools without a discover, so this may
   //                   over-count typo'd / disabled-upstream keys; it errs toward over-warning).
-  //   curatedDirect — ENABLED expose[] entries: these are on the top-level surface every turn too
+  //   curatedDirect - ENABLED expose[] entries: these are on the top-level surface every turn too
   //                   (handleToolsList step 3 promotes every enabled expose entry, with NO hot flag),
   //                   so the bloat warning MUST count them or it reports a false all-clear.
-  //   warnings      — hiding the management tools / promoting many (context bloat).
+  //   warnings      - hiding the management tools / promoting many (context bloat).
   function apiSurface() {
     const state = loadToolState(TOOL_STATE_PATH);
     const metaNames = Object.values(META_TOOLS);
@@ -341,7 +345,7 @@ function createUiServer(opts = {}) {
     catch (_e) { /* report 0 promotions on a malformed register */ }
 
     // Enabled expose[] entries are curated-direct: top-level every turn (no hot flag needed), so they
-    // count toward the bloat threshold exactly like a hot tool — statically enumerable, no discover.
+    // count toward the bloat threshold exactly like a hot tool - statically enumerable, no discover.
     // Collect their SURFACED names so a hot key that is ALSO an enabled-expose name isn't double-counted.
     let curatedDirect = 0;
     const exposedNames = new Set();
@@ -358,7 +362,7 @@ function createUiServer(opts = {}) {
       const e = state[key];
       if (!e || e.hot !== true) continue;          // only explicit promotions
       if (metaNames.includes(key)) continue;        // meta handled separately
-      if (e.enabled === false) continue;            // disabled → not actually on the surface
+      if (e.enabled === false) continue;            // disabled -> not actually on the surface
       if (localIds.has(key)) promotedLocal += 1;
       else if (exposedNames.has(key)) continue;     // already counted as curated-direct (no double-count)
       else promotedOther += 1;
@@ -370,18 +374,18 @@ function createUiServer(opts = {}) {
     const runHot = (meta.find((m) => m.name === META_TOOLS.RUN) || {}).hot;
     const metaOff = meta.filter((m) => !m.hot).length;
     if (metaOff === metaNames.length) {
-      warnings.push('All four management tools are hidden from the top-level surface. A connected AI can no longer discover or run tools via the meta-tools — only the tools you have promoted are reachable. This is the "ordinary tools as an MCP" pattern; otherwise re-enable at least toolfunnel_list_tools and toolfunnel_run_tool.');
+      warnings.push('All four management tools are hidden from the top-level surface. A connected AI can no longer discover or run tools via the meta-tools - only the tools you have promoted are reachable. This is the "ordinary tools as an MCP" pattern; otherwise re-enable at least toolfunnel_list_tools and toolfunnel_run_tool.');
     } else if (!listHot || !runHot) {
-      warnings.push('toolfunnel_list_tools and/or toolfunnel_run_tool is hidden — the AI may be unable to discover or run tools by name. Promote the specific tools it needs, or re-enable these meta-tools.');
+      warnings.push('toolfunnel_list_tools and/or toolfunnel_run_tool is hidden - the AI may be unable to discover or run tools by name. Promote the specific tools it needs, or re-enable these meta-tools.');
     }
     if (promotedTotal > 10) {
-      warnings.push(promotedTotal + ' tools are promoted to every turn (including any enabled curated-direct expose entries). Each injects its schema into the model context on EVERY message — the opposite of the lean register. Promote only the few you call constantly; surface the rest leanly via toolfunnel_list_tools.');
+      warnings.push(promotedTotal + ' tools are promoted to every turn (including any enabled curated-direct expose entries). Each injects its schema into the model context on EVERY message - the opposite of the lean register. Promote only the few you call constantly; surface the rest leanly via toolfunnel_list_tools.');
     }
 
     return { meta, promotedLocal, promotedOther, curatedDirect, promotedTotal, warnings };
   }
 
-  // POST /api/tools/hook {id, event, on} → read-modify-write hooks.manifest.json atomically.
+  // POST /api/tools/hook {id, event, on} -> read-modify-write hooks.manifest.json atomically.
   function apiSetHook(body) {
     const id = body && body.id;
     const event = body && body.event;
@@ -413,7 +417,7 @@ function createUiServer(opts = {}) {
         hooks.push({
           event,
           matcher: escapeRegex(gateName),
-          // The command carries the PORTABLE ${HOOKS_DIR} token (NOT interpolated here) — the
+          // The command carries the PORTABLE ${HOOKS_DIR} token (NOT interpolated here) - the
           // hook-loader expands it to the absolute hooks dir at load time.
           command: 'node "${HOOKS_DIR}/scripts/' + scriptName + '"',
           enabled: true,
@@ -442,13 +446,137 @@ function createUiServer(opts = {}) {
     return { status: 200, json: { ok: true } };
   }
 
-  // GET /api/upstreams → { upstreams:[...], expose:[...] } (READ-ONLY for v1).
+  // GET /api/upstreams -> { upstreams:[...], expose:[...] } (READ-ONLY for v1).
   function apiUpstreams() {
     const store = loadExposeStore(EXPOSE_PATH);
-    return { upstreams: store.listUpstreams(), expose: store.listExposed() };
+    return {
+      upstreams: store.listUpstreams(),
+      expose: store.listExposed(),
+      // The active passthrough wrap (0.6.0) - null when the normal funnel surface is live.
+      wrapping: getPassthrough(loadToolState(TOOL_STATE_PATH)),
+    };
   }
 
-  // GET /api/status → { tools, upstreams, hooks }.
+  /**
+   * POST /api/wrap - set or clear the PASSTHROUGH wrap. Body { upstream:'<id>' } wraps (that
+   * upstream's tools become the ENTIRE surface, meta-tools hidden, every call still gated);
+   * { upstream:null } clears. The UI is one of the two recovery paths from an AI-set wrap
+   * (the other is `toolfunnel wrap --off`), so this endpoint must never itself be funnelled.
+   */
+  function apiWrap(body) {
+    // Sibling handlers wrap their store writes so the "handler never throws, returns clean
+    // {ok:false,error}" contract holds even on EACCES/ENOSPC (mirrors apiSetState).
+    try {
+      const b = body || {};
+      const id = b.upstream;
+      if (id === null || id === undefined || id === '') {
+        const was = getPassthrough(loadToolState(TOOL_STATE_PATH));
+        setPassthrough(TOOL_STATE_PATH, null);
+        return { status: 200, json: { ok: true, wrapping: null, was } };
+      }
+      if (typeof id !== 'string') {
+        return { status: 400, json: { ok: false, error: 'upstream must be an attached upstream id, or null to clear' } };
+      }
+      const store = loadExposeStore(EXPOSE_PATH);
+      const upstream = store.getUpstream(id);
+      if (!upstream) {
+        return { status: 404, json: { ok: false, error: 'no upstream with id "' + id + '"' } };
+      }
+      if (upstream.enabled === false) {
+        return { status: 400, json: { ok: false, error: 'upstream "' + id + '" is disabled - enable it first' } };
+      }
+      setPassthrough(TOOL_STATE_PATH, id);
+      // Wrap security notice - same check the CLI prints: wrapping SUSPENDS the path-isolation
+      // guard for this upstream, so outside paths are permitted by design. The UI operator gets
+      // the same informed consent the CLI operator gets.
+      let warning = null;
+      try {
+        const { looksLikePath, isInside } = require('../mcp/aggregator');
+        const outsideArgs = (Array.isArray(upstream.args) ? upstream.args : [])
+          .filter((a) => looksLikePath(a) && !isInside(root, a));
+        if (outsideArgs.length) {
+          warning = 'WRAP SECURITY NOTICE: this upstream uses paths outside the gateway root (' +
+            outsideArgs.join(', ') + '). While wrapped, the path-isolation guard is suspended for it - ' +
+            'the wrapped server can reach whatever those paths reach. Every call still passes the ' +
+            'PreToolUse gate; to restrict it, add a PreToolUse hook or disable individual tools. ' +
+            'See the manual, "Wrapping & security".';
+        }
+      } catch (_e) { /* the notice is best-effort - never block the wrap on it */ }
+      return { status: 200, json: { ok: true, wrapping: id, ...(warning ? { warning } : {}) } };
+    } catch (err) {
+      return { status: 500, json: { ok: false, error: (err && err.message) || 'wrap update failed' } };
+    }
+  }
+
+  // ── Identity & ports (toolfunnel.json - 0.6.0 identity settings) ─────────────────────────────
+
+  // GET /api/identity -> { file, effective, restartRequired:true }. `file` is the raw
+  // toolfunnel.json content (absent/bad JSON -> {}), `effective` is what the gateway resolves
+  // from it (flag > config > default - same loader the gateway boots with).
+  function apiIdentity() {
+    let file = {};
+    try {
+      const parsed = JSON.parse(fs.readFileSync(TOOLFUNNEL_JSON, 'utf8'));
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) file = parsed;
+    } catch (_e) { /* absent or bad JSON - the loader treats it as defaults too */ }
+    let effective = null;
+    try { effective = loadServerConfig(root); } catch (_e) { /* tolerant loader; belt-and-braces */ }
+    return { file, effective, restartRequired: true };
+  }
+
+  // POST /api/identity - merge identity/port fields into toolfunnel.json (unknown fields in the
+  // file are PRESERVED). A string field set to '' removes it (falls back to the default); ports
+  // must be 1..65535 or '' to remove. Changes take effect on the gateway's NEXT start (the server
+  // config is read at boot), which the UI states - no silent expectation of a live change.
+  // Preserved fields are NOT re-validated here: an invalid-typed value already in the file (e.g.
+  // serverName:42) rides along untouched - deliberate, because loadServerConfig's per-field
+  // tolerance is the single defence layer and it falls back to the default for exactly such
+  // fields at boot. Re-validating on write would silently EDIT config the operator didn't touch.
+  function apiSetIdentity(body) {
+    const b = body || {};
+    const STR_FIELDS = ['serverName', 'serverVersion', 'clientName', 'clientVersion'];
+    const PORT_FIELDS = ['httpPort', 'uiPort'];
+    try {
+      let file = {};
+      try {
+        const parsed = JSON.parse(fs.readFileSync(TOOLFUNNEL_JSON, 'utf8'));
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) file = parsed;
+      } catch (_e) { /* start from empty */ }
+      for (const f of STR_FIELDS) {
+        if (!(f in b)) continue;
+        const v = b[f];
+        if (v === '' || v === null) { delete file[f]; continue; }
+        if (typeof v !== 'string' || v.trim().length === 0) {
+          return { status: 400, json: { ok: false, error: f + ' must be a non-empty string (or empty to reset)' } };
+        }
+        file[f] = v.trim();
+      }
+      for (const f of PORT_FIELDS) {
+        if (!(f in b)) continue;
+        const v = b[f];
+        if (v === '' || v === null) { delete file[f]; continue; }
+        const n = Number(v);
+        if (!Number.isInteger(n) || n < 1 || n > 65535) {
+          return { status: 400, json: { ok: false, error: f + ' must be an integer 1..65535 (or empty to reset)' } };
+        }
+        file[f] = n;
+      }
+      // serveLegacy (modern-only policy): only an EXPLICIT false ever lands in the file -
+      // matching the loader's explicit-false-only flip. true/'' removes the field (the
+      // serve-both default), so an untouched config never carries policy it didn't ask for.
+      if ('serveLegacy' in b) {
+        const v = b.serveLegacy;
+        if (v === false || v === 'false') file.serveLegacy = false;
+        else delete file.serveLegacy;
+      }
+      atomicWriteJson(TOOLFUNNEL_JSON, file);
+      return { status: 200, json: { ok: true, file, effective: loadServerConfig(root), restartRequired: true } };
+    } catch (err) {
+      return { status: 500, json: { ok: false, error: (err && err.message) || 'identity update failed' } };
+    }
+  }
+
+  // GET /api/status -> { tools, upstreams, hooks }.
   function apiStatus() {
     let tools = 0;
     let upstreams = 0;
@@ -463,11 +591,11 @@ function createUiServer(opts = {}) {
     return { tools, upstreams, hooks };
   }
 
-  // ── Activity log (logger.js — toggleable JSONL; never throws) ────────────────────────────────────
+  // ── Activity log (logger.js - toggleable JSONL; never throws) ────────────────────────────────────
   // The logger is its own self-gating store (DEFAULT OFF). getConfig/tail are contracted never to
   // throw; setConfig is the writer and CAN throw, so its handler wraps it into a clean 500.
 
-  // GET /api/logs → { entries:[...] } the last 100 parsed records (file order, oldest→newest).
+  // GET /api/logs -> { entries:[...] } the last 100 parsed records (file order, oldest->newest).
   function apiLogs() {
     let entries = [];
     try {
@@ -477,7 +605,7 @@ function createUiServer(opts = {}) {
     return { entries };
   }
 
-  // GET /api/logs/config → { enabled, path } the resolved logger config (missing file → disabled).
+  // GET /api/logs/config -> { enabled, path } the resolved logger config (missing file -> disabled).
   function apiLogsConfig() {
     try {
       return logger.getConfig();
@@ -486,8 +614,8 @@ function createUiServer(opts = {}) {
     }
   }
 
-  // POST /api/logs/config { enabled?, path? } → logger.setConfig (atomic merge). Validates field
-  // types so a bad shape is a clean 400 rather than reaching the writer; a write failure → 500.
+  // POST /api/logs/config { enabled?, path? } -> logger.setConfig (atomic merge). Validates field
+  // types so a bad shape is a clean 400 rather than reaching the writer; a write failure -> 500.
   function apiSetLogsConfig(body) {
     const b = body && typeof body === 'object' && !Array.isArray(body) ? body : {};
     const patch = {};
@@ -511,11 +639,11 @@ function createUiServer(opts = {}) {
     }
   }
 
-  // ── OAuth 2.1 (OPTIONAL; default OFF) — auth config + on-demand jose install ────────────────────
+  // ── OAuth 2.1 (OPTIONAL; default OFF) - auth config + on-demand jose install ────────────────────
   // No secrets here: issuer / audience / jwksUri are public identifiers (the JWKS itself is public),
   // so the full config is safe to surface. `joseInstalled` + `configError` + `ready` drive the panel.
 
-  // GET /api/auth → { config, joseInstalled, josePin, configError, ready }.
+  // GET /api/auth -> { config, joseInstalled, josePin, configError, ready }.
   function apiAuth() {
     let config;
     try { config = authConfig.getConfig(); } catch (_e) { config = { enabled: false }; }
@@ -529,7 +657,7 @@ function createUiServer(opts = {}) {
   }
 
   // POST /api/auth/config { enabled?, issuer?, audience?, jwksUri?, algorithms?, requiredScopes?,
-  //   clockToleranceSec? } → validate field types (clean 400 on a bad shape) then authConfig.setConfig
+  //   clockToleranceSec? } -> validate field types (clean 400 on a bad shape) then authConfig.setConfig
   //   (atomic merge). Permissive about partial configuration (you may set issuer now, audience later);
   //   the response reports joseInstalled + configError + ready so the UI can warn that an ENABLED but
   //   not-yet-ready config will be refused by the HTTP host at start.
@@ -578,7 +706,7 @@ function createUiServer(opts = {}) {
     return { status: 200, json: { ok: true, config, joseInstalled: isJoseInstalled(), configError: cfgErr, ready } };
   }
 
-  // POST /api/oauth/install → install the single optional dependency (jose@PIN) on demand. Async +
+  // POST /api/oauth/install -> install the single optional dependency (jose@PIN) on demand. Async +
   // potentially slow (it shells out to npm); installJose() owns a hard timeout and never throws.
   async function apiOauthInstall() {
     let res;
@@ -595,12 +723,12 @@ function createUiServer(opts = {}) {
     };
   }
 
-  // ── Tool register writes (registry.js — atomic via the store) ──────────────────────────────────
+  // ── Tool register writes (registry.js - atomic via the store) ──────────────────────────────────
 
-  // POST /api/tools/add {entry} → registry.add. When entry.scriptText is supplied for a SCRIPT
+  // POST /api/tools/add {entry} -> registry.add. When entry.scriptText is supplied for a SCRIPT
   // invoke the body is authored under tools/scripts/<basename> FIRST (registry.writeScript, which
   // is path-guarded), then the entry is registered. registry.add validates id/name/invoke/mode and
-  // rejects a duplicate id. Never throws — a bad shape becomes a clean 400.
+  // rejects a duplicate id. Never throws - a bad shape becomes a clean 400.
   function apiToolAdd(body) {
     const entry = body && body.entry;
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
@@ -622,8 +750,8 @@ function createUiServer(opts = {}) {
     }
   }
 
-  // POST /api/tools/remove {id} → registry.remove + clearToolState (drop the enabled/hidden overlay
-  // key so a re-added id starts clean). Unknown id → 404.
+  // POST /api/tools/remove {id} -> registry.remove + clearToolState (drop the enabled/hidden overlay
+  // key so a re-added id starts clean). Unknown id -> 404.
   function apiToolRemove(body) {
     const id = body && body.id;
     if (typeof id !== 'string' || id.length === 0) {
@@ -635,12 +763,12 @@ function createUiServer(opts = {}) {
     } catch (err) {
       return { status: 404, json: { ok: false, error: (err && err.message) || 'tool remove failed' } };
     }
-    // Best-effort overlay cleanup — a failure here must not undo the register removal.
+    // Best-effort overlay cleanup - a failure here must not undo the register removal.
     try { clearToolState(TOOL_STATE_PATH, id); } catch (_e) { /* overlay cleanup is best-effort */ }
     return { status: 200, json: { ok: true } };
   }
 
-  // POST /api/tools/mode {id, mode} → registry.update(id,{mode}). Switching a reference tool that has
+  // POST /api/tools/mode {id, mode} -> registry.update(id,{mode}). Switching a reference tool that has
   // no invoke to "gateway" fails validation (nothing to run) and surfaces as a clean 400.
   function apiToolMode(body) {
     const id = body && body.id;
@@ -660,9 +788,9 @@ function createUiServer(opts = {}) {
     }
   }
 
-  // GET /api/tools/detail?id=<id> → the FULL entry (name, summary, category, instructions, invoke,
+  // GET /api/tools/detail?id=<id> -> the FULL entry (name, summary, category, instructions, invoke,
   // mode) plus the script BODY for a script invoke, so the UI can show + edit everything about one
-  // tool. Read fresh; unknown id → 404.
+  // tool. Read fresh; unknown id -> 404.
   function apiToolDetail(id) {
     if (typeof id !== 'string' || id.length === 0) {
       return { status: 400, json: { ok: false, error: 'id (non-empty string) is required' } };
@@ -687,9 +815,9 @@ function createUiServer(opts = {}) {
   }
 
   // POST /api/tools/update {id, patch:{name?,summary?,category?,instructions?,mode?,invoke?}, scriptText?}
-  // → registry.update (shallow-merge + re-validate + atomic persist). When scriptText is supplied for
+  // -> registry.update (shallow-merge + re-validate + atomic persist). When scriptText is supplied for
   // a script invoke, the body is authored under tools/scripts/ (path-guarded) first. A bad shape /
-  // unknown id surfaces as a clean 400/404 (registry.update throws → caught).
+  // unknown id surfaces as a clean 400/404 (registry.update throws -> caught).
   function apiToolUpdate(body) {
     const id = body && body.id;
     if (typeof id !== 'string' || id.length === 0) {
@@ -713,7 +841,7 @@ function createUiServer(opts = {}) {
     }
   }
 
-  // ── Hook manifest writes (hook-loader.js — atomic; overlay-aware) ───────────────────────────────
+  // ── Hook manifest writes (hook-loader.js - atomic; overlay-aware) ───────────────────────────────
 
   /** The relative scripts/<file> a hook command references, if any (so a scriptText lands where the
    *  command will run it). Returns null when the command names no scripts/ file. */
@@ -723,7 +851,7 @@ function createUiServer(opts = {}) {
     return m ? 'scripts/' + m[1] : null;
   }
 
-  // GET /api/hooks → { hooks:[{ id,event,matcher,enabled,description }] }. loadManifest applies the
+  // GET /api/hooks -> { hooks:[{ id,event,matcher,enabled,description }] }. loadManifest applies the
   // hooks.state.json overlay over the manifest seed, so `enabled` is the LIVE state. Tool Pre/Post
   // gates authored via /api/tools/hook have no id and are surfaced with id:"" (managed on the Tools tab).
   function apiHooks() {
@@ -744,7 +872,7 @@ function createUiServer(opts = {}) {
     };
   }
 
-  // POST /api/hooks/add {entry} → hookLoader.addEntry (validates id/event/command + rejects dup id).
+  // POST /api/hooks/add {entry} -> hookLoader.addEntry (validates id/event/command + rejects dup id).
   // When entry.scriptText is supplied the body is authored under hooks/scripts/ AFTER the entry exists
   // (writeScript resolves the path from the entry's `script`, derived from the command if not given).
   function apiHookAdd(body) {
@@ -778,8 +906,8 @@ function createUiServer(opts = {}) {
     }
   }
 
-  // POST /api/hooks/state {id, action} → enable/disable (setEnabled, overlay-backed) or remove
-  // (removeEntry). Unknown id → 404. setEnabled does not itself verify existence, so we check first
+  // POST /api/hooks/state {id, action} -> enable/disable (setEnabled, overlay-backed) or remove
+  // (removeEntry). Unknown id -> 404. setEnabled does not itself verify existence, so we check first
   // to avoid writing a stray overlay key for a non-existent hook.
   function apiHookState(body) {
     const id = body && body.id;
@@ -814,9 +942,9 @@ function createUiServer(opts = {}) {
     }
   }
 
-  // ── MCP upstream / expose writes (expose-store.js — atomic) ─────────────────────────────────────
+  // ── MCP upstream / expose writes (expose-store.js - atomic) ─────────────────────────────────────
 
-  // POST /api/mcp/add {upstream, expose?:[...]} → addUpstream then addExpose per item. addUpstream
+  // POST /api/mcp/add {upstream, expose?:[...]} -> addUpstream then addExpose per item. addUpstream
   // validates a unique non-empty id, transport, and a stdio command. Each expose item is keyed to the
   // new upstream id.
   function apiMcpAdd(body) {
@@ -838,36 +966,52 @@ function createUiServer(opts = {}) {
     }
   }
 
-  // POST /api/mcp/state {id, action} → enable/disable (setUpstreamEnabled) or remove (removeUpstream,
-  // which cascades the upstream's expose entries). Unknown id → 404.
+  // POST /api/mcp/state {id, action} -> enable/disable (setUpstreamEnabled) or remove (removeUpstream,
+  // which cascades the upstream's expose entries). Unknown id -> 404.
   function apiMcpState(body) {
     const id = body && body.id;
     const action = body && body.action;
     if (typeof id !== 'string' || id.length === 0) {
       return { status: 400, json: { ok: false, error: 'id (non-empty string) is required' } };
     }
-    if (action !== 'enable' && action !== 'disable' && action !== 'remove') {
-      return { status: 400, json: { ok: false, error: 'action must be "enable", "disable", or "remove"' } };
+    if (action !== 'enable' && action !== 'disable' && action !== 'remove' && action !== 'pin' && action !== 'unpin') {
+      return { status: 400, json: { ok: false, error: 'action must be "enable", "disable", "remove", "pin", or "unpin"' } };
     }
     const store = loadExposeStore(EXPOSE_PATH);
     try {
       if (action === 'remove') {
         store.removeUpstream(id);
+      } else if (action === 'pin' || action === 'unpin') {
+        // legacyPin (0.6.0): keep speaking MCP 2024-11-05 to this upstream forever - opt-in,
+        // warns at startup and per call. Takes effect on the upstream's NEXT (re)connect.
+        store.updateUpstream(id, { legacyPin: action === 'pin' });
+        return { status: 200, json: { ok: true, legacyPin: action === 'pin' } };
       } else {
         store.setUpstreamEnabled(id, action === 'enable');
       }
-      return { status: 200, json: { ok: true } };
+      // Disabling/removing the WRAPPED upstream would brick the surface (empty list, no in-band
+      // recovery) - auto-clear the wrap so the funnel comes back.
+      let wrapCleared = false;
+      if (action !== 'enable') {
+        try {
+          if (getPassthrough(loadToolState(TOOL_STATE_PATH)) === id) {
+            setPassthrough(TOOL_STATE_PATH, null);
+            wrapCleared = true;
+          }
+        } catch (_e) { /* never let wrap-cleanup sink the primary action */ }
+      }
+      return { status: 200, json: { ok: true, ...(wrapCleared ? { wrapCleared: true } : {}) } };
     } catch (err) {
       return { status: 404, json: { ok: false, error: (err && err.message) || 'mcp state update failed' } };
     }
   }
 
-  // POST /api/mcp/discover {id} → LIVE connect + tools/list of one upstream (the "Test / Discover"
+  // POST /api/mcp/discover {id} -> LIVE connect + tools/list of one upstream (the "Test / Discover"
   // button). Constructs a throwaway Aggregator over the SAME store (so the isolation guard applies),
   // connects + lists, then closes it. Returns each discovered tool with its SURFACED name (an enabled
-  // expose `as` else `<id>_<tool>` — exactly the name the lean list / matrix use) and its current
+  // expose `as` else `<id>_<tool>` - exactly the name the lean list / matrix use) and its current
   // lean (enabled) + hot state, so the UI can curate per upstream tool. A connect/list failure (bad
-  // command, crash, isolation) is a real user-facing outcome → 200 { ok:false, error }, not a 500.
+  // command, crash, isolation) is a real user-facing outcome -> 200 { ok:false, error }, not a 500.
   async function apiMcpDiscover(body) {
     const id = body && body.id;
     if (typeof id !== 'string' || id.length === 0) {
@@ -877,7 +1021,16 @@ function createUiServer(opts = {}) {
     if (!store.getUpstream(id)) {
       return { status: 404, json: { ok: false, error: `unknown upstream "${id}"` } };
     }
-    const agg = new Aggregator({ store, v3Root: root });
+    // Same wrap exemption as the live gateway: the WRAPPED upstream may reference paths outside
+    // the root (transparent-wrapper mode). Without this provider the throwaway Aggregator
+    // hard-refused exactly the upstreams the wrap security notice tells operators to curate
+    // HERE - per-tool enabled:false via this discover.
+    const agg = new Aggregator({
+      store, v3Root: root,
+      wrapTargetProvider: () => {
+        try { return getPassthrough(loadToolState(TOOL_STATE_PATH)); } catch (_e) { return null; }
+      },
+    });
     let tools;
     try {
       // discover() connects the upstream lazily (isolation-guarded), lists its tools, caches+returns.
@@ -904,8 +1057,8 @@ function createUiServer(opts = {}) {
     return { status: 200, json: { ok: true, id, tools: items } };
   }
 
-  // The POST routing table — path → handler. Each handler takes the parsed body and returns
-  // { status, json } (or a Promise of it — the dispatcher awaits); none throws (every store call is
+  // The POST routing table - path -> handler. Each handler takes the parsed body and returns
+  // { status, json } (or a Promise of it - the dispatcher awaits); none throws (every store call is
   // wrapped). Built once per server instance.
   const POST_HANDLERS = {
     '/api/tools/state': apiSetState,
@@ -919,6 +1072,8 @@ function createUiServer(opts = {}) {
     '/api/mcp/add': apiMcpAdd,
     '/api/mcp/state': apiMcpState,
     '/api/mcp/discover': apiMcpDiscover,
+    '/api/wrap': apiWrap,
+    '/api/identity': apiSetIdentity,
     '/api/logs/config': apiSetLogsConfig,
     '/api/auth/config': apiSetAuthConfig,
     '/api/oauth/install': apiOauthInstall,
@@ -1013,12 +1168,12 @@ function createUiServer(opts = {}) {
       // below write tool scripts and register process-spawning upstreams. Browsers ALWAYS send
       // an Origin header on cross-origin POSTs, so: a PRESENT Origin must itself be loopback
       // (the UI's own pages), while an ABSENT Origin (curl, CLI clients, non-browser tools) is
-      // allowed — for those, the bind address remains the boundary. GETs stay open (read-only).
+      // allowed - for those, the bind address remains the boundary. GETs stay open (read-only).
       if (method !== 'GET') {
         const origin = req.headers && req.headers.origin;
         if (origin) {
           let originHost = null;
-          try { originHost = new URL(origin).host; } catch (_e) { /* malformed → reject below */ }
+          try { originHost = new URL(origin).host; } catch (_e) { /* malformed -> reject below */ }
           if (!originHost || !isLoopbackHost(originHost)) {
             return sendJson(res, 403, { ok: false, error: 'forbidden: cross-origin request (CSRF guard)' });
           }
@@ -1035,7 +1190,7 @@ function createUiServer(opts = {}) {
       if (method === 'GET' && pathName === '/styles.css') {
         return sendStatic(res, 'styles.css');
       }
-      // Image assets (logo, favicon, …): serve any safe-named image file from public/. The filename
+      // Image assets (logo, favicon, ...): serve any safe-named image file from public/. The filename
       // regex + sendStatic's traversal guard keep this strictly inside the public dir.
       if (method === 'GET' && /^\/[A-Za-z0-9._-]+\.(jpg|jpeg|png|svg|ico|webp)$/.test(pathName)) {
         return sendStatic(res, pathName.slice(1));
@@ -1056,6 +1211,9 @@ function createUiServer(opts = {}) {
       }
       if (method === 'GET' && pathName === '/api/upstreams') {
         return sendJson(res, 200, apiUpstreams());
+      }
+      if (method === 'GET' && pathName === '/api/identity') {
+        return sendJson(res, 200, apiIdentity());
       }
       if (method === 'GET' && pathName === '/api/hooks') {
         return sendJson(res, 200, apiHooks());
@@ -1083,9 +1241,9 @@ function createUiServer(opts = {}) {
         } catch (err) {
           return sendJson(res, 400, { ok: false, error: (err && err.message) || 'bad request body' });
         }
-        // Handlers may be sync OR async (apiMcpDiscover connects an upstream) — await covers both.
+        // Handlers may be sync OR async (apiMcpDiscover connects an upstream) - await covers both.
         const result = await POST_HANDLERS[pathName](body);
-        // Audit a config-MUTATING write that SUCCEEDED (self-gating — no-op unless logging is on).
+        // Audit a config-MUTATING write that SUCCEEDED (self-gating - no-op unless logging is on).
         if (result && result.status >= 200 && result.status < 300 && result.json && result.json.ok === true && CONFIG_EVENTS[pathName]) {
           logConfigChange(CONFIG_EVENTS[pathName](body || {}));
         }
@@ -1107,19 +1265,19 @@ function createUiServer(opts = {}) {
   // ── Lifecycle ───────────────────────────────────────────────────────────────────────────────
 
   /**
-   * start — bind the HTTP server. On EADDRINUSE the returned promise REJECTS with a clear error
-   * (the caller decides) — it does NOT crash the process. Resolves to { url, port } once listening.
-   * Port 0 → an OS-assigned ephemeral port (read back from server.address()).
+   * start - bind the HTTP server. On EADDRINUSE the returned promise REJECTS with a clear error
+   * (the caller decides) - it does NOT crash the process. Resolves to { url, port } once listening.
+   * Port 0 -> an OS-assigned ephemeral port (read back from server.address()).
    * @returns {Promise<{url:string, port:number}>}
    */
   function start() {
     if (started) return Promise.resolve({ url: currentUrl(), port: boundPort });
     // The HTTP transport refuses a non-loopback bind unless OAuth is enabled; the UI has NO auth
-    // path, so its refusal is unconditional. This endpoint spawns processes and writes scripts —
+    // path, so its refusal is unconditional. This endpoint spawns processes and writes scripts -
     // "--ui --host 0.0.0.0" would hand an unauthenticated remote console to the LAN.
     if (!isLoopbackBindHost(host)) {
       return Promise.reject(new Error(
-        `refusing to bind the config UI to non-loopback host "${host}" — the UI is unauthenticated ` +
+        `refusing to bind the config UI to non-loopback host "${host}" - the UI is unauthenticated ` +
           'and can spawn processes / write tool scripts. It is loopback-only by design; to configure ' +
           'the gateway from another machine, use an SSH tunnel to 127.0.0.1 instead.'
       ));
@@ -1147,7 +1305,7 @@ function createUiServer(opts = {}) {
     });
   }
 
-  /** stop — close the HTTP server. Idempotent and NEVER throws. */
+  /** stop - close the HTTP server. Idempotent and NEVER throws. */
   function stop() {
     return new Promise((resolve) => {
       if (!httpServer) {
@@ -1167,7 +1325,7 @@ function createUiServer(opts = {}) {
       try {
         if (typeof srv.closeAllConnections === 'function') srv.closeAllConnections();
       } catch (_e) {
-        /* closeAllConnections is Node ≥18.2; absent → close() still resolves */
+        /* closeAllConnections is Node ≥18.2; absent -> close() still resolves */
       }
     });
   }
@@ -1183,7 +1341,7 @@ function createUiServer(opts = {}) {
 
 module.exports = {
   createUiServer,
-  // Exported for unit tests / reuse — the small pure seams.
+  // Exported for unit tests / reuse - the small pure seams.
   isLoopbackHost,
   isLoopbackBindHost,
   escapeRegex,

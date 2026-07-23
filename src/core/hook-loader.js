@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * hook-loader.js — load and persist the hook manifest, resolve runnable specs.
+ * hook-loader.js - load and persist the hook manifest, resolve runnable specs.
  *
  * Contract: HOOK_ENGINE.md §7 (manifest shape) and §8 (loader API).
  *
@@ -11,10 +11,10 @@
  *   - enabledHooksFor(event): the enabled specs for a lifecycle event.
  *   - setEnabled(id, bool): flip a hook's enabled flag and persist ATOMICALLY (temp + rename).
  *   - readScript(id): the hook's source text (for the manager's "open").
- *   - writeScript(id, text): save to the COPY under src/hooks/scripts — and REFUSE any
+ *   - writeScript(id, text): save to the COPY under src/hooks/scripts - and REFUSE any
  *     resolved path outside src/hooks/scripts (path-traversal guard, isolation rule).
  *
- * Hook Manager v2 additions (see the architecture notes §4) — all ADDITIVE; the API above
+ * Hook Manager v2 additions (see the architecture notes §4) - all ADDITIVE; the API above
  * keeps its exact behaviour so the existing loader tests still pass:
  *   - AUTO-DETECT: autodetect() scans <hooksDir>/scripts for hook scripts and reconciles
  *     them with the manifest. The FOLDER is the source of truth for what EXISTS; the
@@ -24,7 +24,7 @@
  *     detect/reconcile/scan/inventory/reconcileScripts.
  *   - PERSIST STATE: enabled-state lives in <hooksDir>/hooks.state.json, an overlay keyed
  *     by hook id ({ "<id>": bool }). On load it is applied OVER the manifest's enabled
- *     flags (overlay WINS — documented precedence). setEnabled writes the overlay
+ *     flags (overlay WINS - documented precedence). setEnabled writes the overlay
  *     atomically (temp+rename) IN ADDITION to mutating the manifest, so toggles survive
  *     restarts and stay separate from the inventory.
  *
@@ -34,7 +34,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-// Lifecycle event names (frozen) — used to validate addEntry specs against the
+// Lifecycle event names (frozen) - used to validate addEntry specs against the
 // six supported events. events.js has zero host imports, so this cannot cycle.
 const { EVENT_NAMES } = require('./events');
 
@@ -89,7 +89,7 @@ class HookLoader {
     this.manifestPath = manifestPath;
     this.manifest = manifest;
     this.hooksDir = hooksDir;
-    // The scripts copy directory — the ONLY place writeScript may touch.
+    // The scripts copy directory - the ONLY place writeScript may touch.
     this.scriptsDir = path.join(hooksDir, 'scripts');
     // v2: the persisted enabled-state overlay (keyed by hook id), kept separate
     // from the manifest inventory. Lives next to the manifest in the hooks dir.
@@ -128,7 +128,7 @@ class HookLoader {
 
   /**
    * Read the enabled-state overlay from hooks.state.json. The overlay is a flat
-   * map of hook id → boolean. Missing/unreadable/malformed file → empty overlay
+   * map of hook id -> boolean. Missing/unreadable/malformed file -> empty overlay
    * (the manifest's own enabled flags stand). Never throws.
    *
    * @returns {Object<string, boolean>}
@@ -180,13 +180,13 @@ class HookLoader {
    *
    * The FOLDER is the source of truth for what EXISTS; the manifest is CONFIG.
    *   - Manifest entries are returned with `present` reflecting whether their
-   *     `script` file exists on disk (manifest entries with no script — inline
-   *     commands — are treated as present:true, since there is no file to miss).
+   *     `script` file exists on disk (manifest entries with no script - inline
+   *     commands - are treated as present:true, since there is no file to miss).
    *   - Scripts present on disk but absent from the manifest are surfaced as
    *     `detected` entries: enabled:false, detected:true, event/matcher unknown.
    *
    * Returns a normalised inventory. `all` is the union (configured first, in
-   * manifest order, then detected). Pure read — does not mutate the manifest or
+   * manifest order, then detected). Pure read - does not mutate the manifest or
    * touch disk beyond reading the scripts dir.
    *
    * @returns {{ all: object[], configured: object[], detected: object[], orphans: object[] }}
@@ -203,7 +203,7 @@ class HookLoader {
       const base = scriptBasename(h.script);
       if (base) referenced.add(base);
 
-      // Inline-command hooks (script:null) have no file to verify → present.
+      // Inline-command hooks (script:null) have no file to verify -> present.
       const present = base ? scriptFiles.has(base) : true;
       const entry = Object.assign({}, h, {
         detected: false,
@@ -221,13 +221,13 @@ class HookLoader {
       configured.push(entry);
     }
 
-    // Scripts on disk with no manifest entry → detected, unconfigured.
+    // Scripts on disk with no manifest entry -> detected, unconfigured.
     const detected = [];
     for (const base of scriptFiles) {
       if (referenced.has(base)) continue;
       detected.push({
         id: `detected/${base.replace(/\.[^.]+$/, '')}`,
-        event: null, // unknown — not yet configured
+        event: null, // unknown - not yet configured
         matcher: null,
         type: 'command',
         script: path.posix.join('scripts', base),
@@ -266,7 +266,7 @@ class HookLoader {
    * Scan the scripts dir for candidate hook script files. Hook scripts are
    * executable shell/node scripts; we treat .sh/.js/.cmd/.bat/.ps1/.py as hook
    * scripts and ignore everything else (e.g. a *.conf file is config, not a
-   * hook). Missing dir → empty set. Never throws.
+   * hook). Missing dir -> empty set. Never throws.
    *
    * @returns {Set<string>} basenames of script files present on disk
    * @private
@@ -294,12 +294,12 @@ class HookLoader {
    * load time. setEnabled writes that overlay atomically so the toggle survives a
    * restart and stays separate from the auto-detected inventory. For backward
    * compatibility (and so the manifest stays a faithful default), it ALSO mirrors
-   * the flag into the manifest — writing the ORIGINAL (unexpanded) command strings
+   * the flag into the manifest - writing the ORIGINAL (unexpanded) command strings
    * so the absolute ${HOOKS_DIR} expansion never leaks into the portable on-disk
    * manifest. We re-read the raw manifest from disk to do this.
    *
    * If the hook is a v2 DETECTED entry (on disk, not in the manifest), there is no
-   * manifest row to mirror into — the overlay alone carries its state.
+   * manifest row to mirror into - the overlay alone carries its state.
    *
    * @param {string} id hook id
    * @param {boolean} bool desired enabled state
@@ -309,11 +309,11 @@ class HookLoader {
     const desired = !!bool;
 
     // Update the in-memory (expanded) spec so the live engine sees the change
-    // immediately — if this id corresponds to a configured manifest hook.
+    // immediately - if this id corresponds to a configured manifest hook.
     const liveSpec = this.getSpec(id);
     if (liveSpec) liveSpec.enabled = desired;
 
-    // (1) Persist the overlay — the authoritative, precedence-winning store.
+    // (1) Persist the overlay - the authoritative, precedence-winning store.
     const overlay = this.readState();
     overlay[id] = desired;
     this.writeState(overlay);
@@ -326,7 +326,7 @@ class HookLoader {
       raw = JSON.parse(fs.readFileSync(this.manifestPath, 'utf8'));
     } catch (err) {
       // If the on-disk file is unreadable, fall back to persisting a re-collapsed copy
-      // of the in-memory manifest (best effort — still atomic).
+      // of the in-memory manifest (best effort - still atomic).
       raw = collapseManifest(this.manifest, this.hooksDir);
     }
 
@@ -349,8 +349,8 @@ class HookLoader {
    * Mirrors setEnabled's persistence pattern: the RAW manifest JSON is re-read from
    * disk (so the portable ${HOOKS_DIR} token inside command strings stays UNCOLLAPSED
    * on disk), the validated spec is appended VERBATIM, and the file is rewritten
-   * atomically (temp + rename). In ADDITION an EXPANDED copy — ${HOOKS_DIR} resolved in
-   * the command — is pushed onto this.manifest.hooks so enabledHooksFor / the live
+   * atomically (temp + rename). In ADDITION an EXPANDED copy - ${HOOKS_DIR} resolved in
+   * the command - is pushed onto this.manifest.hooks so enabledHooksFor / the live
    * engine observe the new hook WITHOUT a reload.
    *
    * @param {object} spec
@@ -384,7 +384,7 @@ class HookLoader {
     const stored = Object.assign({}, spec, { enabled: spec.enabled === true });
 
     // Re-read the RAW manifest from disk (commands uncollapsed). Fall back to a
-    // re-collapsed copy of the in-memory manifest if the file is unreadable — same
+    // re-collapsed copy of the in-memory manifest if the file is unreadable - same
     // resilience as setEnabled, and the collapse keeps ${HOOKS_DIR} uncollapsed too.
     let raw;
     try {
@@ -415,7 +415,7 @@ class HookLoader {
 
   /**
    * Remove a hook entry by id from the manifest, the live engine view, and the
-   * persisted enabled-state overlay. Does NOT delete the script file on disk —
+   * persisted enabled-state overlay. Does NOT delete the script file on disk -
    * scripts are inventory (auto-detect's source of truth); unconfiguring a hook
    * only drops its manifest row, leaving any file for re-detection.
    *
@@ -506,7 +506,7 @@ class HookLoader {
     this._assertInsideScriptsDir(scriptPath);
 
     // Atomic write within the scripts dir (temp + rename), preserving any line endings
-    // the caller supplied (do not normalize — the shell scripts may be CRLF-sensitive).
+    // the caller supplied (do not normalize - the shell scripts may be CRLF-sensitive).
     atomicWriteText(scriptPath, text, this.scriptsDir);
   }
 
@@ -572,7 +572,7 @@ function normalizeState(raw) {
 }
 
 /**
- * The basename of a spec's script field (e.g. "scripts/on-prompt.sh" → "on-prompt.sh").
+ * The basename of a spec's script field (e.g. "scripts/on-prompt.sh" -> "on-prompt.sh").
  * Returns null for inline-command hooks (script null/empty). Tolerates either path
  * separator since manifests use forward slashes.
  *
@@ -696,7 +696,7 @@ function loadManifest(manifestPath) {
     if (!h || typeof h !== 'object') continue;
     const spec = Object.assign({}, h);
     // Expand ${HOOKS_DIR} inside the command (and, defensively, any string field that
-    // might reference it — but command is the documented carrier).
+    // might reference it - but command is the documented carrier).
     if (typeof spec.command === 'string') {
       spec.command = expandHooksDir(spec.command, hooksDir);
     }

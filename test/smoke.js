@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * smoke.js — fast, socket-free smoke test of the gateway core.
+ * smoke.js - fast, socket-free smoke test of the gateway core.
  *
  * Drives buildProtocol() + handleMessage() directly (no transport, no port) to prove the
  * whole Phase-1 stack wires and runs: register + manifest load, the meta-tools advertise, and
@@ -23,7 +23,7 @@ function rpc(build, method, params) {
   let build;
   try {
     build = buildProtocol();
-    pass.push('buildProtocol() wired — register + manifest + engine loaded without throwing');
+    pass.push('buildProtocol() wired - register + manifest + engine loaded without throwing');
   } catch (e) {
     fail.push('buildProtocol() threw: ' + (e && e.message));
     console.log(JSON.stringify({ pass, fail }, null, 2));
@@ -33,7 +33,7 @@ function rpc(build, method, params) {
 
   const init = await rpc(build, 'initialize');
   const name = init && init.result && init.result.serverInfo && init.result.serverInfo.name;
-  if (name === 'toolfunnel') pass.push('initialize → serverInfo.name = "toolfunnel"');
+  if (name === 'toolfunnel') pass.push('initialize -> serverInfo.name = "toolfunnel"');
   else fail.push('initialize serverInfo.name = ' + JSON.stringify(name));
 
   const list = await rpc(build, 'tools/list');
@@ -49,7 +49,7 @@ function rpc(build, method, params) {
   let briefs = null;
   try { briefs = JSON.parse(text); } catch (_e) { /* leave null */ }
   const ids = Array.isArray(briefs) ? briefs.map((b) => b && b.id) : [];
-  if (ids.length > 0) pass.push('toolfunnel_list_tools → ' + ids.length + ' demo tools: ' + ids.join(', '));
+  if (ids.length > 0) pass.push('toolfunnel_list_tools -> ' + ids.length + ' demo tools: ' + ids.join(', '));
   else fail.push('toolfunnel_list_tools returned no briefs; raw text = ' + String(text).slice(0, 200));
 
   console.log(JSON.stringify({ pass, fail }, null, 2));

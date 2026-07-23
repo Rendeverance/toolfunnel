@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "description": "Tool register for the gateway — built-in demo scripts.",
+  "description": "Tool register for the gateway - built-in demo scripts.",
   "tools": [
     {
       "id": "echo",
@@ -95,7 +95,7 @@
       "name": "tf_tool_set",
       "summary": "Activate, deactivate, promote (hot), hide, or remove a register tool.",
       "category": "management",
-      "instructions": "Args: { id, action:'enable'|'disable'|'hot'|'unhot'|'hide'|'unhide'|'remove' }. enable/disable flips the active overlay (default ON) — disabled tools drop from toolfunnel_list_tools. hot/unhot promote/demote on the TOP-LEVEL every-turn surface (tools/list), making it directly callable (default OFF). hide/unhide declutter the MANAGER views only (tf_list + UI) and do NOT change what the AI sees. The id may be a local tool id, an upstream surfaced name, or a meta-tool name. remove deletes the register entry and purges its state key. All LIVE (no restart).",
+      "instructions": "Args: { id, action:'enable'|'disable'|'hot'|'unhot'|'hide'|'unhide'|'remove' }. enable/disable flips the active overlay (default ON) - disabled tools drop from toolfunnel_list_tools. hot/unhot promote/demote on the TOP-LEVEL every-turn surface (tools/list), making it directly callable (default OFF). hide/unhide declutter the MANAGER views only (tf_list + UI) and do NOT change what the AI sees. The id may be a local tool id, an upstream surfaced name, or a meta-tool name. remove deletes the register entry and purges its state key. All LIVE (no restart).",
       "invoke": {
         "type": "script",
         "path": "scripts/tf-tool-set.js"
@@ -121,6 +121,17 @@
       "invoke": {
         "type": "script",
         "path": "scripts/tf-mcp-set.js"
+      }
+    },
+    {
+      "id": "tf_wrap",
+      "name": "tf_wrap",
+      "summary": "Wrap ONE attached upstream MCP: its tools become the entire surface (transparent passthrough).",
+      "category": "management",
+      "instructions": "Args: {} reports status ({ wrapping, upstreams }). { off:true } clears the wrap. { upstream:'<id>', confirm:true } sets it: that upstream's tools become the ENTIRE advertised surface under their ORIGINAL names, everything else (meta-tools INCLUDED) is hidden and uncallable, and every call still fires the PreToolUse gate. Because the gateway answers both MCP eras, this keeps a legacy-only MCP working with 2026-07-28-era clients. WARNING (why confirm is required): the wrap hides tf_wrap itself, so YOU cannot undo it in-band afterwards - recovery is the config web UI (--ui) or `toolfunnel wrap --off` on a terminal. A running host applies the change live.",
+      "invoke": {
+        "type": "script",
+        "path": "scripts/tf-wrap.js"
       }
     },
     {
@@ -150,7 +161,7 @@
       "name": "tf_list",
       "summary": "List register tools, upstream MCPs, or hooks with their active state.",
       "category": "management",
-      "instructions": "Args: { kind:'tools'|'mcps'|'hooks' }. tools → register briefs + enabled/hidden overlay; mcps → upstreams + expose selections; hooks → configured + auto-detected inventory with live enabled state. Read-only.",
+      "instructions": "Args: { kind:'tools'|'mcps'|'hooks' }. tools -> register briefs + enabled/hidden overlay; mcps -> upstreams + expose selections; hooks -> configured + auto-detected inventory with live enabled state. Read-only.",
       "invoke": {
         "type": "script",
         "path": "scripts/tf-list.js"

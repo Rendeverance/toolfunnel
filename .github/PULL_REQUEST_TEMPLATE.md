@@ -1,6 +1,6 @@
 ## What this changes
 
-One or two sentences — what, and why.
+One or two sentences - what, and why.
 
 ## Checklist
 

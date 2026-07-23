@@ -1,20 +1,20 @@
 'use strict';
 
 /**
- * proxy.test.js — proves ToolFunnel ATTACHES and FORWARDS (proxies) an upstream MCP, and that a
+ * proxy.test.js - proves ToolFunnel ATTACHES and FORWARDS (proxies) an upstream MCP, and that a
  * forwarded call passes through the fail-closed policy gate.
  *
  * It spawns the REAL gateway as a child (`node bin/toolfunnel.js`, stdio) with the bundled mock
  * upstream (mcp/servers/mock-upstream/server.js) attached via a snapshotted expose.json, and asserts:
  *
- *   PART A — FORWARD:  tools/list advertises the forwarded tools (mockproxy_ping / _add / _echo),
+ *   PART A - FORWARD:  tools/list advertises the forwarded tools (mockproxy_ping / _add / _echo),
  *                      and calling them returns the UPSTREAM's real answers ("pong", "5", echoed text).
- *   PART B — GATE:     with a PreToolUse deny hook matching the forwarded tool name, the forwarded
+ *   PART B - GATE:     with a PreToolUse deny hook matching the forwarded tool name, the forwarded
  *                      call is BLOCKED (isError, no "pong"), while a NON-matched forwarded tool
- *                      (mockproxy_add) still runs — proving the gate is per-tool and fails closed.
+ *                      (mockproxy_add) still runs - proving the gate is per-tool and fails closed.
  *
  * NON-DESTRUCTIVE: mcp/expose.json and hooks/hooks.manifest.json are snapshotted up front and
- * restored byte-for-byte (or re-absent) in `finally` — the live config is left exactly as found.
+ * restored byte-for-byte (or re-absent) in `finally` - the live config is left exactly as found.
  * Paths are DERIVED from this file's location (no hardcoded drive/root). Node built-ins only.
  *
  * Run:  node test/proxy.test.js     (exit 0 = pass, non-zero = fail)
@@ -132,8 +132,8 @@ async function withGateway(fn) {
 
 // Pull the plain text out of a tools/call response envelope.
 function textOf(resp) {
-  // Forwarded results are passed through TRANSPARENTLY — the upstream's content array IS the
-  // tools/call content — so the upstream's text is content[0].text directly, no unwrapping. (If
+  // Forwarded results are passed through TRANSPARENTLY - the upstream's content array IS the
+  // tools/call content - so the upstream's text is content[0].text directly, no unwrapping. (If
   // this ever needs to JSON.parse content[0].text again, the transparent pass-through regressed.)
   const c = resp && resp.result && resp.result.content;
   return Array.isArray(c) && c[0] && typeof c[0].text === 'string' ? c[0].text : '';
@@ -150,12 +150,13 @@ function exposeConfig() {
       command: process.execPath,
       args: [MOCK_SERVER],
       enabled: true,
-      description: 'proxy.test.js fixture — the bundled mock upstream.',
+      description: 'proxy.test.js fixture - the bundled mock upstream.',
     }],
     expose: [
       { upstream: 'mockproxy', tool: 'ping', as: 'mockproxy_ping', category: 'test', enabled: true },
       { upstream: 'mockproxy', tool: 'add', as: 'mockproxy_add', category: 'test', enabled: true },
       { upstream: 'mockproxy', tool: 'echo', as: 'mockproxy_echo', category: 'test', enabled: true },
+      { upstream: 'mockproxy', tool: 'blocks', as: 'mockproxy_blocks', category: 'test', enabled: true },
     ],
   }, null, 2) + '\n';
 }
@@ -192,7 +193,7 @@ function denyManifest() {
     assert.ok(fs.existsSync(MOCK_SERVER), 'mock upstream missing at ' + MOCK_SERVER);
     assert.ok(fs.existsSync(DENY_HOOK), 'deny-hook fixture missing at ' + DENY_HOOK);
 
-    // ── PART A — FORWARD (allow-all manifest) ──────────────────────────────────────────────────
+    // ── PART A - FORWARD (allow-all manifest) ──────────────────────────────────────────────────
     fs.writeFileSync(EXPOSE_PATH, exposeConfig());
     fs.writeFileSync(MANIFEST_PATH, JSON.stringify({ version: 1, hooks: [] }, null, 2) + '\n');
 
@@ -220,9 +221,20 @@ function denyManifest() {
       check('FORWARD: mockproxy_echo round-trips text through the upstream', () => {
         assert.strictEqual(textOf(echo), 'hello toolfunnel', 'expected echoed text, got ' + JSON.stringify(textOf(echo)));
       });
+
+      // Envelope fidelity on the CURATED-DIRECT path: multi-block content AND structuredContent
+      // must arrive verbatim - the wrap path always kept them, but the curated shaping used to
+      // drop structuredContent.
+      const blocks = await client.request('tools/call', { name: 'mockproxy_blocks', arguments: {} });
+      check('FORWARD: curated-direct keeps multi-block content + structuredContent', () => {
+        const r = blocks.result || {};
+        assert.ok(Array.isArray(r.content) && r.content.length >= 2, 'expected multi-block content, got ' + JSON.stringify(r.content));
+        assert.ok(r.structuredContent && typeof r.structuredContent === 'object',
+          'structuredContent DROPPED on the curated-direct path: ' + JSON.stringify(r));
+      });
     });
 
-    // ── PART B — GATE (PreToolUse deny on the forwarded tool, fails closed) ─────────────────────
+    // ── PART B - GATE (PreToolUse deny on the forwarded tool, fails closed) ─────────────────────
     fs.writeFileSync(MANIFEST_PATH, denyManifest()); // expose.json unchanged (still the mock)
 
     await withGateway(async (client) => {
@@ -230,7 +242,7 @@ function denyManifest() {
       check('GATE: forwarded mockproxy_ping is BLOCKED (isError, upstream never answers)', () => {
         assert.strictEqual(blocked.result && blocked.result.isError, true,
           'expected isError:true for a blocked forward, got ' + JSON.stringify(blocked.result));
-        assert.notStrictEqual(textOf(blocked), 'pong', 'the upstream answered "pong" — the gate FAILED OPEN');
+        assert.notStrictEqual(textOf(blocked), 'pong', 'the upstream answered "pong" - the gate FAILED OPEN');
       });
 
       const stillRuns = await client.request('tools/call', { name: 'mockproxy_add', arguments: { a: 10, b: 7 } });
@@ -255,7 +267,7 @@ function denyManifest() {
 
   const passed = results.filter((r) => r.ok).length;
   const failed = results.length - passed;
-  const ok = !fatal && failed === 0 && results.length === 6;
+  const ok = !fatal && failed === 0 && results.length === 7;
 
   // Confirm we left the config as we found it.
   const exposeOk = snapshot(EXPOSE_PATH) === exposeSnap;
@@ -263,10 +275,10 @@ function denyManifest() {
   console.log('restore: expose.json ' + (exposeOk ? 'OK' : 'MISMATCH') + ', hooks.manifest.json ' + (manifestOk ? 'OK' : 'MISMATCH'));
 
   if (ok && exposeOk && manifestOk) {
-    console.log(`\nPASS: proxy test — ${passed}/6 assertions passed (forwarded tools list + return real answers; PreToolUse deny hard-blocks a forwarded call; per-tool; config restored)`);
+    console.log(`\nPASS: proxy test - ${passed}/7 assertions passed (forwarded tools list + real answers incl. structuredContent; PreToolUse deny hard-blocks a forwarded call; per-tool; config restored)`);
     process.exit(0);
   } else {
-    console.log(`\nFAIL: proxy test — ${passed}/${results.length} assertions passed${(!exposeOk || !manifestOk) ? ' (CONFIG RESTORE MISMATCH)' : ''}`);
+    console.log(`\nFAIL: proxy test - ${passed}/${results.length} assertions passed${(!exposeOk || !manifestOk) ? ' (CONFIG RESTORE MISMATCH)' : ''}`);
     process.exit(1);
   }
 })().catch((e) => {

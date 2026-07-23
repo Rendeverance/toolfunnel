@@ -1,4 +1,4 @@
-/* ToolFunnel management console — dark, modern, technical. Vanilla CSS, zero external assets. */
+/* ToolFunnel management console - dark, modern, technical. Vanilla CSS, zero external assets. */
 
 :root {
   --bg: #0c0e13;
@@ -406,7 +406,7 @@ code { font-family: var(--mono); color: var(--accent); background: rgba(92, 200,
 .toast.error { border-left-color: var(--danger); }
 .toast code { display: inline-block; margin-top: 2px; word-break: break-all; }
 
-/* ── Top-level surface panel (Tools tab — the visibility matrix's every-turn axis) ── */
+/* ── Top-level surface panel (Tools tab - the visibility matrix's every-turn axis) ── */
 .surface-panel {
   background: var(--bg-elev);
   border: 1px solid var(--border);
@@ -433,7 +433,7 @@ code { font-family: var(--mono); color: var(--accent); background: rgba(92, 200,
 
 /* Hot row accent + the per-row Hot toggle */
 .row.is-hot { border-color: var(--accent-dim); box-shadow: inset 3px 0 0 var(--accent); }
-/* A DISABLED tool is never actually on the every-turn surface — drop the hot accent so a dimmed row
+/* A DISABLED tool is never actually on the every-turn surface - drop the hot accent so a dimmed row
  * doesn't read as "still promoted" (the Hot switch stays on, reflecting the stored intent). */
 .row.is-disabled.is-hot { box-shadow: none; border-color: var(--border); }
 .toggle-group.hot .toggle-label { color: var(--accent); }
@@ -443,7 +443,7 @@ code { font-family: var(--mono); color: var(--accent); background: rgba(92, 200,
 .show-hidden { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text-dim); white-space: nowrap; cursor: pointer; }
 .show-hidden input { accent-color: var(--accent); cursor: pointer; margin: 0; }
 
-/* ── Discovered upstream tools (MCPs tab — the live Discover button) ───────────── */
+/* ── Discovered upstream tools (MCPs tab - the live Discover button) ───────────── */
 .discovered { grid-column: 1 / -1; margin-top: 14px; border-top: 1px solid var(--border); padding-top: 12px; }
 .discovered-row {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;

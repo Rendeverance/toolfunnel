@@ -1,16 +1,16 @@
 #!/usr/bin/env node
 'use strict';
-// release.js — one-command release for toolfunnel.
+// release.js - one-command release for toolfunnel.
 //
-//   npm run release                      → patch bump, full pipeline
-//   npm run release -- minor             → minor bump
-//   npm run release -- --notes "..."     → headline paragraph for the release body
-//   npm run release -- --no-npm          → skip npm publish (GitHub-only release)
-//   npm run release -- --dry-run         → print the plan, mutate nothing
+//   npm run release                      -> patch bump, full pipeline
+//   npm run release -- minor             -> minor bump
+//   npm run release -- --notes "..."     -> headline paragraph for the release body
+//   npm run release -- --no-npm          -> skip npm publish (GitHub-only release)
+//   npm run release -- --dry-run         -> print the plan, mutate nothing
 //
-// Pipeline: preflight (clean tree, on main, not behind origin) → npm test →
-// bump package.json → commit → tag vX.Y.Z → push branch + tag → create GitHub
-// Release (token from `git credential fill`, never stored) → npm publish.
+// Pipeline: preflight (clean tree, on main, not behind origin) -> npm test ->
+// bump package.json -> commit -> tag vX.Y.Z -> push branch + tag -> create GitHub
+// Release (token from `git credential fill`, never stored) -> npm publish.
 //
 // Releases only ever ADD: existing tags, releases and published npm versions
 // are never touched (project policy: previous versions are never deleted).
@@ -121,12 +121,12 @@ function npmRun(args) {
   if (!repoMatch) fail('could not derive owner/repo from package.json repository.url');
   const repoPath = repoMatch[1];
 
-  // Preflight — every check is reported in dry-run, enforced for real runs.
+  // Preflight - every check is reported in dry-run, enforced for real runs.
   const dirty = git(['status', '--porcelain']);
   const branch = git(['rev-parse', '--abbrev-ref', 'HEAD']);
   let behind = 'unknown';
   try {
-    // A DRY RUN touches the network not at all — "nothing executed" includes the fetch. This is
+    // A DRY RUN touches the network not at all - "nothing executed" includes the fetch. This is
     // load-bearing beyond principle: on CI's fresh checkout, a preflight fetch pulled in the tag
     // the release had just pushed, MID-TEST, so release.test.js's "dry-run created no tags"
     // before/after comparison false-positived on every lane. Dry-run compares against the local
@@ -153,17 +153,17 @@ function npmRun(args) {
   log(`  release body:\n${body.split('\n').map((l) => '    ' + l).join('\n')}`);
 
   if (DRY) {
-    log('DRY RUN — nothing executed.');
+    log('DRY RUN - nothing executed.');
     return;
   }
 
-  if (dirty) fail('working tree is not clean — commit or stash first');
-  if (branch !== 'main') fail(`on branch "${branch}" — releases cut from main only`);
-  if (behind !== '0' && behind !== 'unknown') fail(`branch is ${behind} commit(s) behind origin — pull first`);
+  if (dirty) fail('working tree is not clean - commit or stash first');
+  if (branch !== 'main') fail(`on branch "${branch}" - releases cut from main only`);
+  if (behind !== '0' && behind !== 'unknown') fail(`branch is ${behind} commit(s) behind origin - pull first`);
 
   log('running tests...');
   const test = npmRun(['test']);
-  if (test.status !== 0) fail('test suite failed — release aborted');
+  if (test.status !== 0) fail('test suite failed - release aborted');
 
   pkg.version = next;
   fs.writeFileSync(PKG_PATH, JSON.stringify(pkg, null, 2) + '\n');
@@ -181,7 +181,7 @@ function npmRun(args) {
     log('publishing to npm (you may be prompted for an OTP)...');
     const pub = npmRun(['publish']);
     if (pub.status !== 0) {
-      fail('npm publish failed — the GitHub side is complete; re-run publish manually when ready');
+      fail('npm publish failed - the GitHub side is complete; re-run publish manually when ready');
     }
     log(`npm publish: toolfunnel@${next} live`);
   }

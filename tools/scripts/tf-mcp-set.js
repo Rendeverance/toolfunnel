@@ -2,18 +2,18 @@
 'use strict';
 
 /**
- * tf-mcp-set.js — gateway-run MANAGEMENT tool: enable, disable, or remove an
+ * tf-mcp-set.js - gateway-run MANAGEMENT tool: enable, disable, or remove an
  * upstream MCP in the ExposeStore.
  *
  * A first-party "management" script-tool (discovered via list_tools, executed via
  * run_tool through the PreToolUse gate). It edits ToolFunnel's own MCP config
- * (mcp/expose.json) via the ExposeStore — it does not add MCP-protocol commands.
+ * (mcp/expose.json) via the ExposeStore - it does not add MCP-protocol commands.
  *
  * Contract with the register (`defaultRunScript`)
  * ----------------------------------------------------------
  *   - Structured args arrive as a JSON string in env TOOLFUNNEL_TOOL_ARGS ({} if
  *     absent). Shape: { id, action: 'enable'|'disable'|'remove' }.
- *   - Prints EXACTLY ONE JSON line to stdout and exits 0 — ALWAYS. A logical
+ *   - Prints EXACTLY ONE JSON line to stdout and exits 0 - ALWAYS. A logical
  *     failure (bad args, unknown id) is reported as { ok:false, error }.
  *
  * Output (stdout), exactly one JSON object:
@@ -32,11 +32,28 @@ const path = require('node:path');
 // Shared HOME/engine resolution (see tf-env.js): config beside us, engine from the package.
 const { HOME, srcRequire } = require('./tf-env');
 const { loadExposeStore } = srcRequire('mcp/expose-store');
+const { loadToolState, getPassthrough, setPassthrough } = srcRequire('tools/tool-state');
 
 const ROOT = HOME;
 
 /** The MCP config (upstreams + expose), per the host path contract. */
 const EXPOSE_PATH = path.join(ROOT, 'mcp', 'expose.json');
+const STATE_PATH = path.join(ROOT, 'tools', 'tools.state.json');
+
+/**
+ * If `id` is the currently-wrapped upstream, clear the wrap - a disable/remove of the wrapped
+ * upstream would otherwise BRICK the whole surface (empty tool list, tf_wrap itself gone) with
+ * only out-of-band recovery. Returns true if a wrap was cleared.
+ */
+function clearWrapIfTarget(id) {
+  try {
+    if (getPassthrough(loadToolState(STATE_PATH)) === id) {
+      setPassthrough(STATE_PATH, null);
+      return true;
+    }
+  } catch (_e) { /* never let wrap-cleanup sink the primary action */ }
+  return false;
+}
 
 /**
  * Parse TOOLFUNNEL_TOOL_ARGS (a JSON string; {} if absent). Throws on malformed
@@ -54,7 +71,7 @@ function parseArgs() {
 }
 
 /**
- * Perform the action. May throw — main() turns any throw into { ok:false, error }.
+ * Perform the action. May throw - main() turns any throw into { ok:false, error }.
  * @returns {object} the success payload
  */
 function run() {
@@ -75,11 +92,13 @@ function run() {
     }
     case 'disable': {
       const upstream = store.setUpstreamEnabled(id, false);
-      return { ok: true, action, id, upstream };
+      const unwrapped = clearWrapIfTarget(id);
+      return { ok: true, action, id, upstream, ...(unwrapped ? { wrapCleared: true } : {}) };
     }
     case 'remove': {
       store.removeUpstream(id);
-      return { ok: true, action, id, removed: true };
+      const unwrapped = clearWrapIfTarget(id);
+      return { ok: true, action, id, removed: true, ...(unwrapped ? { wrapCleared: true } : {}) };
     }
     default:
       throw new Error(

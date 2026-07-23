@@ -1,11 +1,11 @@
 'use strict';
 
 /**
- * management.test.js — proves the first-party MANAGEMENT register functions
+ * management.test.js - proves the first-party MANAGEMENT register functions
  * round-trip through the GATED path and leave real config byte-for-byte untouched.
  *
  * The management capabilities (category "management") are NOT new MCP-protocol
- * commands — they are first-party register entries discovered via
+ * commands - they are first-party register entries discovered via
  * toolfunnel_list_tools and executed via toolfunnel_run_tool through the PreToolUse
  * gate. This test drives EXACTLY that path:
  *
@@ -19,10 +19,10 @@
  *
  * Assertions (the task contract):
  *   1. tools/list (protocol.toolDefinitions) includes toolfunnel_run_tool;
- *      toolfunnel_list_tools({category:'management'}) returns all 9 management tools.
- *   2. TOOLS  : tf_tool_add → list shows it → disable hides it → enable shows it → remove drops it.
- *   3. MCP    : tf_mcp_add → list shows it → disable → enable → remove (config only; nothing spawned).
- *   4. HOOKS  : tf_hook_add (PostToolUse) → list shows it → disable → enable → remove.
+ *      toolfunnel_list_tools({category:'management'}) returns all 10 management tools.
+ *   2. TOOLS  : tf_tool_add -> list shows it -> disable hides it -> enable shows it -> remove drops it.
+ *   3. MCP    : tf_mcp_add -> list shows it -> disable -> enable -> remove (config only; nothing spawned).
+ *   4. HOOKS  : tf_hook_add (PostToolUse) -> list shows it -> disable -> enable -> remove.
  *   5. GATE   : a PreToolUse deny hook matching tf_tool_add ⇒ a gated tf_tool_add is
  *               BLOCKED (ok:false) AND the register file is UNCHANGED. (Load-bearing.)
  *   6. RESTORE: every config file is restored from the pre-test snapshot and the
@@ -48,7 +48,7 @@ const { buildProtocol } = require(path.join(__dirname, '..', 'src', 'mcp', 'serv
 const ROOT = path.resolve(__dirname, '..');
 
 // The config stores the management functions own. hooks.state.json may not exist
-// up front — it is created the first time a hook is toggled — so it is snapshotted
+// up front - it is created the first time a hook is toggled - so it is snapshotted
 // as "absent" and DELETED again on restore.
 const CONFIG_FILES = [
   path.join(ROOT, 'tools', 'tools.register.json'),
@@ -58,12 +58,12 @@ const CONFIG_FILES = [
   path.join(ROOT, 'hooks', 'hooks.state.json'),
 ];
 
-// Any sacrificial hook script the gate proof authors under hooks/scripts — cleaned
+// Any sacrificial hook script the gate proof authors under hooks/scripts - cleaned
 // up alongside the config restore (snapshot/restore covers JSON, not script files).
 const DENY_SCRIPT = path.join(ROOT, 'hooks', 'scripts', '__tf_test_deny.js');
 
 // The nine management register ids (category "management").
-const MGMT_IDS = ['tf_tool_add', 'tf_tool_set', 'tf_mcp_add', 'tf_mcp_set', 'tf_hook_add', 'tf_hook_set', 'tf_list', 'tf_log', 'tf_pack'];
+const MGMT_IDS = ['tf_tool_add', 'tf_tool_set', 'tf_mcp_add', 'tf_mcp_set', 'tf_hook_add', 'tf_hook_set', 'tf_list', 'tf_log', 'tf_pack', 'tf_wrap'];
 
 // A self-denying PreToolUse hook body (mirrors test/fixtures/scripts/deny-hook.js):
 // reads stdin, prints the JSON protocol permissionDecision:"deny" on exit 0.
@@ -118,7 +118,7 @@ function restore(snap) {
       fs.unlinkSync(f);
     }
   }
-  // The gate proof may have authored a sacrificial hook script — drop it too.
+  // The gate proof may have authored a sacrificial hook script - drop it too.
   try {
     if (fs.existsSync(DENY_SCRIPT)) fs.unlinkSync(DENY_SCRIPT);
   } catch (_e) {
@@ -126,14 +126,14 @@ function restore(snap) {
   }
 }
 
-// ── the gated path (a fresh build per call → always reads current on-disk config) ─────
+// ── the gated path (a fresh build per call -> always reads current on-disk config) ─────
 async function runTool(name, args) {
   const { protocol } = buildProtocol();
   return protocol.dispatch('toolfunnel_run_tool', { name, args: args || {} });
 }
 
 // Extract the management script's JSON payload from a successful gated run. On a gate
-// BLOCK (res.ok===false) there is no script output → returns null.
+// BLOCK (res.ok===false) there is no script output -> returns null.
 function payloadOf(res) {
   if (!res || res.ok !== true || !res.output || typeof res.output.stdout !== 'string') return null;
   try {
@@ -150,7 +150,7 @@ async function listMeta(args) {
   return res && res.ok ? res.output : null;
 }
 
-// tf_list (a management tool) through the gated path → its `items` array, or null.
+// tf_list (a management tool) through the gated path -> its `items` array, or null.
 async function tfList(kind) {
   const p = payloadOf(await runTool('tf_list', { kind }));
   return p && p.ok && Array.isArray(p.items) ? p.items : null;
@@ -162,7 +162,7 @@ const ids = (arr) => (Array.isArray(arr) ? arr.map((x) => x && x.id) : []);
   let fatal = null;
   const snap = snapshot();
 
-  // Baseline inventory (read-only) BEFORE any mutation — for the restore comparison.
+  // Baseline inventory (read-only) BEFORE any mutation - for the restore comparison.
   const baseline = {
     tools: await tfList('tools'),
     mcps: await tfList('mcps'),
@@ -181,13 +181,13 @@ const ids = (arr) => (Array.isArray(arr) ? arr.map((x) => x && x.id) : []);
 
       const mgmt = await listMeta({ category: 'management' });
       const mgmtIds = ids(mgmt).sort();
-      check('META: toolfunnel_list_tools({category:"management"}) returns all 9', () => {
+      check('META: toolfunnel_list_tools({category:"management"}) returns all 10', () => {
         assert.deepStrictEqual(mgmtIds, MGMT_IDS.slice().sort(),
           'management ids = ' + JSON.stringify(mgmtIds));
       });
     }
 
-    // ── 2. TOOLS round-trip: add → list → disable → enable → remove. ───────────────────
+    // ── 2. TOOLS round-trip: add -> list -> disable -> enable -> remove. ───────────────────
     {
       const TOOL_ID = '__tf_test_tool';
       const TOOL_SCHEMA = {
@@ -251,7 +251,32 @@ const ids = (arr) => (Array.isArray(arr) ? arr.map((x) => x && x.id) : []);
       });
     }
 
-    // ── 3. MCP round-trip: add → list → disable → enable → remove (config only). ───────
+    // ── 2b. REFERENCE-MODE round-trip via the AGENT path - tf_tool_add used to drop `mode`,
+    //        so a reference tool (no invoke; the instructions ARE the deliverable) failed with
+    //        "entry.invoke is required" from this path while the UI path accepted it
+    //Pin: add -> run -> remove. ─────────────────────
+    {
+      const REF_ID = 'mgmt-test-ref-tool';
+      const add = payloadOf(await runTool('tf_tool_add', {
+        id: REF_ID, name: REF_ID, summary: 'sacrificial reference tool',
+        category: 'testing', mode: 'reference',
+        instructions: 'Step 1: run the thing yourself. Step 2: report back.',
+      }));
+      check('TOOLS: tf_tool_add accepts a reference-mode entry (no invoke)', () => {
+        assert.ok(add && add.ok === true && add.id === REF_ID, 'add payload = ' + JSON.stringify(add));
+      });
+      const run = await runTool(REF_ID, {});
+      check('TOOLS: running the reference tool hands back its instructions', () => {
+        assert.ok(JSON.stringify(run).includes('Step 1: run the thing yourself'),
+          'run = ' + JSON.stringify(run).slice(0, 300));
+      });
+      const rm = payloadOf(await runTool('tf_tool_set', { id: REF_ID, action: 'remove' }));
+      check('TOOLS: reference tool removed cleanly', () => {
+        assert.ok(rm && rm.ok === true && rm.removed === true, 'remove = ' + JSON.stringify(rm));
+      });
+    }
+
+    // ── 3. MCP round-trip: add -> list -> disable -> enable -> remove (config only). ───────
     {
       const UP_ID = '__tf_test_up';
       const add = payloadOf(await runTool('tf_mcp_add', { id: UP_ID, command: 'node', args: ['-e', '0'] }));
@@ -294,7 +319,7 @@ const ids = (arr) => (Array.isArray(arr) ? arr.map((x) => x && x.id) : []);
       });
     }
 
-    // ── 4. HOOKS round-trip: add (PostToolUse) → list → disable → enable → remove. ─────
+    // ── 4. HOOKS round-trip: add (PostToolUse) -> list -> disable -> enable -> remove. ─────
     {
       const HOOK_ID = '__tf_test_post_probe';
       const add = payloadOf(await runTool('tf_hook_add', {
@@ -394,7 +419,7 @@ const ids = (arr) => (Array.isArray(arr) ? arr.map((x) => x && x.id) : []);
           'register contains the blocked id ' + VICTIM_ID);
       });
 
-      // Remove the gate hook (its own tool_name is tf_hook_set → the gate does not match it).
+      // Remove the gate hook (its own tool_name is tf_hook_set -> the gate does not match it).
       const rmHook = payloadOf(await runTool('tf_hook_set', { id: GATE_ID, action: 'remove' }));
       check('GATE: tf_hook_set remove (the gate) succeeded', () => {
         assert.ok(rmHook && rmHook.ok === true && rmHook.removed === true, 'remove = ' + JSON.stringify(rmHook));
@@ -457,11 +482,11 @@ const ids = (arr) => (Array.isArray(arr) ? arr.map((x) => x && x.id) : []);
   const ok = !fatal && failed === 0 && results.length > 0;
 
   if (ok) {
-    console.log(`\nPASS: management test — ${passed}/${results.length} assertions passed ` +
+    console.log(`\nPASS: management test - ${passed}/${results.length} assertions passed ` +
       `(8 management tools round-trip through the gate; deny hook blocks tf_tool_add; config restored)`);
     process.exit(0);
   } else {
-    console.log(`\nFAIL: management test — ${passed}/${results.length} assertions passed, ${failed} failed`);
+    console.log(`\nFAIL: management test - ${passed}/${results.length} assertions passed, ${failed} failed`);
     process.exit(1);
   }
 })().catch((e) => {

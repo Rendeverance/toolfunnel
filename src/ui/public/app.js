@@ -1,13 +1,13 @@
 'use strict';
 
 /*
- * ToolFunnel management console — vanilla client. Zero dependencies, zero external
+ * ToolFunnel management console - vanilla client. Zero dependencies, zero external
  * assets, works offline. Talks to the loopback JSON API served by src/ui/server.js.
  * Every edit is persisted server-side through the gateway's own stores (registry,
  * tool-state, expose-store, hook-loader), so the running MCP server sees changes
  * with no restart.
  *
- * Four tabs — Tools / MCPs / Hooks / Logs. The first three each have a live search box,
+ * Four tabs - Tools / MCPs / Hooks / Logs. The first three each have a live search box,
  * a collapsible Add form, and a list whose rows carry activate/deactivate + remove controls.
  * Logs is read-mostly: an on/off toggle bound to the logger config plus a newest-first view
  * of recent activity records.
@@ -174,17 +174,17 @@
       }));
     }
 
-    // Enable / disable — LEAN visibility (POST /api/tools/state).
+    // Enable / disable - LEAN visibility (POST /api/tools/state).
     var enableSwitch = makeSwitch(t.enabled, false, function (input) {
       var want = input.checked;
       driveSwitch(input, '/api/tools/state', { id: t.id, enabled: want },
         // A disabled tool is never on the every-turn surface, so refresh the panel (count + warnings)
-        // — disabling a hot tool drops it from the surface, re-enabling restores it.
+        // - disabling a hot tool drops it from the surface, re-enabling restores it.
         function () { t.enabled = want; card.classList.toggle('is-disabled', !want); loadSurface(); },
         function () { input.checked = !want; });
     });
 
-    // Hot — promote to the TOP-LEVEL every-turn surface (POST /api/tools/state {hot}). A hot tool is
+    // Hot - promote to the TOP-LEVEL every-turn surface (POST /api/tools/state {hot}). A hot tool is
     // injected into the AI's context every turn AND becomes directly callable. Refresh the surface
     // panel (count + bloat warnings) after a change.
     var hotSwitch = makeSwitch(t.hot, false, function (input) {
@@ -194,7 +194,7 @@
         function () { input.checked = !want; });
     });
 
-    // Hidden — declutter THIS manager list only (does not change what the AI sees). Re-filter on
+    // Hidden - declutter THIS manager list only (does not change what the AI sees). Re-filter on
     // change so the row drops out when hidden (unless "show hidden" is on).
     var hiddenSwitch = makeSwitch(t.hidden, false, function (input) {
       var want = input.checked;
@@ -203,7 +203,7 @@
         function () { input.checked = !want; });
     });
 
-    // Details / edit — a lazy inline panel showing the full entry (instructions, invoke, script body)
+    // Details / edit - a lazy inline panel showing the full entry (instructions, invoke, script body)
     // with editable fields + Save. Fetched from /api/tools/detail on first expand.
     var detailPanel = el('div', { class: 'tool-detail', hidden: true });
     var detailLoaded = false;
@@ -238,7 +238,7 @@
   // Fetch one tool's full detail and render the editor into `panel`.
   function loadToolDetail(t, panel) {
     panel.innerHTML = '';
-    panel.appendChild(el('p', { class: 'muted', text: 'Loading…' }));
+    panel.appendChild(el('p', { class: 'muted', text: 'Loading...' }));
     getJson('/api/tools/detail?id=' + encodeURIComponent(t.id)).then(function (res) {
       panel.innerHTML = '';
       if (!res || res.ok !== true || !res.entry) {
@@ -252,7 +252,7 @@
     });
   }
 
-  // Build the editable detail form for one tool. Save → POST /api/tools/update.
+  // Build the editable detail form for one tool. Save -> POST /api/tools/update.
   function renderToolEditor(t, panel, entry, scriptText) {
     var inv = entry.invoke || {};
     function field(label, hint, control) {
@@ -265,8 +265,8 @@
     var fSummary = el('input', { type: 'text', value: entry.summary || '' });
     var fCategory = el('input', { type: 'text', value: entry.category || '' });
     var fMode = el('select', {}, [
-      el('option', { value: 'gateway', text: 'gateway — run here' }),
-      el('option', { value: 'reference', text: 'reference — AI runs it' }),
+      el('option', { value: 'gateway', text: 'gateway - run here' }),
+      el('option', { value: 'reference', text: 'reference - AI runs it' }),
     ]);
     fMode.value = (t.mode === 'reference') ? 'reference' : 'gateway';
     var fInstr = el('textarea', { rows: '4', spellcheck: 'false' }); fInstr.value = entry.instructions || '';
@@ -335,17 +335,17 @@
 
   function applyToolFilter() {
     // Hidden tools are decluttered from THIS manager list unless "show hidden" is ticked. (This is the
-    // manager view only — `hidden` never affects the lean list / top-level surface the AI sees.)
+    // manager view only - `hidden` never affects the lean list / top-level surface the AI sees.)
     var showHidden = $('#show-hidden') && $('#show-hidden').checked;
     var base = showHidden ? tools : tools.filter(function (t) { return !t.hidden; });
     var shown = filterList(base, $('#search-tools').value, function (t) {
       return t.id + ' ' + (t.name || '') + ' ' + (t.summary || '') + ' ' + (t.category || '') + ' ' + (t.mode || '');
     });
-    // Distinguish "register empty" (tools.length===0 → renderInto's authored message) from "all
-    // hidden" (tools exist but the hidden filter emptied the view) — pass tools.length as `total` so
+    // Distinguish "register empty" (tools.length===0 -> renderInto's authored message) from "all
+    // hidden" (tools exist but the hidden filter emptied the view) - pass tools.length as `total` so
     // a non-empty register never reads as empty, and give an all-hidden-specific no-match message.
     var noMatch = (base.length === 0 && tools.length > 0)
-      ? ('All ' + tools.length + ' tool' + (tools.length === 1 ? '' : 's') + ' are hidden — tick "show hidden" to see them.')
+      ? ('All ' + tools.length + ' tool' + (tools.length === 1 ? '' : 's') + ' are hidden - tick "show hidden" to see them.')
       : 'No tools match your search.';
     renderInto('#tool-list', '#tools-empty', '#count-tools', shown, tools.length, renderTool, noMatch);
   }
@@ -453,15 +453,19 @@
   /* ══════════════════════════════ MCPs ══════════════════════════════ */
   var upstreams = [];
   var exposeByUpstream = {};
+  var wrapping = null; // the active passthrough wrap (upstream id) or null
 
   function renderUpstream(u) {
     var exposed = exposeByUpstream[u.id] || [];
+    var isWrapped = wrapping === u.id;
     var card = el('div', { class: 'row' + (u.enabled ? '' : ' is-disabled'), 'data-id': u.id });
 
     var head = el('div', { class: 'row-head' }, [
       el('span', { class: 'row-name mono', text: u.id }),
       el('span', { class: 'badge', text: u.transport || 'stdio' }),
       el('span', { class: 'badge ' + (u.enabled ? 'on' : 'off'), text: u.enabled ? 'enabled' : 'disabled' }),
+      u.legacyPin === true ? el('span', { class: 'badge off', text: 'legacy-pinned (MCP 2024-11-05)' }) : null,
+      isWrapped ? el('span', { class: 'badge on', text: 'WRAPPED - this MCP is the whole surface' }) : null,
     ]);
     var cmd = el('p', { class: 'row-cmd', text: [u.command].concat(u.args || []).join(' ') });
     var desc = u.description ? el('p', { class: 'row-summary', text: u.description }) : null;
@@ -470,7 +474,7 @@
       ? exposed.map(function (e) {
           return el('div', { class: 'exposed-row' }, [
             el('span', { class: 'tool', text: e.tool }),
-            el('span', { class: 'arrow', text: '→' }),
+            el('span', { class: 'arrow', text: '->' }),
             el('span', { class: 'as', text: e.as || (u.id + '_' + e.tool) }),
             e.category ? el('span', { class: 'chip', text: e.category }) : null,
             el('span', { class: 'badge ' + (e.enabled ? 'on' : 'off'), text: e.enabled ? 'on' : 'off' }),
@@ -486,13 +490,22 @@
         function () { input.checked = !want; });
     });
 
-    // Discovered-tools area (filled by the Discover button) — a LIVE connect + tools/list, then a
+    // legacyPin (0.6.0): keep speaking MCP 2024-11-05 to this upstream forever - never auto-
+    // upgrades, warns at startup and per call. Opt-in; takes effect on the next (re)connect.
+    var pinSwitch = makeSwitch(u.legacyPin === true, true, function (input) {
+      var want = input.checked;
+      driveSwitch(input, '/api/mcp/state', { id: u.id, action: want ? 'pin' : 'unpin' },
+        function () { u.legacyPin = want; loadMcps(); },
+        function () { input.checked = !want; });
+    });
+
+    // Discovered-tools area (filled by the Discover button) - a LIVE connect + tools/list, then a
     // per-tool Lean (enabled) + Hot toggle keyed by each tool's SURFACED name (what the gateway reads).
     var discovered = el('div', { class: 'discovered', hidden: true });
     var discoverBtn = el('button', { class: 'btn btn-ghost btn-sm', type: 'button', title: 'Connect to this upstream and list its tools' }, ['Discover tools']);
     discoverBtn.addEventListener('click', function () {
       discoverBtn.disabled = true;
-      var label = discoverBtn.textContent; discoverBtn.textContent = 'Discovering…';
+      var label = discoverBtn.textContent; discoverBtn.textContent = 'Discovering...';
       postJson('/api/mcp/discover', { id: u.id }).then(function (res) {
         discoverBtn.disabled = false; discoverBtn.textContent = label;
         if (!res || res.ok !== true) {
@@ -508,9 +521,43 @@
       }).catch(function (e) { discoverBtn.disabled = false; discoverBtn.textContent = label; toast('Request failed: ' + errText(e), 'error'); });
     });
 
+    // Wrap / Unwrap - the passthrough control. Wrapping makes THIS upstream's tools the entire
+    // MCP surface (original names); everything else, meta-tools included, disappears until
+    // unwrapped. This button is one of the two recovery paths from an AI-set wrap (the other is
+    // `toolfunnel wrap --off`), so it must always be visible and obvious.
+    var wrapBtn = el('button', {
+      class: 'btn btn-sm ' + (isWrapped ? 'btn-danger' : 'btn-ghost'),
+      type: 'button',
+      title: isWrapped
+        ? 'Restore the normal ToolFunnel surface (meta-tools + matrix)'
+        : 'Make this MCP’s tools the ENTIRE surface (transparent wrapper - hides all ToolFunnel tools)',
+    }, [isWrapped ? 'Unwrap' : 'Wrap']);
+    wrapBtn.addEventListener('click', function () {
+      if (!isWrapped) {
+        var ok = window.confirm(
+          'Wrap "' + u.id + '"?\n\nIts tools become the ENTIRE MCP surface, under their original names. ' +
+          'ALL ToolFunnel tools (meta-tools included) become hidden and uncallable until you unwrap - ' +
+          'here, or with: toolfunnel wrap --off\n\nEvery call still passes the PreToolUse gate.'
+        );
+        if (!ok) return;
+      }
+      wrapBtn.disabled = true;
+      postJson('/api/wrap', { upstream: isWrapped ? null : u.id }).then(function (res) {
+        wrapBtn.disabled = false;
+        if (!res || res.ok !== true) { toast((res && res.error) || 'Wrap change failed', 'error'); return; }
+        toast(isWrapped ? 'Unwrapped - normal surface restored' : 'Wrapped ' + u.id + ' - its tools are now the whole surface', 'good');
+        // Same informed consent the CLI gives: outside paths are PERMITTED under a wrap (the
+        // isolation guard is suspended for this upstream) - say so, prominently.
+        if (res.warning) window.alert(res.warning);
+        loadMcps(); refreshStatus();
+      }).catch(function (e) { wrapBtn.disabled = false; toast('Request failed: ' + errText(e), 'error'); });
+    });
+
     var controls = el('div', { class: 'row-controls' }, [
       toggleGroup('Enabled', 'enable', enableSwitch),
+      toggleGroup('Legacy pin', 'pin', pinSwitch),
       discoverBtn,
+      wrapBtn,
       removeButton('Remove upstream "' + u.id + '" (and its exposed tools)?', function () {
         postJson('/api/mcp/state', { id: u.id, action: 'remove' }).then(function (res) {
           if (!res || res.ok !== true) { toast((res && res.error) || 'Remove failed', 'error'); return; }
@@ -530,7 +577,7 @@
   }
 
   // Render the LIVE-discovered tools of one upstream, each with a Lean (enabled) + Hot toggle keyed
-  // by its SURFACED name (an enabled expose `as` else `<upstream>_<tool>`) — the exact key the running
+  // by its SURFACED name (an enabled expose `as` else `<upstream>_<tool>`) - the exact key the running
   // gateway reads, so a toggle here is byte-identical to editing tools.state.json.
   function renderDiscovered(container, tools) {
     container.innerHTML = '';
@@ -538,12 +585,12 @@
       container.appendChild(el('p', { class: 'none', text: 'No tools discovered (the upstream did not connect, or advertises none).' }));
       return;
     }
-    container.appendChild(el('p', { class: 'exposed-title', text: 'Discovered tools — curate lean visibility / promote hot' }));
+    container.appendChild(el('p', { class: 'exposed-title', text: 'Discovered tools - curate lean visibility / promote hot' }));
     tools.forEach(function (t) {
       var leanSwitch = makeSwitch(t.enabled, true, function (input) {
         var want = input.checked;
         driveSwitch(input, '/api/tools/state', { id: t.name, enabled: want },
-          // Disabling a hot upstream tool drops it from the surface too — refresh the panel.
+          // Disabling a hot upstream tool drops it from the surface too - refresh the panel.
           function () { t.enabled = want; loadSurface(); }, function () { input.checked = !want; });
       });
       var hotSwitch = makeSwitch(t.hot, true, function (input) {
@@ -553,7 +600,7 @@
       });
       container.appendChild(el('div', { class: 'discovered-row' }, [
         el('span', { class: 'tool mono', text: t.tool }),
-        el('span', { class: 'arrow', text: '→' }),
+        el('span', { class: 'arrow', text: '->' }),
         el('span', { class: 'as mono', text: t.name }),
         t.description ? el('span', { class: 'disc-desc', text: t.description }) : null,
         toggleGroup('Lean', 'lean', leanSwitch),
@@ -569,12 +616,41 @@
     renderInto('#mcp-list', '#mcps-empty', '#count-mcps', shown, upstreams.length, renderUpstream, 'No upstreams match your search.');
   }
 
+  // A loud, always-visible banner while a passthrough wrap is active - this page is the visual
+  // recovery path from a wrap (the funnel's own tools are hidden from the MCP surface, so an
+  // attached AI cannot undo it in-band; the human can, here, with one click).
+  function renderWrapBanner() {
+    var existing = document.getElementById('wrap-banner');
+    if (existing) existing.remove();
+    if (!wrapping) return;
+    var list = $('#mcp-list');
+    if (!list || !list.parentNode) return;
+    var unwrapBtn = el('button', { class: 'btn btn-sm', type: 'button' }, ['Unwrap now']);
+    unwrapBtn.addEventListener('click', function () {
+      unwrapBtn.disabled = true;
+      postJson('/api/wrap', { upstream: null }).then(function (res) {
+        unwrapBtn.disabled = false;
+        if (!res || res.ok !== true) { toast((res && res.error) || 'Unwrap failed', 'error'); return; }
+        toast('Unwrapped - normal surface restored', 'good');
+        loadMcps(); refreshStatus();
+      }).catch(function (e) { unwrapBtn.disabled = false; toast('Request failed: ' + errText(e), 'error'); });
+    });
+    var banner = el('div', { id: 'wrap-banner', class: 'row' }, [
+      el('p', { text: 'PASSTHROUGH ACTIVE: the gateway is wrapping "' + wrapping + '" - its tools are the entire ' +
+        'MCP surface (original names). All ToolFunnel tools are hidden from connected clients. Every call is still gated.' }),
+      unwrapBtn,
+    ]);
+    list.parentNode.insertBefore(banner, list);
+  }
+
   function loadMcps() {
     return getJson('/api/upstreams').then(function (data) {
       upstreams = (data && Array.isArray(data.upstreams)) ? data.upstreams : [];
       var expose = (data && Array.isArray(data.expose)) ? data.expose : [];
+      wrapping = (data && typeof data.wrapping === 'string' && data.wrapping) ? data.wrapping : null;
       exposeByUpstream = {};
       expose.forEach(function (e) { (exposeByUpstream[e.upstream] = exposeByUpstream[e.upstream] || []).push(e); });
+      renderWrapBanner();
       applyMcpFilter();
     }).catch(function (e) {
       $('#mcp-list').innerHTML = '';
@@ -668,7 +744,7 @@
         }),
       ]);
     } else {
-      // Tool Pre/Post gate (no id) — managed from the Tools tab; show state read-only.
+      // Tool Pre/Post gate (no id) - managed from the Tools tab; show state read-only.
       controls = el('div', { class: 'row-controls' }, [
         el('span', { class: 'badge ' + (h.enabled ? 'on' : 'off'), text: h.enabled ? 'enabled' : 'disabled' }),
         el('span', { class: 'managed-note', text: 'managed on Tools tab' }),
@@ -717,7 +793,7 @@
     postJson('/api/hooks/add', { entry: entry }).then(function (res) {
       submit.disabled = false;
       if (!res || res.ok !== true) { toast((res && res.error) || 'Add failed', 'error'); return; }
-      toast('Added hook ' + id + ' (disabled — enable it to fire)', 'good');
+      toast('Added hook ' + id + ' (disabled - enable it to fire)', 'good');
       resetHookForm(); hookForm.open(false);
       loadHooks(); refreshStatus();
     }).catch(function (e) { submit.disabled = false; toast('Request failed: ' + errText(e), 'error'); });
@@ -760,7 +836,7 @@
     if (e && (e.tool || e.ok != null)) return 'tool';
     return 'event';
   }
-  // The status word + tone per kind: gate → allow/deny, tool → ok/fail (blocked counts as fail).
+  // The status word + tone per kind: gate -> allow/deny, tool -> ok/fail (blocked counts as fail).
   function logStatusOf(e, kind) {
     if (kind === 'gate') {
       var d = (e && e.decision) || '?';
@@ -776,14 +852,14 @@
       if (e && e.ok === false) return { text: 'fail', tone: 'bad' };
       return { text: 'run', tone: '' };
     }
-    // config / client / mcp / event — show the event name, neutral tone
+    // config / client / mcp / event - show the event name, neutral tone
     return { text: (e && e.event) || kind, tone: '' };
   }
 
   function renderLogEntry(e) {
     var kind = logKind(e);
     var st = logStatusOf(e, kind);
-    var name = (e && (e.tool || e.name || e.id || e.client || e.path)) || '—';
+    var name = (e && (e.tool || e.name || e.id || e.client || e.path)) || '-';
 
     var head = el('div', { class: 'log-head' }, [
       el('span', { class: 'log-badge ' + kind, text: kind }),
@@ -828,7 +904,7 @@
   function renderLogEntries() {
     var list = $('#log-list');
     list.innerHTML = '';
-    // Newest first — tail() returns file order (oldest→newest), so reverse for display.
+    // Newest first - tail() returns file order (oldest->newest), so reverse for display.
     var rows = logEntries.slice().reverse();
     rows.forEach(function (e) { list.appendChild(renderLogEntry(e)); });
     var empty = $('#logs-empty');
@@ -866,7 +942,7 @@
   /* ══════════════════════════════ AUTH (OAuth 2.1) ══════════════════════════════ */
   // Opt-in OAuth: the panel shows the optional jose dependency's install state + an Install button,
   // and an enable+config form. Reads /api/auth; writes /api/auth/config and /api/oauth/install. The
-  // core gateway stays zero-dependency — jose is fetched only if the operator chooses to.
+  // core gateway stays zero-dependency - jose is fetched only if the operator chooses to.
   var authState = { config: { enabled: false }, joseInstalled: false, josePin: 'jose', configError: null, ready: true };
 
   function renderAuth() {
@@ -877,11 +953,11 @@
     var depState = $('#auth-dep-state');
     var installBtn = $('#auth-install-btn');
     if (authState.joseInstalled) {
-      depState.textContent = '✓ jose@' + (authState.josePin || '') + ' installed — OAuth is available';
+      depState.textContent = '✓ jose@' + (authState.josePin || '') + ' installed - OAuth is available';
       depState.className = 'auth-dep-state is-good';
       installBtn.hidden = true;
     } else {
-      depState.textContent = '○ OAuth dependency not installed — the core gateway is zero-dependency until you add it';
+      depState.textContent = '○ OAuth dependency not installed - the core gateway is zero-dependency until you add it';
       depState.className = 'auth-dep-state is-off';
       installBtn.hidden = false;
     }
@@ -895,12 +971,12 @@
     $('#auth-scopes').value = (Array.isArray(c.requiredScopes) ? c.requiredScopes : []).join(', ');
     $('#auth-clock').value = (typeof c.clockToleranceSec === 'number') ? c.clockToleranceSec : '';
 
-    // Ready / misconfigured badge — only meaningful when auth is enabled.
+    // Ready / misconfigured badge - only meaningful when auth is enabled.
     var badge = $('#auth-ready-badge');
     if (c.enabled && !authState.ready) {
       badge.hidden = false;
       badge.className = 'auth-ready-badge is-bad';
-      badge.textContent = '⚠ ' + (authState.configError || 'not ready — the HTTP host will refuse to start');
+      badge.textContent = '⚠ ' + (authState.configError || 'not ready - the HTTP host will refuse to start');
     } else if (c.enabled && authState.ready) {
       badge.hidden = false;
       badge.className = 'auth-ready-badge is-good';
@@ -947,7 +1023,7 @@
     postJson('/api/auth/config', patch).then(function (res) {
       btn.disabled = false;
       if (!res || res.ok !== true) { toast((res && res.error) || 'Save failed', 'error'); return; }
-      toast(patch.enabled ? 'OAuth config saved — auth enabled' : 'OAuth config saved', 'good');
+      toast(patch.enabled ? 'OAuth config saved - auth enabled' : 'OAuth config saved', 'good');
       // Refresh from the server so the ready/misconfigured badge reflects the persisted state.
       loadAuth();
     }).catch(function (e) { btn.disabled = false; toast('Request failed: ' + errText(e), 'error'); });
@@ -957,14 +1033,14 @@
     var btn = $('#auth-install-btn');
     var logBox = $('#auth-install-log');
     btn.disabled = true;
-    var label = btn.textContent; btn.textContent = 'Installing…';
-    logBox.hidden = false; logBox.textContent = 'Running npm install jose@' + (authState.josePin || '') + ' …';
+    var label = btn.textContent; btn.textContent = 'Installing...';
+    logBox.hidden = false; logBox.textContent = 'Running npm install jose@' + (authState.josePin || '') + ' ...';
     postJson('/api/oauth/install', {}).then(function (res) {
       btn.disabled = false; btn.textContent = label;
       var out = (res && (res.stderr || res.stdout)) || (res && res.message) || '';
       logBox.textContent = (res && res.message ? res.message + '\n\n' : '') + out;
       if (res && res.ok) {
-        toast('OAuth dependency installed — you can enable auth now', 'good');
+        toast('OAuth dependency installed - you can enable auth now', 'good');
         loadAuth();
       } else {
         toast((res && res.message) || 'Install failed', 'error');
@@ -976,8 +1052,49 @@
     });
   }
 
+  /* ══════════════════════════════ Settings (identity & ports) ══════════════════════════════ */
+  // toolfunnel.json editor: server/client identity + default ports. Blank field = use the
+  // default (the server DELETES a blank field from the file). Changes take effect on the
+  // gateway's NEXT start - the note says so, no silent live-change expectation.
+  function loadIdentity() {
+    getJson('/api/identity').then(function (res) {
+      var f = (res && res.file) || {};
+      $('#id-servername').value = f.serverName || '';
+      $('#id-serverversion').value = f.serverVersion || '';
+      $('#id-clientname').value = f.clientName || '';
+      $('#id-clientversion').value = f.clientVersion || '';
+      $('#id-httpport').value = f.httpPort || '';
+      $('#id-uiport').value = f.uiPort || '';
+      $('#id-servelegacy').checked = f.serveLegacy !== false;
+      $('#identity-effective').textContent = res && res.effective
+        ? JSON.stringify(res.effective, null, 2) : '(unavailable)';
+    }).catch(function (e) { toast('Could not load settings: ' + errText(e), 'error'); });
+  }
+  function saveIdentity(ev) {
+    ev.preventDefault();
+    var body = {
+      serverName: $('#id-servername').value.trim(),
+      serverVersion: $('#id-serverversion').value.trim(),
+      clientName: $('#id-clientname').value.trim(),
+      clientVersion: $('#id-clientversion').value.trim(),
+      httpPort: $('#id-httpport').value.trim(),
+      uiPort: $('#id-uiport').value.trim(),
+      // checked = the serve-both default (field removed from the file); unchecked = explicit false.
+      serveLegacy: $('#id-servelegacy').checked ? '' : false,
+    };
+    var btn = $('#identity-save'); btn.disabled = true;
+    postJson('/api/identity', body).then(function (res) {
+      btn.disabled = false;
+      if (!res || res.ok !== true) { toast((res && res.error) || 'Save failed', 'error'); return; }
+      $('#identity-effective').textContent = res.effective ? JSON.stringify(res.effective, null, 2) : '·';
+      $('#identity-note').textContent = 'Saved - takes effect on the next gateway start.';
+      toast('Settings saved (restart to apply)', 'good');
+    }).catch(function (e) { btn.disabled = false; toast('Request failed: ' + errText(e), 'error'); });
+  }
+  $('#identity-form').addEventListener('submit', saveIdentity);
+
   /* ══════════════════════════════ tabs + wiring ══════════════════════════════ */
-  var loaded = { mcps: false, hooks: false, logs: false, auth: false };
+  var loaded = { mcps: false, hooks: false, logs: false, auth: false, settings: false };
   function switchTab(name) {
     document.querySelectorAll('.tab').forEach(function (b) { b.classList.toggle('is-active', b.getAttribute('data-tab') === name); });
     $('#view-tools').classList.toggle('is-active', name === 'tools');
@@ -985,10 +1102,12 @@
     $('#view-hooks').classList.toggle('is-active', name === 'hooks');
     $('#view-logs').classList.toggle('is-active', name === 'logs');
     $('#view-auth').classList.toggle('is-active', name === 'auth');
+    $('#view-settings').classList.toggle('is-active', name === 'settings');
     if (name === 'mcps' && !loaded.mcps) { loaded.mcps = true; loadMcps(); }
     if (name === 'hooks' && !loaded.hooks) { loaded.hooks = true; loadHooks(); }
     if (name === 'logs' && !loaded.logs) { loaded.logs = true; loadLogs(); }
     if (name === 'auth' && !loaded.auth) { loaded.auth = true; loadAuth(); }
+    if (name === 'settings' && !loaded.settings) { loaded.settings = true; loadIdentity(); }
   }
 
   // Populate the hook event dropdown.

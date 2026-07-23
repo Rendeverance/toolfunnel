@@ -2,7 +2,7 @@
 'use strict';
 
 /**
- * tf-log.js — gateway-run MANAGEMENT tool: enable, disable, or check the activity log.
+ * tf-log.js - gateway-run MANAGEMENT tool: enable, disable, or check the activity log.
  *
  * A first-party "management" script-tool (discovered via list_tools, executed via
  * run_tool through the PreToolUse gate). It toggles ToolFunnel's own JSONL audit log
@@ -12,7 +12,7 @@
  * ----------------------------------------------------------
  *   - Structured args arrive as a JSON string in env TOOLFUNNEL_TOOL_ARGS ({} if
  *     absent). Shape: { action: 'enable'|'disable'|'status', path? }.
- *   - Prints EXACTLY ONE JSON line to stdout and exits 0 — ALWAYS. A logical failure
+ *   - Prints EXACTLY ONE JSON line to stdout and exits 0 - ALWAYS. A logical failure
  *     (bad args) is reported as { ok:false, error }.
  *
  * Output (stdout), exactly one JSON object:
@@ -42,7 +42,7 @@ function parseArgs() {
 }
 
 /**
- * Perform the action. May throw — main() turns any throw into { ok:false, error }.
+ * Perform the action. May throw - main() turns any throw into { ok:false, error }.
  * @returns {object} the success payload
  */
 function run() {

@@ -1,10 +1,10 @@
 'use strict';
 
 /**
- * protocol.js — the lean meta-tool protocol.
+ * protocol.js - the lean meta-tool protocol.
  *
  * This is the PURE dispatch core for the gateway's MCP server. It knows nothing about the
- * transport (no stdio, no SDK, no host, no filesystem) — every capability it needs
+ * transport (no stdio, no SDK, no host, no filesystem) - every capability it needs
  * is INJECTED as a dependency so the whole thing unit-tests under `node:test` with plain
  * stub objects. `server.js` (the thin JSON-RPC 2.0 / stdio wrapper) is the only thing that
  * binds this to a transport.
@@ -20,9 +20,9 @@
  *
  * The load-bearing one is `toolfunnel_run_tool`: it does **NOT** execute directly. It resolves
  * the tool's executor from the register, then hands it to `gatedRun`, which fires the host's
- * PreToolUse hooks (the gate — may DENY), executes ONLY if allowed, then fires PostToolUse
+ * PreToolUse hooks (the gate - may DENY), executes ONLY if allowed, then fires PostToolUse
  * (PreToolUse blocks via `hookSpecificOutput.permissionDecision`). This module therefore NEVER
- * calls a tool's `execute` itself — it always goes through the gate. That invariant is the whole
+ * calls a tool's `execute` itself - it always goes through the gate. That invariant is the whole
  * safety case.
  *
  * Defensive by construction: an unknown meta-tool, a malformed argument, or a thrown
@@ -38,7 +38,7 @@
  *   - gatedRun : async ({ engine, ctx, toolName, args, execute }) -> { ok, output, error? }
  *       fires PreToolUse (gate), runs `execute` iff allowed, fires PostToolUse.
  *   - engine   : the HookEngine (passed straight through to gatedRun; not used directly here).
- *   - ctx      : the session context object (session_id, cwd, transcript_path, …) passed to gatedRun.
+ *   - ctx      : the session context object (session_id, cwd, transcript_path, ...) passed to gatedRun.
  *   - howto    : (topic) -> self-extension instructions for create-tool|add-mcp|add-hook|package.
  *
  * CommonJS only. Node built-ins only. No transport. No SDK.
@@ -48,7 +48,7 @@
 // throw, so emit points cannot alter dispatch behaviour or break a tool run.
 const logger = require('../core/logger');
 
-/** The four meta-tool names — the entire exposed surface. */
+/** The four meta-tool names - the entire exposed surface. */
 const META_TOOLS = Object.freeze({
   LIST: 'toolfunnel_list_tools',
   INSTRUCTIONS: 'toolfunnel_tool_instructions',
@@ -57,7 +57,7 @@ const META_TOOLS = Object.freeze({
 });
 
 /** Valid `toolfunnel_howto` topics. */
-const HOWTO_TOPICS = Object.freeze(['create-tool', 'add-mcp', 'add-hook', 'package']);
+const HOWTO_TOPICS = Object.freeze(['create-tool', 'add-mcp', 'add-hook', 'package', 'wrap', 'configure']);
 
 /**
  * Build a normalized error result. Meta-tool calls always resolve to a result object
@@ -83,7 +83,7 @@ function okResult(output) {
 
 /**
  * Normalize whatever a dependency returns into the canonical { ok, output, error? } shape.
- * `gatedRun` is contracted to already return this shape — if it does, pass it through
+ * `gatedRun` is contracted to already return this shape - if it does, pass it through
  * untouched (preserving any extra fields like a block reason). Anything else is wrapped
  * as a success payload.
  *
@@ -98,7 +98,7 @@ function normalizeResult(value) {
 }
 
 /**
- * makeProtocol — construct the meta-tool dispatcher.
+ * makeProtocol - construct the meta-tool dispatcher.
  *
  * @param {object} deps
  * @param {object} deps.registry  dynamic tool register (list/instructions/resolveExecution)
@@ -171,7 +171,7 @@ function makeProtocol(deps) {
   // ---- toolfunnel_run_tool ------------------------------------------------
   // THE load-bearing meta-tool. Resolve the executor from the register, then run it
   // ONLY through gatedRun (PreToolUse gate -> execute -> PostToolUse). This function
-  // must NEVER call `execute` itself — that would bypass the gate and break the entire
+  // must NEVER call `execute` itself - that would bypass the gate and break the entire
   // safety case.
   async function runTool(args) {
     const a = args || {};
@@ -183,14 +183,14 @@ function makeProtocol(deps) {
       return errorResult('toolfunnel_run_tool: registry.resolveExecution is unavailable');
     }
     if (typeof gatedRun !== 'function') {
-      return errorResult('toolfunnel_run_tool: gatedRun is unavailable — refusing to execute ungated');
+      return errorResult('toolfunnel_run_tool: gatedRun is unavailable - refusing to execute ungated');
     }
 
     // The tool's input args (the model's payload for the underlying tool).
     const toolArgs = a.args !== undefined && a.args !== null ? a.args : {};
 
     // 1) Resolve how to execute this tool. The register turns (name, args) into a bound
-    //    executor. A null/undefined resolution means "no such tool" — a clean error, not a throw.
+    //    executor. A null/undefined resolution means "no such tool" - a clean error, not a throw.
     let resolution;
     try {
       resolution = await registry.resolveExecution(name, toolArgs);
@@ -198,9 +198,9 @@ function makeProtocol(deps) {
       return errorResult(`toolfunnel_run_tool: could not resolve "${name}": ${(err && err.message) || err}`);
     }
 
-    // 1a) REFERENCE mode. A reference tool executes NOTHING here — the connected AI performs the
+    // 1a) REFERENCE mode. A reference tool executes NOTHING here - the connected AI performs the
     //     action in its OWN environment per the instructions, so we NEVER spawn and NEVER call
-    //     gatedRun. The HANDOFF itself, however, is gated: reference fires PreToolUse ADVISORILY —
+    //     gatedRun. The HANDOFF itself, however, is gated: reference fires PreToolUse ADVISORILY -
     //     a deny gates the instructions HANDOFF, not the AI's own-environment execution. A
     //     PreToolUse deny therefore REFUSES to hand over the instructions (a handoff-gate); allow /
     //     no-engine / no-ctx hands them over exactly as before. Nothing runs here in EITHER case.
@@ -212,7 +212,7 @@ function makeProtocol(deps) {
       // sees a stable tool_name regardless of mode.
       const gateName = typeof resolution.toolName === 'string' ? resolution.toolName : name;
 
-      // The unconditional handoff — also the SAFE fallback when there is no engine/ctx to gate with.
+      // The unconditional handoff - also the SAFE fallback when there is no engine/ctx to gate with.
       const handoff = (additionalContext) => {
         logger.log({ type: 'tool', name, mode: 'reference', ok: true, blocked: false });
         const out = {
@@ -220,7 +220,7 @@ function makeProtocol(deps) {
           mode: 'reference',
           name,
           instructions: refInstructions,
-          message: 'reference tool — perform this in your own environment per the instructions',
+          message: 'reference tool - perform this in your own environment per the instructions',
         };
         if (typeof additionalContext === 'string' && additionalContext.length > 0) {
           out.additionalContext = additionalContext;
@@ -228,7 +228,7 @@ function makeProtocol(deps) {
         return out;
       };
 
-      // No engine / no ctx → cannot gate; hand the instructions over exactly as before.
+      // No engine / no ctx -> cannot gate; hand the instructions over exactly as before.
       if (!engine || typeof engine.fire !== 'function' || !ctx) {
         return handoff();
       }
@@ -240,12 +240,12 @@ function makeProtocol(deps) {
       try {
         pre = await engine.fire('PreToolUse', ctx, { tool_name: gateName, tool_input: toolArgs });
       } catch (_err) {
-        // A misbehaving engine must not break the advisory handoff — fall back to handing over.
+        // A misbehaving engine must not break the advisory handoff - fall back to handing over.
         pre = null;
       }
 
       if (pre && pre.blocked === true) {
-        // DENY → refuse the HANDOFF. No instructions, no spawn.
+        // DENY -> refuse the HANDOFF. No instructions, no spawn.
         logger.log({ type: 'tool', name, mode: 'reference', ok: false, blocked: true });
         return {
           ok: false,
@@ -256,7 +256,7 @@ function makeProtocol(deps) {
         };
       }
 
-      // Allowed → hand over, carrying any hook-injected additionalContext.
+      // Allowed -> hand over, carrying any hook-injected additionalContext.
       return handoff(pre && typeof pre.injected === 'string' ? pre.injected : '');
     }
 
@@ -267,11 +267,11 @@ function makeProtocol(deps) {
     }
 
     // Prefer the register's canonical toolName/args (it may normalize them); fall back to
-    // what the caller gave. The toolName is what PreToolUse matchers see — it must be stable.
+    // what the caller gave. The toolName is what PreToolUse matchers see - it must be stable.
     const toolName = typeof resolution.toolName === 'string' ? resolution.toolName : name;
     const execArgs = resolution.args !== undefined ? resolution.args : toolArgs;
 
-    // The execution mode for logging — the resolution's own mode if it set one, else
+    // The execution mode for logging - the resolution's own mode if it set one, else
     // the default gateway path.
     const mode = typeof resolution.mode === 'string' ? resolution.mode : 'gateway';
 
@@ -341,7 +341,7 @@ function makeProtocol(deps) {
   }
 
   // ---- dispatch -----------------------------------------------------------
-  // The server's single entry point. Pure routing; never throws — an unknown tool or any
+  // The server's single entry point. Pure routing; never throws - an unknown tool or any
   // internal failure becomes a clear error result (defensive by construction).
   async function dispatch(toolName, args) {
     try {
@@ -373,7 +373,7 @@ function makeProtocol(deps) {
   // The JSON-Schema input shapes for the ADVERTISED meta-tools, for `tools/list`.
   // All FOUR are advertised: list, instructions, run, howto. toolfunnel_run_tool executes
   // a register tool ONLY through gatedRun (PreToolUse gate -> execute -> PostToolUse), so a
-  // connected agent can run tools while every call still passes through the gate — the gate,
+  // connected agent can run tools while every call still passes through the gate - the gate,
   // not the absence of the meta-tool, is the safety boundary.
   function toolDefinitions() {
     return [
@@ -424,7 +424,9 @@ function makeProtocol(deps) {
         name: META_TOOLS.HOWTO,
         description:
           'Get self-extension instructions: how to author a new tool, register an upstream ' +
-          'MCP, add a hook, or build a shareable package. The system documents how to extend itself.',
+          'MCP, add a hook, build a shareable package, WRAP one MCP server as the entire ' +
+          'surface (transparent passthrough), or configure the gateway with JSON files only. ' +
+          'The system documents how to extend itself.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -432,7 +434,7 @@ function makeProtocol(deps) {
               type: 'string',
               enum: HOWTO_TOPICS.slice(),
               description:
-                'Which self-extension guide to return: create-tool | add-mcp | add-hook | package.',
+                'Which guide to return: create-tool | add-mcp | add-hook | package | wrap | configure.',
             },
           },
           required: ['topic'],

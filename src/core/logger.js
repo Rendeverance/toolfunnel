@@ -1,11 +1,11 @@
 'use strict';
 
 /**
- * logger.js — a toggleable JSONL activity/audit log for the gateway.
+ * logger.js - a toggleable JSONL activity/audit log for the gateway.
  *
  * DEFAULT OFF (privacy + lean). Nothing is written, and no files are created, unless
  * logging has been explicitly enabled via setConfig(). A MISSING config file means
- * disabled — the safe default — so a fresh checkout logs nothing.
+ * disabled - the safe default - so a fresh checkout logs nothing.
  *
  * Design rules:
  *   - Zero dependencies. Node built-ins only (fs, path). No transport, no SDK.
@@ -27,7 +27,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-/** The CONFIG HOME (TOOLFUNNEL_HOME / --config-dir; defaults to the package root — see
+/** The CONFIG HOME (TOOLFUNNEL_HOME / --config-dir; defaults to the package root - see
  *  config-home.js). Logs + their toggle are user-state, so they live with the home. */
 const { resolveConfigHome } = require('./config-home');
 const ROOT = resolveConfigHome();
@@ -35,7 +35,7 @@ const ROOT = resolveConfigHome();
 /** The toggle/config file. NOT created until setConfig() writes it. */
 const CONFIG_PATH = path.join(ROOT, 'logs', 'log.config.json');
 
-/** Safe defaults — used whenever the config file is absent or unreadable. */
+/** Safe defaults - used whenever the config file is absent or unreadable. */
 const DEFAULT_ENABLED = false;
 const DEFAULT_PATH = 'logs/toolfunnel.log.jsonl';
 
@@ -49,7 +49,7 @@ function resolveLogPath(p) {
 }
 
 /**
- * getConfig — the resolved { enabled, path }.
+ * getConfig - the resolved { enabled, path }.
  *
  * Reads the config file fresh. A missing/unreadable/malformed file resolves to the
  * safe defaults (disabled). Never throws.
@@ -77,11 +77,11 @@ function getConfig() {
 }
 
 /**
- * log — append one JSONL record IF logging is enabled, else a silent no-op.
+ * log - append one JSONL record IF logging is enabled, else a silent no-op.
  *
  * The record is the event fields plus a logger-stamped ISO-8601 "ts" timestamp.
  * Resolves the configured path against root, mkdir -p its directory, and appends one
- * line with fs.appendFileSync. NEVER throws — any failure is swallowed.
+ * line with fs.appendFileSync. NEVER throws - any failure is swallowed.
  *
  * @param {object} event arbitrary serialisable fields (e.g. { type, tool, decision }).
  */
@@ -104,10 +104,10 @@ function log(event) {
 }
 
 /**
- * setConfig — atomically merge a patch into logs/log.config.json (temp + rename).
+ * setConfig - atomically merge a patch into logs/log.config.json (temp + rename).
  *
  * Merges with the current resolved config so a partial patch (e.g. { enabled: true })
- * preserves the existing path. Creates the logs/ dir and the config file if absent —
+ * preserves the existing path. Creates the logs/ dir and the config file if absent -
  * this is the ONLY function that creates the config file.
  *
  * @param {{ enabled?: boolean, path?: string }} patch
@@ -133,7 +133,7 @@ function setConfig(patch) {
 }
 
 /**
- * tail — return the last n parsed JSON lines from the configured log.
+ * tail - return the last n parsed JSON lines from the configured log.
  *
  * Returns [] if the log is missing or unreadable. Unparseable lines are skipped. When
  * n is not a positive finite number, all lines are returned. Never throws.

@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * tool-registry.js — backend-agnostic tool catalogue for the host loop.
+ * tool-registry.js - backend-agnostic tool catalogue for the host loop.
  *
  * The host asks the registry for tool definitions to hand to a backend
  * (see ARCHITECTURE.md: `backend.send({ system, messages, tools })`). When the
@@ -89,7 +89,7 @@ class ToolRegistry {
   /**
    * Tool definitions array, shaped for handing to a backend:
    * `[{ name, description, inputSchema }]`. The `run` function is deliberately
-   * omitted — the backend never needs (or should see) the implementation.
+   * omitted - the backend never needs (or should see) the implementation.
    *
    * @returns {Array<{ name: string, description: string, inputSchema: object }>}
    */
@@ -107,14 +107,14 @@ class ToolRegistry {
 }
 
 /**
- * makeDemoRegistry — a ToolRegistry preloaded with two demo tools used by the
+ * makeDemoRegistry - a ToolRegistry preloaded with two demo tools used by the
  * host tests (host.test.js drives the lifecycle through these).
  *
- *   echo               — returns its input unchanged (trivial, deterministic).
- *   readFileSandboxed  — reads a UTF-8 file, but ONLY within `sandboxRoot`,
+ *   echo               - returns its input unchanged (trivial, deterministic).
+ *   readFileSandboxed  - reads a UTF-8 file, but ONLY within `sandboxRoot`,
  *                        rejecting any path that escapes the sandbox. This is
  *                        the same defense-in-depth posture the hook loader's
- *                        writeScript guard uses (HOOK_ENGINE.md §8) — a tool the
+ *                        writeScript guard uses (HOOK_ENGINE.md §8) - a tool the
  *                        model can call must not become a filesystem escape.
  *
  * @param {object} [opts]

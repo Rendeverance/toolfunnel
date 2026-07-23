@@ -2,14 +2,14 @@
 
 This is the instruction served by `toolfunnel_howto({ topic: "add-hook" })`. It explains how to add a hook
 to the Hook Engine: the manifest entry shape, where the script goes, and how the enabled/disabled
-state is persisted separately in `hooks.state.json`. The full contract is HOOK_ENGINE.md — this is
+state is persisted separately in `hooks.state.json`. The full contract is HOOK_ENGINE.md - this is
 the authoring view.
 
 A hook is exactly two things:
-1. **A manifest entry** in `hooks/hooks.manifest.json` (its config: event, matcher, command, …).
+1. **A manifest entry** in `hooks/hooks.manifest.json` (its config: event, matcher, command, ...).
 2. **A script** under `hooks/scripts/` that the entry's `command` runs.
 
-Activation (on/off) is NOT in the manifest's source of truth at runtime — it lives in an overlay,
+Activation (on/off) is NOT in the manifest's source of truth at runtime - it lives in an overlay,
 `hooks/hooks.state.json` (see §4).
 
 ---
@@ -41,10 +41,10 @@ Activation (on/off) is NOT in the manifest's source of truth at runtime — it l
 | `command` | string | The command line the runner spawns. `${HOOKS_DIR}` expands to the absolute `hooks` path at load time. |
 | `script` | string | The script path relative to `hooksDir`, e.g. `scripts/deny-dangerous.sh`. Used by the manager's open/edit (`readScript`/`writeScript`). |
 | `timeout` | number | **Seconds** (the runner multiplies by 1000). The runner kills the child past this. |
-| `enabled` | boolean | The manifest's default/seed state. The live value is the overlay in `hooks.state.json` — see §4. |
+| `enabled` | boolean | The manifest's default/seed state. The live value is the overlay in `hooks.state.json` - see §4. |
 | `description` | string | What the hook does, for the manager UI. |
 
-One entry **per hook command** — a settings.json event with N hooks becomes N entries.
+One entry **per hook command** - a settings.json event with N hooks becomes N entries.
 
 ---
 
@@ -58,11 +58,11 @@ hooks/
     deny-dangerous.sh
 ```
 
-(The loader itself — `hook-loader.js` — is engine code and is NOT user content; it lives in
+(The loader itself - `hook-loader.js` - is engine code and is NOT user content; it lives in
 `src/core/`, not in `hooks/`.)
 
 `writeScript` (the manager's save path) refuses any path that resolves outside
-`hooks/scripts/` — defense-in-depth for the isolation rule. Author your script there only;
+`hooks/scripts/` - defense-in-depth for the isolation rule. Author your script there only;
 never point a hook at a script in a live host hooks directory. Clone the behaviour in if you need it.
 
 ---
@@ -70,29 +70,39 @@ never point a hook at a script in a live host hooks directory. Clone the behavio
 ## 3. What the script returns (the two protocols)
 
 The runner spawns the command, writes the event payload as JSON on stdin, then reads the result.
+The payload a tool event receives on stdin:
+
+```json
+{ "tool_name": "note_slow", "tool_input": { "arg": "value" } }
+```
+
+(`PreToolUse` → `tool_name` + `tool_input`; `PostToolUse` adds `tool_response`. Tool-less
+events carry their own fields - `prompt`, `source` - instead.)
+
 Two protocols (HOOK_ENGINE.md §3):
 
 **A) Exit-code (simple):**
 - `exit 0` → success. On `SessionStart`/`UserPromptSubmit`, stdout becomes **injected context**;
   on other events stdout is advisory.
-- `exit 2` → **blocking**. stderr is the reason.
+- `exit 2` → **blocking**. stderr is the reason - on a blocked tool call the client receives it
+  as the result text with `isError: true`.
 - any other code → non-blocking error (stderr captured, loop continues; never throws).
 
-**B) JSON (advanced)** — honored **only on exit 0**, when stdout parses as a JSON object:
+**B) JSON (advanced)** - honored **only on exit 0**, when stdout parses as a JSON object:
 ```json
 {
   "continue": true,
   "decision": "block",
-  "reason": "…",
+  "reason": "...",
   "hookSpecificOutput": {
     "hookEventName": "PreToolUse",
     "permissionDecision": "allow" | "deny" | "ask",
-    "permissionDecisionReason": "…",
-    "additionalContext": "…"
+    "permissionDecisionReason": "...",
+    "additionalContext": "..."
   }
 }
 ```
-- **PreToolUse blocks via `hookSpecificOutput.permissionDecision: "deny"`** — NOT the top-level
+- **PreToolUse blocks via `hookSpecificOutput.permissionDecision: "deny"`** - NOT the top-level
   `decision` field. `"allow"` passes; `"ask"` is non-blocking in the autonomous host.
 - **Top-level `decision: "block"`** is for the other blockable events (UserPromptSubmit, PostToolUse,
   Stop, PreCompact). There is no `"approve"`.
@@ -111,7 +121,7 @@ The Hook Manager design splits **what exists** from **what's on**:
   and reconciles with the manifest: newly-found scripts are added as entries (event/matcher inferred
   or flagged "unconfigured"); manifest entries whose script is missing are flagged.
 - **The manifest carries config** (event, matcher, command, timeout, description, seed `enabled`).
-- **`hooks.state.json` is the activation overlay** — an object keyed by hook `id` recording the live
+- **`hooks.state.json` is the activation overlay** - an object keyed by hook `id` recording the live
   enabled/disabled value:
 
 ```json

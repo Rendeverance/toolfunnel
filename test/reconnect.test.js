@@ -1,18 +1,18 @@
 'use strict';
 
 /**
- * reconnect.test.js — proves AUTO-RECONNECT: when an attached upstream MCP's child process dies
+ * reconnect.test.js - proves AUTO-RECONNECT: when an attached upstream MCP's child process dies
  * mid-session, ToolFunnel detects it (McpClient.onClose), drops it, and reconnects it in the
- * BACKGROUND with no restart and no user intervention — then the tool works again.
+ * BACKGROUND with no restart and no user intervention - then the tool works again.
  *
  * Spawns the REAL gateway (`node bin/toolfunnel.js`, stdio) with the bundled mock upstream attached
- * (no expose[] — lean by default). Asserts:
+ * (no expose[] - lean by default). Asserts:
  *
- *   A — BEFORE:    toolfunnel_list_tools lists mock_ping (upstream connected at boot).
- *   B — CRASH:     toolfunnel_run_tool{mock_crash} makes the mock child process.exit — the upstream dies.
- *   C — RECOVER:   within a backoff window, mock_ping REAPPEARS in the lean list and runs again
- *                  ("pong"), with NO restart — proving the background reconnect healed it.
- *   D — SIGNALLED: a notifications/tools/list_changed was emitted (so a client refreshes), and the
+ *   A - BEFORE:    toolfunnel_list_tools lists mock_ping (upstream connected at boot).
+ *   B - CRASH:     toolfunnel_run_tool{mock_crash} makes the mock child process.exit - the upstream dies.
+ *   C - RECOVER:   within a backoff window, mock_ping REAPPEARS in the lean list and runs again
+ *                  ("pong"), with NO restart - proving the background reconnect healed it.
+ *   D - SIGNALLED: a notifications/tools/list_changed was emitted (so a client refreshes), and the
  *                  activity log records the full cycle: {type:mcp,event:disconnect,reason:died}
  *                  then {type:mcp,event:reconnect}.
  *
@@ -105,7 +105,7 @@ function exposeConfig() {
     upstreams: [{ id: 'mock', transport: 'stdio', command: process.execPath, args: [MOCK_SERVER], enabled: true, description: 'reconnect.test.js fixture.' }],
     // Expose ping curated-direct so the upstream is on the TOP-LEVEL surface: its death/recovery then
     // legitimately changes tools/list and emits notifications/tools/list_changed (assertion D). A
-    // lean-only upstream no longer over-fires that notification (review fix), so the fixture must put
+    // lean-only upstream no longer over-fires that notification, so the fixture must put
     // the upstream on the top-level surface for the signal to be real.
     expose: [{ upstream: 'mock', tool: 'ping', as: 'mock_ping', category: 'demo', enabled: true }],
   }, null, 2) + '\n';
@@ -130,16 +130,16 @@ function exposeConfig() {
     child.on('error', (err) => client.rejectAll(new Error('child error: ' + ((err && err.message) || err))));
     await client.request('initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'reconnect.test.js', version: '0.0.0' } });
 
-    // A — connected at boot
+    // A - connected at boot
     const before = await client.request('tools/call', { name: 'toolfunnel_list_tools', arguments: {} });
     check('BEFORE: mock_ping is listed (upstream connected at boot)', () => {
       assert.ok(listIds(before).includes('mock_ping'), 'mock_ping not listed at boot; got: ' + JSON.stringify(listIds(before)));
     });
 
-    // B — crash the upstream child (the mock process.exit's without replying; the run returns isError)
+    // B - crash the upstream child (the mock process.exit's without replying; the run returns isError)
     await client.request('tools/call', { name: 'toolfunnel_run_tool', arguments: { name: 'mock_crash' } }).catch(() => null);
 
-    // C — within a backoff window, the background reconnect brings mock_ping back, runnable.
+    // C - within a backoff window, the background reconnect brings mock_ping back, runnable.
     const deadline = Date.now() + RECOVER_BUDGET_MS;
     let recovered = false;
     while (Date.now() < deadline) {
@@ -155,7 +155,7 @@ function exposeConfig() {
       assert.strictEqual(callText(ping), 'pong', 'expected "pong" after reconnect, got ' + JSON.stringify(callText(ping)));
     });
 
-    // D — the recovery was signalled (list_changed) and the full cycle is logged.
+    // D - the recovery was signalled (list_changed) and the full cycle is logged.
     check('SIGNALLED: a notifications/tools/list_changed was emitted during the cycle', () => {
       assert.ok(client.sawListChanged(), 'no tools/list_changed notification was observed across the crash+recover cycle');
     });
@@ -190,10 +190,10 @@ function exposeConfig() {
   const expected = 6;
   const ok = !fatal && passed === results.length && results.length === expected;
   if (ok) {
-    console.log(`\nPASS: reconnect test — ${passed}/${expected} assertions passed (upstream crash detected, background auto-reconnect with no restart, list_changed + cycle logged)`);
+    console.log(`\nPASS: reconnect test - ${passed}/${expected} assertions passed (upstream crash detected, background auto-reconnect with no restart, list_changed + cycle logged)`);
     process.exit(0);
   } else {
-    console.log(`\nFAIL: reconnect test — ${passed}/${results.length} assertions passed`);
+    console.log(`\nFAIL: reconnect test - ${passed}/${results.length} assertions passed`);
     process.exit(1);
   }
 })().catch((e) => { console.log('RECONNECT TEST CRASHED: ' + ((e && e.stack) || e)); process.exit(1); });

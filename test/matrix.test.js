@@ -1,23 +1,23 @@
 'use strict';
 
 /**
- * matrix.test.js — proves the VISIBILITY MATRIX (slice 3): the per-tool `hot` axis that promotes a
+ * matrix.test.js - proves the VISIBILITY MATRIX (slice 3): the per-tool `hot` axis that promotes a
  * tool to the TOP-LEVEL tools/list (the every-turn surface) across local + upstream + internal
  * (meta) tools, independently of the lean register (toolfunnel_list_tools) and runnable directly.
  *
  * Spawns the REAL gateway (`node bin/toolfunnel.js`, stdio) ONCE with the bundled mock upstream
  * attached LEAN (no expose[] entry). tools.state.json is read FRESH on every tools/list & tools/call,
- * so the test mutates it BETWEEN assertions and re-requests — proving a hot/enabled toggle is LIVE
+ * so the test mutates it BETWEEN assertions and re-requests - proving a hot/enabled toggle is LIVE
  * with no restart. Asserts:
  *
- *   A — DEFAULT:    empty state → tools/list is EXACTLY the 4 meta-tools; the lean upstream tool
+ *   A - DEFAULT:    empty state -> tools/list is EXACTLY the 4 meta-tools; the lean upstream tool
  *                   mock_ping is in toolfunnel_list_tools but NOT top-level (lean, not hot).
- *   B — LOCAL HOT:  state {uuid:{hot:true}} → "uuid" appears top-level with an inputSchema; meta intact.
- *   C — DIRECT RUN: tools/call{uuid} runs THROUGH the gate (empty manifest = allowed) and returns a v4 UUID.
- *   D — DISABLED:   state {uuid:{hot:true,enabled:false}} → "uuid" is NOT top-level (disabled overrides hot).
- *   E — HIDE META:  state {toolfunnel_howto:{hot:false}} → toolfunnel_howto drops; the other 3 meta remain.
- *   F — UPSTREAM HOT: state {mock_ping:{hot:true}} → "mock_ping" appears top-level; tools/call{mock_ping}→"pong".
- *   G — NOT PROMOTED: empty state → tools/call{echo} (a real local tool, not hot) → isError (unknown tool):
+ *   B - LOCAL HOT:  state {uuid:{hot:true}} -> "uuid" appears top-level with an inputSchema; meta intact.
+ *   C - DIRECT RUN: tools/call{uuid} runs THROUGH the gate (empty manifest = allowed) and returns a v4 UUID.
+ *   D - DISABLED:   state {uuid:{hot:true,enabled:false}} -> "uuid" is NOT top-level (disabled overrides hot).
+ *   E - HIDE META:  state {toolfunnel_howto:{hot:false}} -> toolfunnel_howto drops; the other 3 meta remain.
+ *   F - UPSTREAM HOT: state {mock_ping:{hot:true}} -> "mock_ping" appears top-level; tools/call{mock_ping}->"pong".
+ *   G - NOT PROMOTED: empty state -> tools/call{echo} (a real local tool, not hot) -> isError (unknown tool):
  *                   the advertised surface == the callable surface (no silent run of a non-promoted tool).
  *
  * NON-DESTRUCTIVE: mcp/expose.json, hooks/hooks.manifest.json and tools/tools.state.json are
@@ -98,7 +98,7 @@ function makeClient(child) {
   return { request, rejectAll, getStderr: () => stderr };
 }
 
-/** top-level tools/list → array of tool defs [{name, description, inputSchema}]. */
+/** top-level tools/list -> array of tool defs [{name, description, inputSchema}]. */
 function topLevel(resp) {
   const t = resp && resp.result && resp.result.tools;
   return Array.isArray(t) ? t : [];
@@ -110,16 +110,16 @@ function callText(resp) {
   return Array.isArray(c) && c[0] && typeof c[0].text === 'string' ? c[0].text : '';
 }
 function isError(resp) { return !!(resp && resp.result && resp.result.isError === true); }
-/** toolfunnel_list_tools (lean) → array of brief ids. */
+/** toolfunnel_list_tools (lean) -> array of brief ids. */
 function leanIds(resp) {
   try { const arr = JSON.parse(callText(resp)); return Array.isArray(arr) ? arr.map((b) => b && b.id) : []; }
   catch (_e) { return []; }
 }
 
-/** Strip any REF_ID entry from a raw register text → clean text. Used to sanitise the RESTORE
+/** Strip any REF_ID entry from a raw register text -> clean text. Used to sanitise the RESTORE
  *  baseline: a prior run killed before its finally could leave REF_ID on disk; without stripping, the
  *  snapshot would capture it and the restore would re-persist it (a self-perpetuating leak that
- *  silently breaks mode.test.js). NEVER throws — returns the input unchanged on a parse failure. */
+ *  silently breaks mode.test.js). NEVER throws - returns the input unchanged on a parse failure. */
 function stripRefTool(rawRegister) {
   try {
     const data = JSON.parse(rawRegister);
@@ -145,7 +145,7 @@ function injectReferenceTool(cleanRegister) {
   const exposeSnap = snapshot(EXPOSE_PATH);
   const manifestSnap = snapshot(MANIFEST_PATH);
   const stateSnap = snapshot(STATE_PATH);
-  // The restore baseline is the register with any leaked REF_ID stripped — so a prior killed run can't
+  // The restore baseline is the register with any leaked REF_ID stripped - so a prior killed run can't
   // make this run re-persist the fixture (self-perpetuating leak that silently breaks mode.test.js).
   const registerSnapRaw = snapshot(REGISTER_PATH);
   const registerSnap = registerSnapRaw === null ? null : stripRefTool(registerSnapRaw);
@@ -157,7 +157,7 @@ function injectReferenceTool(cleanRegister) {
     assert.ok(registerSnap !== null, 'register missing at ' + REGISTER_PATH);
 
     // GUARD (unit, in-process): a hot UPSTREAM surfaced name that collides with a LOCAL tool's id OR
-    // display name must NOT be an upstream-hot route — local-register wins, so the run path never
+    // display name must NOT be an upstream-hot route - local-register wins, so the run path never
     // advertises the upstream yet executes the local tool (the display-name-collision wrong-executor bug).
     const srv = require(path.join(REPO_ROOT, 'src', 'mcp', 'server.js'));
     const aggStub = { leanToolDefinitions: () => [{ name: 'collide_name', description: '', inputSchema: {} }] };
@@ -169,7 +169,7 @@ function injectReferenceTool(cleanRegister) {
       assert.strictEqual(srv.isPromotedUpstream(aggStub, regNoCollide, stHot, 'collide_name'), true, 'no collision should allow the upstream-hot route');
     });
 
-    injectReferenceTool(registerSnap); // inject into the CLEAN baseline → boot reads the reference tool
+    injectReferenceTool(registerSnap); // inject into the CLEAN baseline -> boot reads the reference tool
     // Mock attached LEAN (no expose[] entry); empty manifest (no gate); empty state (defaults).
     fs.writeFileSync(EXPOSE_PATH, JSON.stringify({
       version: 1,
@@ -184,7 +184,7 @@ function injectReferenceTool(cleanRegister) {
     child.on('error', (err) => client.rejectAll(new Error('child error: ' + ((err && err.message) || err))));
     await client.request('initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'matrix.test.js', version: '0.0.0' } });
 
-    // A — DEFAULT: empty state → exactly the 4 meta-tools top-level; mock_ping lean-only.
+    // A - DEFAULT: empty state -> exactly the 4 meta-tools top-level; mock_ping lean-only.
     const a = await client.request('tools/list', {});
     const lean = await client.request('tools/call', { name: 'toolfunnel_list_tools', arguments: {} });
     check('A: default top-level surface is EXACTLY the 4 meta-tools', () => {
@@ -198,7 +198,7 @@ function injectReferenceTool(cleanRegister) {
       assert.ok(leanIds(lean).includes('mock_ping'), 'mock_ping missing from lean list; got ' + JSON.stringify(leanIds(lean)));
     });
 
-    // B — LOCAL HOT: promote a local tool by id.
+    // B - LOCAL HOT: promote a local tool by id.
     writeState({ uuid: { hot: true } });
     const b = await client.request('tools/list', {});
     check('B: a local tool promoted hot (uuid) appears top-level', () => {
@@ -210,21 +210,21 @@ function injectReferenceTool(cleanRegister) {
       for (const m of META) assert.ok(topLevelNames(b).includes(m), 'meta-tool dropped: ' + m);
     });
 
-    // C — DIRECT RUN: call the promoted tool directly (through the gate; empty manifest = allowed).
+    // C - DIRECT RUN: call the promoted tool directly (through the gate; empty manifest = allowed).
     const c = await client.request('tools/call', { name: 'uuid', arguments: { count: 1 } });
     check('C: the promoted local tool runs DIRECTLY (gated) and returns a v4 UUID', () => {
       assert.ok(!isError(c), 'uuid direct call errored: ' + callText(c));
       assert.ok(UUID_V4.test(callText(c)), 'no v4 UUID in output: ' + callText(c));
     });
 
-    // D — DISABLED overrides HOT.
+    // D - DISABLED overrides HOT.
     writeState({ uuid: { hot: true, enabled: false } });
     const d = await client.request('tools/list', {});
     check('D: a disabled tool is NOT promoted even when hot (disabled overrides hot)', () => {
       assert.ok(!topLevelNames(d).includes('uuid'), 'uuid should be absent when disabled; got ' + JSON.stringify(topLevelNames(d)));
     });
 
-    // E — HIDE a meta-tool from the top-level surface.
+    // E - HIDE a meta-tool from the top-level surface.
     writeState({ toolfunnel_howto: { hot: false } });
     const e = await client.request('tools/list', {});
     check('E: a meta-tool can be hidden from top-level (hot:false), the other 3 remain', () => {
@@ -233,14 +233,14 @@ function injectReferenceTool(cleanRegister) {
         assert.ok(topLevelNames(e).includes(m), 'meta-tool wrongly dropped: ' + m);
       }
     });
-    // A hidden meta-tool must also be UN-callable (advertised surface == callable surface) — else the
+    // A hidden meta-tool must also be UN-callable (advertised surface == callable surface) - else the
     // "ordinary tools as an MCP" lockdown would be cosmetic (a client could still invoke it by name).
     const ehide = await client.request('tools/call', { name: 'toolfunnel_howto', arguments: { topic: 'create-tool' } });
     check('E: a HIDDEN meta-tool is NOT callable by name (the lockdown is real, not cosmetic)', () => {
       assert.ok(isError(ehide), 'a hidden meta-tool must not be callable; got ' + JSON.stringify(ehide && ehide.result));
     });
 
-    // F — UPSTREAM HOT: promote an attached upstream tool by surfaced name; call it directly.
+    // F - UPSTREAM HOT: promote an attached upstream tool by surfaced name; call it directly.
     writeState({ mock_ping: { hot: true } });
     const f = await client.request('tools/list', {});
     check('F: an upstream tool promoted hot (mock_ping) appears top-level', () => {
@@ -252,16 +252,16 @@ function injectReferenceTool(cleanRegister) {
       assert.strictEqual(callText(fp), 'pong', 'expected "pong", got ' + JSON.stringify(callText(fp)));
     });
 
-    // G — a real local tool that is NOT promoted is NOT directly callable (surface honesty).
+    // G - a real local tool that is NOT promoted is NOT directly callable (surface honesty).
     writeState({});
     const g = await client.request('tools/call', { name: 'echo', arguments: { hello: 1 } });
     check('G: a non-promoted local tool called directly returns an error (not silently run)', () => {
       assert.ok(isError(g), 'echo should not be directly callable when not hot; got ' + JSON.stringify(g && g.result));
     });
 
-    // H — a REFERENCE-mode tool promoted hot: appears top-level, and a direct call hands back its
+    // H - a REFERENCE-mode tool promoted hot: appears top-level, and a direct call hands back its
     // INSTRUCTIONS as usable text (proves the reference handoff survives the direct-hot route + the
-    // wrapProtocolResult reference payload — not an empty/undefined text block).
+    // wrapProtocolResult reference payload - not an empty/undefined text block).
     writeState({ [REF_ID]: { hot: true } });
     const h = await client.request('tools/list', {});
     check('H: a reference-mode tool promoted hot appears top-level', () => {
@@ -292,10 +292,10 @@ function injectReferenceTool(cleanRegister) {
   const expected = 15;
   const ok = !fatal && passed === results.length && results.length === expected;
   if (ok) {
-    console.log(`\nPASS: matrix test — ${passed}/${expected} assertions passed (hot promotion across local/upstream/meta, live, directly runnable, gated)`);
+    console.log(`\nPASS: matrix test - ${passed}/${expected} assertions passed (hot promotion across local/upstream/meta, live, directly runnable, gated)`);
     process.exit(0);
   } else {
-    console.log(`\nFAIL: matrix test — ${passed}/${results.length} assertions passed`);
+    console.log(`\nFAIL: matrix test - ${passed}/${results.length} assertions passed`);
     process.exit(1);
   }
 })().catch((e) => { console.log('MATRIX TEST CRASHED: ' + ((e && e.stack) || e)); process.exit(1); });

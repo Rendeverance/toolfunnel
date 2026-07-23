@@ -2,7 +2,7 @@
 'use strict';
 
 /**
- * deny-hook.js — TEST FIXTURE PreToolUse hook that ALWAYS denies.
+ * deny-hook.js - TEST FIXTURE PreToolUse hook that ALWAYS denies.
  *
  * Used by test/gate.test.js to prove the gate (src/mcp/gated-run.js) blocks: when this
  * hook fires for a tool, gatedRun must return { blocked:true } and NEVER call execute().
@@ -13,7 +13,7 @@
  * `hookSpecificOutput`). `permissionDecision: "deny"` blocks; the reason is
  * `permissionDecisionReason`.
  *
- * It is UNCONDITIONAL by design (it denies regardless of args) — the fixture's whole job
+ * It is UNCONDITIONAL by design (it denies regardless of args) - the fixture's whole job
  * is to make the gate bite so the test can assert the side effect never happened. It also
  * fails CLOSED: an unreadable/empty payload still denies. Node built-ins only; no deps.
  */
@@ -29,7 +29,7 @@ process.stdin.on('end', () => {
   try {
     JSON.parse(raw || '{}');
   } catch (_err) {
-    // Fall through — we deny either way.
+    // Fall through - we deny either way.
   }
 
   process.stdout.write(

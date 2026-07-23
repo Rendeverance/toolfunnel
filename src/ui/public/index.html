@@ -31,6 +31,7 @@
       <button class="tab" data-tab="hooks">Hooks</button>
       <button class="tab" data-tab="logs">Logs</button>
       <button class="tab" data-tab="auth">Auth</button>
+      <button class="tab" data-tab="settings">Settings</button>
     </nav>
 
     <main>
@@ -68,8 +69,8 @@
             <label class="field">
               <span>mode</span>
               <select id="t-mode">
-                <option value="gateway">gateway — run here</option>
-                <option value="reference">reference — AI runs it</option>
+                <option value="gateway">gateway - run here</option>
+                <option value="reference">reference - AI runs it</option>
               </select>
             </label>
             <label class="field field-wide"><span>summary</span><input id="t-summary" type="text" placeholder="One-line description shown in the list."></label>
@@ -84,7 +85,7 @@
             <label class="field" id="t-path-field"><span>script path</span><input id="t-path" type="text" placeholder="scripts/my-tool.js" spellcheck="false"></label>
             <label class="field field-wide" id="t-command-field" hidden><span>shell command</span><input id="t-command" type="text" placeholder="echo hello" spellcheck="false"></label>
             <label class="field field-wide"><span>instructions</span><textarea id="t-instructions" rows="2" placeholder="How the connected AI should call this tool."></textarea></label>
-            <label class="field field-wide" id="t-script-field"><span>script body <em class="hint">(optional — authored under tools/scripts/)</em></span><textarea id="t-scripttext" rows="5" spellcheck="false" placeholder="'use strict';&#10;// reads JSON args from process.env.TOOLFUNNEL_TOOL_ARGS"></textarea></label>
+            <label class="field field-wide" id="t-script-field"><span>script body <em class="hint">(optional - authored under tools/scripts/)</em></span><textarea id="t-scripttext" rows="5" spellcheck="false" placeholder="'use strict';&#10;// reads JSON args from process.env.TOOLFUNNEL_TOOL_ARGS"></textarea></label>
           </div>
           <div class="addform-actions">
             <button class="btn btn-primary" id="t-submit" type="submit">Add tool</button>
@@ -122,7 +123,7 @@
           </div>
           <div class="subsection">
             <div class="subsection-head">
-              <span class="subsection-title">Exposed tools <em class="hint">(optional — curated-direct selections)</em></span>
+              <span class="subsection-title">Exposed tools <em class="hint">(optional - curated-direct selections)</em></span>
               <button class="btn btn-ghost btn-sm" id="m-add-expose" type="button">+ expose</button>
             </div>
             <div id="m-expose-rows" class="expose-rows"></div>
@@ -162,7 +163,7 @@
             </label>
             <label class="field"><span>matcher</span><input id="h-matcher" type="text" placeholder="Bash|Write (blank = all)" spellcheck="false"></label>
             <label class="field field-wide"><span>command <em>*</em></span><input id="h-command" type="text" placeholder='node "${HOOKS_DIR}/scripts/my-gate.js"' spellcheck="false"></label>
-            <label class="field field-wide"><span>script body <em class="hint">(optional — authored under hooks/scripts/)</em></span><textarea id="h-scripttext" rows="5" spellcheck="false" placeholder="#!/usr/bin/env node&#10;// reads the event payload as JSON on stdin"></textarea></label>
+            <label class="field field-wide"><span>script body <em class="hint">(optional - authored under hooks/scripts/)</em></span><textarea id="h-scripttext" rows="5" spellcheck="false" placeholder="#!/usr/bin/env node&#10;// reads the event payload as JSON on stdin"></textarea></label>
           </div>
           <div class="addform-actions">
             <button class="btn btn-primary" id="h-submit" type="submit">Add hook</button>
@@ -227,8 +228,8 @@
           </div>
           <div class="field-grid">
             <label class="field field-wide"><span>issuer <em>*</em> <em class="hint">(the authorization server)</em></span><input id="auth-issuer" type="text" placeholder="https://auth.example.com" spellcheck="false"></label>
-            <label class="field field-wide"><span>audience <em>*</em> <em class="hint">(this gateway's resource URI — binds tokens, RFC&nbsp;8707)</em></span><input id="auth-audience" type="text" placeholder="https://gateway.example.com" spellcheck="false"></label>
-            <label class="field field-wide"><span>jwksUri <em class="hint">(optional — derived from the issuer via discovery if blank)</em></span><input id="auth-jwksuri" type="text" placeholder="https://auth.example.com/.well-known/jwks.json" spellcheck="false"></label>
+            <label class="field field-wide"><span>audience <em>*</em> <em class="hint">(this gateway's resource URI - binds tokens, RFC&nbsp;8707)</em></span><input id="auth-audience" type="text" placeholder="https://gateway.example.com" spellcheck="false"></label>
+            <label class="field field-wide"><span>jwksUri <em class="hint">(optional - derived from the issuer via discovery if blank)</em></span><input id="auth-jwksuri" type="text" placeholder="https://auth.example.com/.well-known/jwks.json" spellcheck="false"></label>
             <label class="field"><span>algorithms <em class="hint">(comma-separated, pinned)</em></span><input id="auth-algorithms" type="text" placeholder="RS256, ES256" spellcheck="false"></label>
             <label class="field"><span>required scopes <em class="hint">(comma-separated, optional)</em></span><input id="auth-scopes" type="text" placeholder="tools:run" spellcheck="false"></label>
             <label class="field"><span>clock tolerance (s)</span><input id="auth-clock" type="number" min="0" placeholder="30"></label>
@@ -238,6 +239,42 @@
             <span class="auth-config-note muted" id="auth-config-note"></span>
           </div>
         </form>
+      </section>
+
+      <!-- ───────────────────────── Settings view ───────────────────────── -->
+      <section class="view" id="view-settings">
+        <div class="auth-intro">
+          <p>
+            <strong>Identity &amp; ports</strong> &mdash; stored in <code>toolfunnel.json</code> at the
+            config home. The <em>server</em> identity is what connected clients see in the
+            <code>initialize</code> handshake; the <em>client</em> identity is what upstream MCP servers
+            see from the gateway. Under a <strong>wrap</strong> on stdio, the wrapped upstream is shown
+            the real downstream client's identity automatically &mdash; these settings cover funnel
+            mode, HTTP, and the boot connection. Leave any field blank to use the default.
+          </p>
+        </div>
+
+        <form class="auth-card auth-form" id="identity-form" autocomplete="off">
+          <div class="field-grid">
+            <label class="field"><span>serverName <em class="hint">(shown to clients &mdash; default "toolfunnel")</em></span><input id="id-servername" type="text" placeholder="toolfunnel" spellcheck="false"></label>
+            <label class="field"><span>serverVersion <em class="hint">(default: package version)</em></span><input id="id-serverversion" type="text" placeholder="1.0.0" spellcheck="false"></label>
+            <label class="field"><span>clientName <em class="hint">(shown to upstreams &mdash; default "toolfunnel")</em></span><input id="id-clientname" type="text" placeholder="my-client" spellcheck="false"></label>
+            <label class="field"><span>clientVersion</span><input id="id-clientversion" type="text" placeholder="1.0.0" spellcheck="false"></label>
+            <label class="field"><span>httpPort <em class="hint">(default 9998)</em></span><input id="id-httpport" type="number" min="1" max="65535" placeholder="9998"></label>
+            <label class="field"><span>uiPort <em class="hint">(default 9777)</em></span><input id="id-uiport" type="number" min="1" max="65535" placeholder="9777"></label>
+            <label class="field"><span>Serve legacy protocol <em class="hint">(default on - untick for modern-only: legacy clients are refused)</em></span><input id="id-servelegacy" type="checkbox" checked></label>
+          </div>
+          <div class="addform-actions">
+            <button class="btn btn-primary" id="identity-save" type="submit">Save settings</button>
+            <span class="auth-config-note muted" id="identity-note"></span>
+          </div>
+        </form>
+
+        <div class="auth-card">
+          <div class="subsection-head"><span class="subsection-title">Effective values (as the gateway resolves them)</span></div>
+          <pre class="mono" id="identity-effective">&middot;</pre>
+          <p class="muted">Changes take effect the next time the gateway starts. CLI flags (e.g. <code>--port</code>) still win over these.</p>
+        </div>
       </section>
     </main>
   </div>

@@ -1,13 +1,13 @@
 'use strict';
 
 /**
- * hook-engine.js — fire a lifecycle event through its matching, enabled hooks.
+ * hook-engine.js - fire a lifecycle event through its matching, enabled hooks.
  *
  * Contract: HOOK_ENGINE.md §6.
  *
  *   class HookEngine {
  *     constructor(loader)                       // loader provides enabled hook specs
- *     async fire(event, ctx, extra) → {
+ *     async fire(event, ctx, extra) -> {
  *       injected:  string,        // all non-null inject fragments joined by "\n"
  *       blocked:   boolean,       // any hook blocked
  *       reason:    string|null,   // first block reason (in manifest order)
@@ -18,7 +18,7 @@
  *
  * Behaviour:
  *   - Select hooks where spec.event === event AND spec.enabled AND matches(spec.matcher, toolName).
- *     Tool-less events (SessionStart, UserPromptSubmit, Stop, PreCompact) ignore the matcher —
+ *     Tool-less events (SessionStart, UserPromptSubmit, Stop, PreCompact) ignore the matcher -
  *     matcher.js handles that, but we also derive toolName only from the built payload so the
  *     matcher gets exactly what the contract says it should see.
  *   - Build the stdin payload once via events.buildPayload(event, ctx, extra).
@@ -175,7 +175,7 @@ class HookEngine {
    *
    * @param {string} event one of EVENTS (e.g. "PreToolUse")
    * @param {object} [ctx] common context: { session_id, transcript_path, cwd, ... }
-   * @param {object} [extra] event-specific fields (tool_name, tool_input, prompt, source, …)
+   * @param {object} [extra] event-specific fields (tool_name, tool_input, prompt, source, ...)
    * @returns {Promise<{injected:string, blocked:boolean, reason:(string|null),
    *                     stopLoop:boolean, results:object[]}>}
    */
@@ -220,7 +220,7 @@ class HookEngine {
     const runOpts = { cwd: runCwd };
     if (this.env) runOpts.env = this.env;
 
-    // Build task factories (one per selected hook) — never reject.
+    // Build task factories (one per selected hook) - never reject.
     const factories = selected.map((spec) => async () => {
       const started = Date.now();
       try {

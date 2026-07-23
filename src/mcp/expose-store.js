@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * expose-store.js — the persisted MCP config store (the architecture notes and
+ * expose-store.js - the persisted MCP config store (the architecture notes and
  * the extension guide define the authoritative shape).
  *
  * This is a PURE, config-only module: no process spawning, no network, no MCP
@@ -22,13 +22,13 @@
  *   }
  *
  * Two blocks (per the extension guide):
- *   - upstreams[]  — one entry per upstream MCP. `id` is the stable key referenced
+ *   - upstreams[]  - one entry per upstream MCP. `id` is the stable key referenced
  *                    by expose[].upstream. `transport:"stdio"` spawns command+args.
- *   - expose[]     — which upstream tools become curated-direct. `(upstream,tool)`
+ *   - expose[]     - which upstream tools become curated-direct. `(upstream,tool)`
  *                    is the natural key; `as` is the downstream name the CLI sees
  *                    (defaults to `<upstream>_<tool>` so two upstreams can't collide).
  *
- * Read/write discipline (mirrors src/tools/registry.js — the safety contract):
+ * Read/write discipline (mirrors src/tools/registry.js - the safety contract):
  *   - READS never throw and always return CLONES (callers cannot mutate internal
  *     state, and a missing file is simply an empty store).
  *   - WRITES validate and throw a clear error on a bad write; nothing is persisted
@@ -81,18 +81,43 @@ function isNonEmptyString(v) {
 
 /**
  * Normalise a raw upstream object into the canonical shape, filling sane defaults
- * for the optional fields. Does NOT validate — used both on load (lenient) and as
+ * for the optional fields. Does NOT validate - used both on load (lenient) and as
  * the base for write-validation. Always returns a fresh object.
  */
 function normaliseUpstream(raw) {
   const u = raw && typeof raw === 'object' ? raw : {};
   return {
+    // Unknown fields ride along (the same deliberate choice as /api/identity): every store
+    // WRITE rewrites the file, so dropping unrecognised fields meant a 0.6.0 pin/unpin toggle
+    // silently erased hand-authored extras. Known fields are normalised below.
+    ...u,
     id: typeof u.id === 'string' ? u.id : '',
     transport: typeof u.transport === 'string' ? u.transport : 'stdio',
     command: typeof u.command === 'string' ? u.command : '',
     args: Array.isArray(u.args) ? u.args.slice() : [],
     env: u.env && typeof u.env === 'object' && !Array.isArray(u.env) ? { ...u.env } : {},
     enabled: typeof u.enabled === 'boolean' ? u.enabled : true,
+    // 0.6.0 legacy shim: OPT-IN commitment flag. A pinned upstream is knowingly legacy-era -
+    // the gateway keeps speaking MCP 2024-11-05 to it forever (never auto-upgrades), warns at
+    // startup and on every forwarded call naming the pinned version, and tells modern clients
+    // via result _meta. Off by default, always.
+    legacyPin: u.legacyPin === true,
+    // modernOnly: legacyPin's MIRROR - this upstream must speak the modern era; the client
+    // refuses the legacy fallback at connect instead of negotiating down. Off by default
+    // (default = speak whichever era the server understands). Era-policy switches, 2026-07-18.
+    modernOnly: u.modernOnly === true,
+    // Child working directory - the wrap era-probe and the client spawn both read it; it was
+    // dropped here, so a configured cwd never survived the store.
+    cwd: typeof u.cwd === 'string' && u.cwd.length ? u.cwd : undefined,
+    // Per-upstream PAYLOAD timeout (ms) for tools/call | prompts/get | resources/read -
+    // overrides the client's 120 s default. The control-plane window is requestTimeoutMs below.
+    timeoutMs: Number.isFinite(u.timeoutMs) && u.timeoutMs > 0 ? u.timeoutMs : undefined,
+    // Per-upstream CONTROL-PLANE window (ms) - handshake/list/discover/ping; default 10 s.
+    // Raise it for a server that genuinely needs longer than 10 s to boot before it can answer
+    // its handshake (a browser, a DB, a heavy session restore). The default stays the
+    // dead-upstream detector; this is a knowing opt-in per upstream.
+    requestTimeoutMs: Number.isFinite(u.requestTimeoutMs) && u.requestTimeoutMs > 0
+      ? u.requestTimeoutMs : undefined,
     description: typeof u.description === 'string' ? u.description : '',
   };
 }
@@ -136,6 +161,11 @@ function validateUpstream(entry, byId, ignoreId) {
   }
   if (entry.transport === 'stdio' && !isNonEmptyString(entry.command)) {
     throw new Error(`ExposeStore: stdio upstream needs a non-empty "command" (id=${entry.id})`);
+  }
+  if (entry.legacyPin === true && entry.modernOnly === true) {
+    throw new Error(
+      `ExposeStore: upstream "${entry.id}" sets BOTH legacyPin and modernOnly - they contradict (force legacy vs refuse legacy); pick one`
+    );
   }
   return entry;
 }
@@ -320,7 +350,7 @@ class ExposeStore {
 
   /**
    * Shallow-merge `patch` over an existing expose entry. The natural key
-   * `(upstream,tool)` is immutable — any `upstream`/`tool` in the patch is ignored.
+   * `(upstream,tool)` is immutable - any `upstream`/`tool` in the patch is ignored.
    * Persists atomically. Throws on an unknown (upstream,tool).
    */
   updateExpose(upstream, tool, patch) {
@@ -387,9 +417,9 @@ class ExposeStore {
  *
  * Reads + parses the config JSON at `filePath` and returns an ExposeStore bound to
  * it.
- *  - MISSING file → return an empty store bound to filePath. The file is NOT
+ *  - MISSING file -> return an empty store bound to filePath. The file is NOT
  *    created until the first write (keeps the server starting clean).
- *  - MALFORMED JSON (or a duplicate id / duplicate expose key) → throw a clear
+ *  - MALFORMED JSON (or a duplicate id / duplicate expose key) -> throw a clear
  *    error so misconfiguration is caught at load, not at run time.
  *
  * @param {string} filePath
@@ -404,7 +434,7 @@ function loadExposeStore(filePath) {
     raw = fs.readFileSync(filePath, 'utf8');
   } catch (err) {
     if (err && err.code === 'ENOENT') {
-      // Missing file is not an error — bind an empty store; defer file creation.
+      // Missing file is not an error - bind an empty store; defer file creation.
       return new ExposeStore({ filePath, data: { version: 1, upstreams: [], expose: [] } });
     }
     throw new Error(`loadExposeStore: cannot read config at "${filePath}": ${err.message}`);

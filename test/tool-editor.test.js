@@ -1,17 +1,17 @@
 'use strict';
 
 /**
- * tool-editor.test.js — proves the admin-UI tool VIEW + EDIT round-trip (src/ui/server.js):
+ * tool-editor.test.js - proves the admin-UI tool VIEW + EDIT round-trip (src/ui/server.js):
  *
- *   GET  /api/tools/detail?id=<id>  → the FULL entry (name, summary, category, instructions, invoke,
+ *   GET  /api/tools/detail?id=<id>  -> the FULL entry (name, summary, category, instructions, invoke,
  *                                     mode) plus the script BODY for a script invoke, so a user can
- *                                     see everything about one tool; unknown id → 404.
- *   POST /api/tools/update {id, patch:{...}} → shallow-merge + re-validate + atomic persist, and the
+ *                                     see everything about one tool; unknown id -> 404.
+ *   POST /api/tools/update {id, patch:{...}} -> shallow-merge + re-validate + atomic persist, and the
  *                                     change is observable on the next detail read.
  *
  * Drives a LIVE UI server over loopback (mirrors auth.test.js Part E). It mutates the SHARED
  * tools/tools.register.json (registry.update rewrites it), so the register is snapshotted up front and
- * RESTORED byte-for-byte in a finally — a failure mid-flight still leaves the register as found. The
+ * RESTORED byte-for-byte in a finally - a failure mid-flight still leaves the register as found. The
  * edit is a metadata patch (summary) only, so the on-disk echo.js script is never touched. Run
  * SEQUENTIALLY via run-all.js (never `node --test`).
  *
@@ -74,30 +74,30 @@ function check(name, fn) {
 
     // ── 1. DETAIL: a known script tool returns its full entry + the script body. ─────────────────
     const detail = await request({ host: H, port: P, method: 'GET', path: '/api/tools/detail?id=echo' });
-    check('DETAIL: GET /api/tools/detail?id=echo → 200 ok', () => {
+    check('DETAIL: GET /api/tools/detail?id=echo -> 200 ok', () => {
       assert.strictEqual(detail.status, 200, 'status = ' + detail.status + ' body=' + detail.text);
       assert.ok(detail.json && detail.json.ok === true, 'body = ' + detail.text);
     });
     check('DETAIL: the full entry comes back (id, invoke)', () => {
       const e = detail.json && detail.json.entry;
       assert.ok(e && e.id === 'echo', 'entry = ' + JSON.stringify(e));
-      assert.ok(e.invoke && e.invoke.type === 'script', 'echo should be a script invoke — ' + JSON.stringify(e.invoke));
+      assert.ok(e.invoke && e.invoke.type === 'script', 'echo should be a script invoke - ' + JSON.stringify(e.invoke));
     });
     check('DETAIL: the script BODY is returned for a script invoke', () => {
       assert.ok(typeof detail.json.scriptText === 'string' && detail.json.scriptText.length > 0,
-        'scriptText should be the non-empty echo.js body — got ' + JSON.stringify(detail.json.scriptText));
+        'scriptText should be the non-empty echo.js body - got ' + JSON.stringify(detail.json.scriptText));
     });
 
     // ── 2. DETAIL: an unknown id is a clean 404 (not a crash). ───────────────────────────────────
     const missing = await request({ host: H, port: P, method: 'GET', path: '/api/tools/detail?id=__tf_no_such_tool__' });
-    check('DETAIL: an unknown id → 404 ok:false', () => {
+    check('DETAIL: an unknown id -> 404 ok:false', () => {
       assert.strictEqual(missing.status, 404, 'status = ' + missing.status);
       assert.ok(missing.json && missing.json.ok === false, 'body = ' + missing.text);
     });
 
     // ── 3. UPDATE: patch the summary; the response carries the merged entry. ──────────────────────
     const upd = await request({ host: H, port: P, method: 'POST', path: '/api/tools/update', body: JSON.stringify({ id: 'echo', patch: { summary: NEW_SUMMARY } }) });
-    check('UPDATE: POST /api/tools/update → 200 ok, merged entry returned', () => {
+    check('UPDATE: POST /api/tools/update -> 200 ok, merged entry returned', () => {
       assert.strictEqual(upd.status, 200, 'status = ' + upd.status + ' body=' + upd.text);
       assert.ok(upd.json && upd.json.ok === true, 'body = ' + upd.text);
       assert.strictEqual(upd.json.entry && upd.json.entry.summary, NEW_SUMMARY, 'entry.summary = ' + JSON.stringify(upd.json.entry && upd.json.entry.summary));
@@ -112,7 +112,7 @@ function check(name, fn) {
 
     // ── 5. UPDATE: an unknown id is a clean 404. ─────────────────────────────────────────────────
     const updMissing = await request({ host: H, port: P, method: 'POST', path: '/api/tools/update', body: JSON.stringify({ id: '__tf_no_such_tool__', patch: { summary: 'x' } }) });
-    check('UPDATE: an unknown id → 404 ok:false', () => {
+    check('UPDATE: an unknown id -> 404 ok:false', () => {
       assert.strictEqual(updMissing.status, 404, 'status = ' + updMissing.status);
       assert.ok(updMissing.json && updMissing.json.ok === false, 'body = ' + updMissing.text);
     });
@@ -138,11 +138,11 @@ function check(name, fn) {
   const ok = !fatal && failed === 0 && results.length > 0;
 
   if (ok) {
-    console.log(`\nPASS: tool-editor test — ${passed}/${results.length} assertions passed ` +
+    console.log(`\nPASS: tool-editor test - ${passed}/${results.length} assertions passed ` +
       `(detail returns entry+script body; unknown id 404; update merges + persists + round-trips; register restored)`);
     process.exit(0);
   } else {
-    console.log(`\nFAIL: tool-editor test — ${passed}/${results.length} assertions passed, ${failed} failed`);
+    console.log(`\nFAIL: tool-editor test - ${passed}/${results.length} assertions passed, ${failed} failed`);
     process.exit(1);
   }
 })().catch((e) => {

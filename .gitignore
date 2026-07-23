@@ -4,7 +4,7 @@ node_modules/
 package-lock.json
 
 # Optional OAuth config — created on demand when you enable auth (default OFF when absent),
-# exactly like logs/ below. The committed repo ships no auth config; see docs/oauth.md for the shape.
+# exactly like logs/ below. The committed repo ships no auth config; the manual documents the shape.
 # Root-anchored so it ignores ONLY the top-level config dir, NOT the engine code in src/auth/.
 /auth/
 

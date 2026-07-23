@@ -1,6 +1,6 @@
 # Security Policy
 
-ToolFunnel sits between MCP clients and MCP servers — it gates, filters, and forwards
+ToolFunnel sits between MCP clients and MCP servers - it gates, filters, and forwards
 tool calls. That makes its security surface worth taking seriously, and reports are
 genuinely welcome.
 
@@ -8,7 +8,7 @@ genuinely welcome.
 
 **Please use GitHub's private vulnerability reporting:** go to the
 [Security tab](https://github.com/Rendeverance/toolfunnel/security) → **Report a
-vulnerability**. That opens a private thread with the maintainer — nothing is public
+vulnerability**. That opens a private thread with the maintainer - nothing is public
 until a fix is out.
 
 Please **do not** open a public issue for anything exploitable. If you're unsure
@@ -25,12 +25,12 @@ shouldn't. For example:
 - Escaping the PreToolUse deny-hook
 - Injection via tool names, schemas, or forwarded arguments
 
-Bugs that crash ToolFunnel but don't cross a trust boundary are ordinary bugs —
+Bugs that crash ToolFunnel but don't cross a trust boundary are ordinary bugs -
 public issues are fine for those.
 
 ## What to expect
 
-This is a single-maintainer project. Reports get a response on a best-effort basis —
+This is a single-maintainer project. Reports get a response on a best-effort basis -
 normally within a few days. Confirmed vulnerabilities are fixed as a priority, and
 you'll be credited in the release notes unless you'd rather not be.
 

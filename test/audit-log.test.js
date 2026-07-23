@@ -1,13 +1,13 @@
 'use strict';
 
 /**
- * audit-log.test.js — proves the TWO audit event types added in the v0.3.0 hardening wave actually
+ * audit-log.test.js - proves the TWO audit event types added in the v0.3.0 hardening wave actually
  * reach the toggleable activity log (src/core/logger.js):
  *
- *   - { type:'config', via:'ui', event:'<change>', ... }  — written by the admin UI (src/ui/server.js
+ *   - { type:'config', via:'ui', event:'<change>', ... }  - written by the admin UI (src/ui/server.js
  *     logConfigChange) after EVERY successful config-MUTATING POST. A management console changes the
  *     gateway's security posture; auditing those changes matters more than logging individual runs.
- *   - { type:'auth', event:'deny', status, path }         — written at the TRANSPORT gate
+ *   - { type:'auth', event:'deny', status, path }         - written at the TRANSPORT gate
  *     (src/mcp/http-transport.js passesAuth) when an OAuth-protected request is rejected. This is the
  *     security-relevant event; it was previously invisible (rejected before the protocol/log layer).
  *
@@ -15,10 +15,10 @@
  * an ABSOLUTE temp file (keeping the repo's logs/ dir clean) and reads it back.
  *
  * Steps:
- *   1. CONFIG : enable the log → POST /api/tools/state {id:'echo', hot:true} on the live UI server →
+ *   1. CONFIG : enable the log -> POST /api/tools/state {id:'echo', hot:true} on the live UI server ->
  *               a {type:'config', via:'ui', event:'tool_state', id:'echo', hot:true} line is written;
  *               a read-only GET /api/tools adds NO config line.
- *   2. AUTH   : enable OAuth on a live HTTP host → POST /mcp with NO token → 401 → a
+ *   2. AUTH   : enable OAuth on a live HTTP host -> POST /mcp with NO token -> 401 -> a
  *               {type:'auth', event:'deny', status:401, path:'/mcp'} line is written.
  *
  * Mutates SHARED on-disk state (logs/log.config.json, auth/auth.config.json, tools/tools.state.json);
@@ -48,7 +48,7 @@ const LOG_CONFIG_PATH = path.join(LOGS_DIR, 'log.config.json');
 const AUTH_CONFIG_PATH = authConfig.CONFIG_PATH;
 const STATE_PATH = path.join(ROOT, 'tools', 'tools.state.json');
 
-// An ABSOLUTE temp log the logger uses verbatim — keeps the repo's logs/ dir untouched except for the
+// An ABSOLUTE temp log the logger uses verbatim - keeps the repo's logs/ dir untouched except for the
 // config file we snapshot/restore. Guaranteed-absent at start.
 const TEMP_LOG = path.join(os.tmpdir(), `toolfunnel-audit-${process.pid}-${crypto.randomUUID()}.jsonl`);
 
@@ -102,7 +102,7 @@ const logSnap = snap(LOG_CONFIG_PATH);
 const authSnap = snap(AUTH_CONFIG_PATH);
 const stateSnap = snap(STATE_PATH);
 
-// Restore the security-relevant config SYNCHRONOUSLY on a catchable interrupt — a killed run must not
+// Restore the security-relevant config SYNCHRONOUSLY on a catchable interrupt - a killed run must not
 // leave auth ENABLED (breaks the next http.test.js) or the activity log enabled.
 function restoreSync() {
   restore(AUTH_CONFIG_PATH, authSnap);
@@ -146,8 +146,8 @@ function rawLineCount() {
     check('CONFIG: a {type:"config", via:"ui", event:"tool_state"} line was written', () => {
       const hit = cfgRecs.find((r) => r && r.type === 'config' && r.via === 'ui' && r.event === 'tool_state');
       assert.ok(hit, 'records = ' + JSON.stringify(cfgRecs));
-      assert.strictEqual(hit.id, 'echo', 'config line should carry the changed id — ' + JSON.stringify(hit));
-      assert.strictEqual(hit.hot, true, 'config line should carry the changed axis — ' + JSON.stringify(hit));
+      assert.strictEqual(hit.id, 'echo', 'config line should carry the changed id - ' + JSON.stringify(hit));
+      assert.strictEqual(hit.hot, true, 'config line should carry the changed axis - ' + JSON.stringify(hit));
     });
 
     // A read-only GET must NOT add a config-change line (only mutating POSTs are audited).
@@ -161,7 +161,7 @@ function rawLineCount() {
     uiHost = null;
 
     // ── 2. AUTH-DENY AUDIT (type:'auth', event:'deny') ──────────────────────────────────────────
-    // A coherent, enabled config (issuer+audience+algorithms). jwksUri points nowhere on purpose —
+    // A coherent, enabled config (issuer+audience+algorithms). jwksUri points nowhere on purpose -
     // a no-token request is rejected at the bearer check BEFORE any JWKS fetch, so it is never hit.
     authConfig.setConfig({
       enabled: true, issuer: ISSUER, audience: AUDIENCE,
@@ -181,8 +181,8 @@ function rawLineCount() {
     check('AUTH: a {type:"auth", event:"deny", status:401, path:"/mcp"} line was written', () => {
       const hit = authRecs.find((r) => r && r.type === 'auth' && r.event === 'deny');
       assert.ok(hit, 'records = ' + JSON.stringify(authRecs));
-      assert.strictEqual(hit.status, 401, 'deny line status — ' + JSON.stringify(hit));
-      assert.strictEqual(hit.path, '/mcp', 'deny line path — ' + JSON.stringify(hit));
+      assert.strictEqual(hit.status, 401, 'deny line status - ' + JSON.stringify(hit));
+      assert.strictEqual(hit.path, '/mcp', 'deny line path - ' + JSON.stringify(hit));
     });
 
     await mcpHost.stop();
@@ -225,11 +225,11 @@ function rawLineCount() {
   const ok = !fatal && failed === 0 && results.length > 0;
 
   if (ok) {
-    console.log(`\nPASS: audit-log test — ${passed}/${results.length} assertions passed ` +
+    console.log(`\nPASS: audit-log test - ${passed}/${results.length} assertions passed ` +
       `(config-change audit via UI; auth-deny audit at the transport gate; shared state restored)`);
     process.exit(0);
   } else {
-    console.log(`\nFAIL: audit-log test — ${passed}/${results.length} assertions passed, ${failed} failed`);
+    console.log(`\nFAIL: audit-log test - ${passed}/${results.length} assertions passed, ${failed} failed`);
     process.exit(1);
   }
 })().catch((e) => {

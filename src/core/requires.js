@@ -1,11 +1,11 @@
 'use strict';
 
 /**
- * requires.js — runtime-requirement preflight (the packaging story's honesty layer).
+ * requires.js - runtime-requirement preflight (the packaging story's honesty layer).
  *
  * A shipped pack's tools may need runtimes the gateway itself does not (python for a PDF tool,
- * git for a repo tool). The pack DECLARES them in its toolfunnel.json — the identity file that
- * already travels with every config home — and the gateway probes them ONCE at startup:
+ * git for a repo tool). The pack DECLARES them in its toolfunnel.json - the identity file that
+ * already travels with every config home - and the gateway probes them ONCE at startup:
  *
  *   "requires": [
  *     { "command": "python", "min": "3.10", "why": "the pdf-extract tools" },
@@ -21,14 +21,14 @@
  *   why         shown in the warning so the operator knows which tools care
  *
  * Zero new dependencies: child_process probes + a hand-rolled dotted-numeric compare. NO semver
- * library — by the packaging hard constraint, and dotted numerics cover real runtime versions.
+ * library - by the packaging hard constraint, and dotted numerics cover real runtime versions.
  */
 
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
-/** Parse the FIRST dotted-numeric version out of a probe's output ("Python 3.12.1" → [3,12,1]).
+/** Parse the FIRST dotted-numeric version out of a probe's output ("Python 3.12.1" -> [3,12,1]).
  *  Returns null when no version-shaped token is present. */
 function parseVersion(text) {
   const m = /(\d+)\.(\d+)(?:\.(\d+))?/.exec(String(text || ''));
@@ -52,7 +52,7 @@ function compareVersions(a, b) {
 
 /**
  * Probe one command for its version string. On Windows a PATHEXT shim (a .cmd like npx) cannot be
- * spawned shell:false (ENOENT/EINVAL — the CVE-2024-27980 mitigation), so a failed direct probe is
+ * spawned shell:false (ENOENT/EINVAL - the CVE-2024-27980 mitigation), so a failed direct probe is
  * retried through cmd.exe, mirroring mcp-client's winLaunch.
  * @param {string} command
  * @param {string} versionArg
@@ -69,13 +69,13 @@ function probe(command, versionArg) {
   const raw = `${res.stdout || ''} ${res.stderr || ''}`.trim();
   const version = parseVersion(raw);
   // "Spawned" is not "exists": the cmd.exe fallback launches fine for a NONEXISTENT command and
-  // exits non-zero ("is not recognized…"). Existence = a clean exit OR a version-shaped answer.
+  // exits non-zero ("is not recognized..."). Existence = a clean exit OR a version-shaped answer.
   const found = res.status === 0 || version !== null;
   return { found, version: found ? version : null, raw };
 }
 
 /**
- * Check the `requires` declared in `<home>/toolfunnel.json`. Returns the problem list — the
+ * Check the `requires` declared in `<home>/toolfunnel.json`. Returns the problem list - the
  * caller decides how to surface it (the gateway logs each to stderr and starts anyway). NEVER
  * throws; a malformed requires entry is itself reported as a problem rather than crashing.
  * @param {string} home  the resolved config home
@@ -86,7 +86,7 @@ function checkRequires(home) {
   try {
     cfg = JSON.parse(fs.readFileSync(path.join(home, 'toolfunnel.json'), 'utf8'));
   } catch (_e) {
-    return []; // absent/bad identity file → nothing declared
+    return []; // absent/bad identity file -> nothing declared
   }
   const list = cfg && Array.isArray(cfg.requires) ? cfg.requires : [];
   const problems = [];
@@ -98,7 +98,7 @@ function checkRequires(home) {
     const command = entry.command.trim();
     // A requires command is a bare PROGRAM NAME, never a shell string. This is load-bearing on
     // Windows: the cmd.exe shim fallback below hands the token to cmd, where an unquoted
-    // metacharacter ("x&evil") would CHAIN commands — a probe must never be able to run anything
+    // metacharacter ("x&evil") would CHAIN commands - a probe must never be able to run anything
     // beyond `<program> <versionArg>`. Reject anything shell-shaped up front (also catches paths:
     // declare tools by PATH name, which is the only portable claim a pack can make anyway).
     if (!/^[A-Za-z0-9][A-Za-z0-9._+-]*$/.test(command)) {

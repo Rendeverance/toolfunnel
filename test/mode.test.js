@@ -1,12 +1,12 @@
 'use strict';
 
 /**
- * mode.test.js — proves the per-tool EXECUTION MODE on the register.
+ * mode.test.js - proves the per-tool EXECUTION MODE on the register.
  *
  * A register entry may carry an optional "mode":
- *   "gateway"   → ToolFunnel EXECUTES the invoke server-side through the gated run path
- *                 (the original behaviour — every shipped script tool keeps doing this).
- *   "reference" → ToolFunnel does NOT execute. toolfunnel_run_tool returns the tool's
+ *   "gateway"   -> ToolFunnel EXECUTES the invoke server-side through the gated run path
+ *                 (the original behaviour - every shipped script tool keeps doing this).
+ *   "reference" -> ToolFunnel does NOT execute. toolfunnel_run_tool returns the tool's
  *                 instructions so the connected AI performs the action in ITS OWN
  *                 environment. No spawn, no gate (nothing runs here).
  * When "mode" is ABSENT it is inferred: a script/shell invoke ⇒ "gateway", else "reference".
@@ -18,16 +18,16 @@
  *
  * Assertions:
  *   1. BACKWARD-COMPAT: every shipped register tool (the 7 demo + 9 management) resolves to
- *      "gateway" — they all carry script invokes and no explicit mode.
+ *      "gateway" - they all carry script invokes and no explicit mode.
  *   2. REFERENCE: a sacrificial reference tool (mode:"reference", instructions:"do X") whose
  *      invoke points at a SPY script returns { ok:true, mode:"reference", instructions:"do X",
  *      message, name } and the spy was NEVER spawned (its marker file is absent).
  *   3. CONTRAST: the SAME spy script registered as a "gateway" tool DOES spawn (its marker
- *      file appears) — so the marker's absence in (2) is load-bearing, not an artefact.
+ *      file appears) - so the marker's absence in (2) is load-bearing, not an artefact.
  *   4. GATEWAY: the shipped "echo" demo tool still executes and returns its output (unchanged).
  *
  * Sacrificial ids are prefixed "__tf_test_". The register file is SNAPSHOTTED up front and
- * RESTORED byte-for-byte in a finally; the spy script + marker it may write are deleted too —
+ * RESTORED byte-for-byte in a finally; the spy script + marker it may write are deleted too -
  * so a failure mid-flight still leaves the real config exactly as it was found.
  *
  * Convention (matches the sibling tests): a standalone node script, exit 0 = pass, non-zero =
@@ -52,7 +52,7 @@ const SPY_MARKER = path.join(SCRIPTS_DIR, '__tf_test_spy.marker');
 const REF_ID = '__tf_test_reference';
 const GATEWAY_SPY_ID = '__tf_test_gateway_spy';
 const REF_INSTRUCTIONS = 'do X';
-const REF_MESSAGE = 'reference tool — perform this in your own environment per the instructions';
+const REF_MESSAGE = 'reference tool - perform this in your own environment per the instructions';
 
 // A spy script: if it is ever spawned it leaves a marker file beside itself. Its presence
 // after a run is unambiguous proof that the invoke was executed (spawned).
@@ -105,7 +105,7 @@ function addTestTools() {
     category: 'testing',
     instructions: REF_INSTRUCTIONS,
     mode: 'reference',
-    // An invoke is PRESENT (and points at the spy) on purpose — a reference tool must not
+    // An invoke is PRESENT (and points at the spy) on purpose - a reference tool must not
     // spawn it. invoke is optional for reference, but keeping it makes the no-spawn proof real.
     invoke: { type: 'script', path: 'scripts/__tf_test_spy.js' },
   });
@@ -121,7 +121,7 @@ function addTestTools() {
   fs.writeFileSync(REGISTER, JSON.stringify(data, null, 2) + '\n');
 }
 
-// ── the run path (a fresh build per call → reads the current on-disk register) ─────────
+// ── the run path (a fresh build per call -> reads the current on-disk register) ─────────
 async function runTool(name, args) {
   const { protocol } = buildProtocol();
   return protocol.dispatch('toolfunnel_run_tool', { name, args: args || {} });
@@ -139,7 +139,7 @@ async function runTool(name, args) {
       const briefs = reg.list();
       // The backward-compat rule is: a tool with a SCRIPT/SHELL invoke infers/resolves to "gateway".
       // A tool with no such invoke (an explicit mode:"reference" tool) legitimately resolves to
-      // "reference" — so we exclude those rather than asserting "no tool is non-gateway", which would
+      // "reference" - so we exclude those rather than asserting "no tool is non-gateway", which would
       // be a false failure if a reference tool ships (or a test fixture leaks one onto disk).
       const nonGateway = briefs.filter((b) => {
         let inv = null;
@@ -183,7 +183,7 @@ async function runTool(name, args) {
         assert.ok(!(res && 'output' in res), 'reference result leaked an output: ' + JSON.stringify(res));
       });
       check('REFERENCE: the invoke was NEVER spawned (spy marker absent)', () => {
-        assert.ok(!fs.existsSync(SPY_MARKER), 'spy marker exists — the reference tool spawned its invoke');
+        assert.ok(!fs.existsSync(SPY_MARKER), 'spy marker exists - the reference tool spawned its invoke');
       });
     }
 
@@ -194,7 +194,7 @@ async function runTool(name, args) {
         assert.strictEqual(res && res.ok, true, 'result = ' + JSON.stringify(res));
       });
       check('CONTRAST: gateway run DID spawn the same spy (marker present)', () => {
-        assert.ok(fs.existsSync(SPY_MARKER), 'spy marker missing — the gateway tool did not spawn');
+        assert.ok(fs.existsSync(SPY_MARKER), 'spy marker missing - the gateway tool did not spawn');
       });
     }
 
@@ -248,11 +248,11 @@ async function runTool(name, args) {
   const ok = !fatal && failed === 0 && results.length > 0;
 
   if (ok) {
-    console.log(`\nPASS: mode test — ${passed}/${results.length} assertions passed ` +
+    console.log(`\nPASS: mode test - ${passed}/${results.length} assertions passed ` +
       `(reference tool yields instructions + never spawns; gateway tools execute unchanged; register restored)`);
     process.exit(0);
   } else {
-    console.log(`\nFAIL: mode test — ${passed}/${results.length} assertions passed, ${failed} failed`);
+    console.log(`\nFAIL: mode test - ${passed}/${results.length} assertions passed, ${failed} failed`);
     process.exit(1);
   }
 })().catch((e) => {

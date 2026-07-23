@@ -2,9 +2,9 @@
 
 ![ToolFunnel](assets/logo.png)
 
-> A zero-dependency MCP and Local tool gateway: host your own tools in any language, forward and curate tools from other MCP servers, expose them leanly to cut agent token cost, and gate every call through your own policy hooks before it runs + create your own MCP servers easily with zero code!
+> A zero-dependency MCP and Local tool gateway: host your own tools in any language, forward and curate tools from other MCP servers, expose them leanly to cut agent token cost, gate every call through your own policy hooks before it runs, create your own MCP servers easily with zero code - and **wrap any MCP server so it speaks both protocol eras, invisibly**.
 
-**Zero code, zero dependencies: your own MCP server in 60 seconds** — from three ordinary scripts to a named, packaged, policy-gated MCP server (everything on screen is real output; see [demo/](demo/)):
+**Zero code, zero dependencies: your own MCP server in 60 seconds** - from three ordinary scripts to a named, packaged, policy-gated MCP server (everything on screen is real output; see [demo/](demo/)):
 
 ![ToolFunnel in 60 seconds: scripts → register → identity → live MCP server → npm package](demo/toolfunnel-demo.gif)
 
@@ -30,10 +30,52 @@ ToolFunnel is one small MCP server that sits between your agent and everything e
 2. **Forwards other MCP servers - leanly.** Attach an upstream MCP and its tools appear in the same lean register as your own, runnable through the gate. Curate which appear, promote a chosen few to top-level "every-turn" tools, or leave them lean by default.
 3. **Lean register** - the agent sees short tool *briefs*; the full instructions for a tool are fetched on demand, so context stays small. *(This is the token saver.)*
 4. **Server-side policy gate** - every server-side execution path fires your PreToolUse / PostToolUse hooks inside the gateway, so your policy works on any client, not just hosts that support hooks. The gate travels with the gateway, and fails closed.
-5. **Configure by file, UI, or in-band** - plain JSON files, an optional loopback web UI, or nine in-band management functions (`tf_*`) all add / curate / toggle tools, upstreams, and hooks - live, no restart - and package the whole setup for deployment.
+5. **Configure by file, UI, or in-band** - plain JSON files, an optional loopback web UI, or ten in-band management functions (`tf_*`) all add / curate / toggle tools, upstreams, and hooks - live, no restart - and package the whole setup for deployment.
 6. **Audit when you want it** - a toggleable JSONL log (default off) records tool runs, every gate allow/deny decision, and every upstream connect / disconnect / reconnect.
 7. **Live & self-healing** - attach/curate/toggle on a running gateway with no restart; if an attached MCP's process dies, the gateway detects it and reconnects in the background with backoff.
 8. **Build your own MCP server, no code, no SDK** - assemble scripts and curated upstream tools, switch the meta-tools off, and ToolFunnel *is* your MCP server; `tf_pack` ships it as a `npx`-installable npm package.
+9. **Wrap any MCP server** - one command turns ToolFunnel into a transparent, dual-era wrapper for a single MCP server: modern clients can use legacy servers, legacy clients can use modern servers, and neither side can tell ToolFunnel is there. *(The headline of 0.6.0 - see below.)*
+
+## Under the hood
+
+Three claims in this README carry the most weight, and each one has a proof you can run:
+
+- **The gate fails closed.** A PreToolUse deny means the tool's execute path is never entered. The test suite proves it directly: a tool plants a side-effect file, the gate denies the call, and the test asserts the file never appears.
+- **The wrap is tested at the wire, against servers we didn't write.** Elicitation bridging, cancel translation into the upstream's own request ids, identity mirroring and subscription replay all run over real pipes in the suite, including integration tests against the official MCP SDK client and a real npx-launched third-party server.
+- **The suite runs on 3 operating systems.** CI covers Linux, macOS and Windows across Node 18, 20 and 22 (35 test files). `npm test` runs the same suite locally.
+
+The reasoning behind the bigger design decisions (why no SDK, why fail-closed, why zero dependencies, where the isolation boundary sits) is in [docs/design.md](docs/design.md).
+
+## Wrap any MCP server - one command, both protocol eras, invisible
+
+The 2026-07-28 MCP revision is a **breaking** protocol change: it removes the `initialize` handshake and sessions that every earlier server and client is built on. When clients upgrade, unmaintained legacy servers stop working with them; older clients can't talk to new-style servers at all. A lot of good tools are going to get stranded on the wrong side of that line.
+
+`toolfunnel wrap <server>` un-strands them:
+
+```
+toolfunnel wrap my-old-server
+```
+
+Watch it happen (everything on screen is real output):
+
+![toolfunnel wrap in 22 seconds: one command, then the client sees the wrapped server's own identity, tools, and results](demo/toolfunnel-wrap-demo.gif)
+
+That's it - zero configuration. The name is an attached upstream's id (not attached yet? that's one `tf_mcp_add` call or UI row first). The command probes the server and tells you which protocol era(s) it speaks; if the server needs paths outside the gateway root (a filesystem server serving your documents folder, say) you get a clear security notice up front explaining exactly what that means. Changed your mind, or just looking?
+
+```
+toolfunnel wrap                       # show what's currently wrapped
+toolfunnel wrap --off                 # undo - restore the normal ToolFunnel surface
+toolfunnel wrap my-old-server --as legacy-tools   # present a name of your choosing
+```
+
+The wrap survives restarts, and the web UI has the same controls (Wrap / Unwrap on the MCPs tab). ToolFunnel becomes that server, for both eras at once:
+
+- **Any client, any server, any combination.** Legacy client → modern server, modern client → legacy server, or matched pairs - all four combinations work through the same wrap. The gateway speaks both dialects natively and translates between them.
+- **Invisible from both sides.** The client sees the wrapped server's own identity, tools, results, errors, and notifications - byte-for-byte, verified against real published servers. The server sees a normal client with your client's identity. No renamed tools, no injected prefixes, no "via toolfunnel" tells - the wrap presents the server *as itself*. Tool calls wait up to 120 s by default and a progress-reporting tool keeps its call alive indefinitely; for silent tools that run longer, set `"timeoutMs"` on the upstream in `expose.json`, and for a server that needs longer than 10 s to boot before it can answer its handshake, set `"requestTimeoutMs"` the same way.
+- **The hard parts are bridged, not dropped.** Mid-call user prompts (elicitation) from a legacy server are translated into the modern retry pattern and back - for modern clients; a legacy client gets a clean decline rather than a hang (the bridge targets the era gap, and legacy-to-legacy relay is on the roadmap). Resource subscriptions survive - and are silently re-established if the wrapped server crashes and reconnects. Progress tokens flow through. Cancellations are translated into the server's own request ids.
+- **Still governable when you want it.** Wrapping doesn't switch off the gate: every call can still pass your PreToolUse hooks, and every tool still has its visibility dials - hide a dangerous tool, and it vanishes from the wrapped surface too. Transparency is the default; the levers are opt-in.
+
+Use it to keep a favourite unmaintained server alive past the cutover, to give a modern-only server to your older tooling, or just to put a policy gate in front of a server you didn't write - without its client ever knowing. One related dial: if an upstream should *stay* on the old protocol forever, set `legacyPin` on it (a toggle in the UI, or one field in `mcp/expose.json`) and the gateway will never auto-upgrade it - opt-in, and it warns loudly so nobody forgets it's there. Full details (including the security model for wrapped servers with filesystem access): the [manual](docs/MANUAL.pdf).
 
 ## Build your own MCP server - no code, no SDK
 
@@ -67,7 +109,7 @@ gatedRun({ engine, ctx, toolName, args, execute })
   → fire PostToolUse  (advisory; cannot un-run the tool)
 ```
 
-Hooks speak the Claude-Code hook protocol (event JSON on stdin, exit `2` to block), so an existing hook travels here unchanged. The load-bearing invariant, proven by test: a PreToolUse deny means `execute()` is never called. Writing hooks, matchers, and worked examples: [manual](docs/MANUAL.pdf).
+Hooks speak the Claude-Code hook protocol (event JSON on stdin, exit `2` to block), so an existing hook travels here unchanged. The load-bearing invariant, proven by test: a PreToolUse deny means `execute()` is never called. The shipped example hooks are **disabled by default** - enable one in `hooks/hooks.manifest.json` (or the UI's Hooks tab) to turn policy on. Writing hooks, matchers, and worked examples: [manual](docs/MANUAL.pdf).
 
 ## Why it's different
 
@@ -86,6 +128,8 @@ A quick feature comparison as of June 2026:
 | Zero runtime dependencies\* | ✓ (Node, no SDK) | ✗ (framework) | ✓ (Go) | ✗ (Docker) | ✓ (Go) |
 | Runtime dependencies (installed / bundled) | **0\*** | many | 40+ (bundled) | many | bundled (Go) |
 | Config web UI | ✓ | ✗ | ✓ | ✓ | ✗ |
+| Dual-era protocol (2026-07-28 + legacy), client & server side | ✓ | ✗ | ✗ | ✗ | ✗ |
+| Transparent single-server wrap (invisible, era-bridging) | ✓ | ✗ | ✗ | ✗ | ✗ |
 
 Beyond the dependency count, four capability choices set ToolFunnel apart from a pure proxy like mcpproxy-go:
 
@@ -118,7 +162,7 @@ And because it's hand-rolled rather than built on the MCP SDK, I'll need to keep
 
 ## Zero dependencies, on purpose
 
-ToolFunnel has no runtime npm dependencies (`"dependencies": {}`) and does not use an MCP SDK - the JSON-RPC 2.0 wire protocol is hand-rolled on top of Node built-ins (`node:http`, `node:child_process`, `node:fs`, …). Requires Node >= 18. `npm install toolfunnel` pulls zero packages.
+ToolFunnel has no runtime npm dependencies (`"dependencies": {}`) and does not use an MCP SDK - the JSON-RPC 2.0 wire protocol is hand-rolled on top of Node built-ins (`node:http`, `node:child_process`, `node:fs`, ...). Requires Node >= 18. `npm install toolfunnel` pulls zero packages.
 
 > **\* The one asterisk: OAuth is opt-in.** Enabling OAuth 2.1 (off by default) adds exactly one dependency - [`jose`](https://www.npmjs.com/package/jose), which is itself zero-dependency, audited, and the same library the official MCP SDK uses. It is not a runtime dependency of the core: it appears only as a `devDependency` (for the OAuth test suite) and is installed on demand for users who turn auth on. So the default footprint is genuinely zero, and the most security-sensitive code in the project - token validation - is delegated to an audited library rather than hand-rolled.
 
@@ -129,6 +173,10 @@ This is a deliberate security decision, not minimalism for its own sake. ToolFun
 By default the gateway is loopback-only and unauthenticated - the right posture for a single operator on `localhost`. For a networked or multi-user deployment, ToolFunnel can act as an OAuth 2.1 resource server: it validates the bearer token on every request before any tool runs, through `jose` with a pinned algorithm allowlist, enforced issuer, and an enforced audience bound to this gateway's resource URI (the RFC 8707 confused-deputy defence). Auth is what unlocks a non-loopback bind: the HTTP host refuses to bind off-localhost unless OAuth is enabled. Setup, config fields, and discovery details: [manual](docs/MANUAL.pdf).
 
 The OAuth client leg (Dynamic Client Registration, authorization-server-metadata discovery, step-up auth) and the 2026 spec hardening are planned, not yet shipped - the resource-server slice is the shipped, tested MVP.
+
+## Teams and bespoke builds
+
+One ToolFunnel instance serves one operator - a deliberate design ([why](docs/design.md)). A Team edition (per-user identity, audit trails, quotas) is on the roadmap if there is interest - and custom gateways built on ToolFunnel are available today. Open an issue titled `enquiry`.
 
 ## Quickstart
 
@@ -149,9 +197,21 @@ Point your client at it via `.mcp.json`:
 { "mcpServers": { "toolfunnel": { "command": "node", "args": ["/path/to/toolfunnel/bin/toolfunnel.js"] } } }
 ```
 
-**Or skip the config entirely - just ask your AI.** Point any MCP-aware client at ToolFunnel and say *"attach this tool server, expose these tools, and block anything destructive."* The AI reads ToolFunnel's own built-in instructions and wires it all up for you - upstreams, exposed tools, and a PreToolUse safety gate - in plain language, no JSON editing. Prefer to click? The web UI does the same. No coding experience required :)
+**Or skip the config entirely - just ask your AI.** Point any MCP-aware client at ToolFunnel and say *"attach this tool server, expose these tools, and block anything destructive."* The AI reads ToolFunnel's own built-in instructions and wires it all up for you - upstreams, exposed tools, a PreToolUse safety gate, even wrapping a server - in plain language, no JSON editing. Every feature is documented from the inside (`toolfunnel_howto` covers creating tools, attaching MCPs, hooks, packaging, wrapping, and configuration), so a plain agent with no special prompt can drive the whole gateway. Prefer to click? The web UI does the same. No coding experience required :)
 
 The HTTP host (`--http`), registering over HTTP, the web UI tabs, the audit log, configuration files, project layout, and the smoke test are all walked through step-by-step, with screenshots, in the [manual](docs/MANUAL.pdf).
+
+## Identity & settings - one small file
+
+Everything the gateway calls itself lives in `toolfunnel.json` at the config home - every field optional, an absent file is simply the default identity:
+
+```json
+{ "serverName": "my-mcp", "serverVersion": "1.0.0", "clientName": "my-client", "httpPort": 9998, "uiPort": 9777 }
+```
+
+`serverName`/`serverVersion` are what connected *clients* see in the handshake; `clientName`/`clientVersion` are what upstream *servers* see from the gateway. (Under a wrap on stdio you don't need any of it - the wrapped server is shown your real client's identity automatically.) The web UI's **Settings** tab edits the same file.
+
+Prefer to configure everything by hand? The whole gateway is driven by a handful of plain JSON files - no code anywhere. The complete map (every file, every field, a worked five-file example) is one call away for your agent - `toolfunnel_howto({ topic: "configure" })` - and in the manual's configuration chapter for you.
 
 ## Packaging: ship your own MCP
 

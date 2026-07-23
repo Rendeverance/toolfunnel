@@ -1,20 +1,20 @@
 'use strict';
 
 /**
- * config-home.test.js — the external CONFIG HOME (board item 9's enabler): a gateway pointed at
+ * config-home.test.js - the external CONFIG HOME (board item 9's enabler): a gateway pointed at
  * an empty directory via TOOLFUNNEL_HOME must seed it, run from it, and confine every mutation
- * to it — the package tree stays byte-identical (an `npm update` can then never eat user tools,
+ * to it - the package tree stays byte-identical (an `npm update` can then never eat user tools,
  * and a wrapped MCP can ship its own bundled home).
  *
- *   A — SEED:     first run against an empty home seeds the shipped register, the scripts
+ *   A - SEED:     first run against an empty home seeds the shipped register, the scripts
  *                 (including tf-env.js, the seeded-script engine shim), an EMPTY expose.json
  *                 (never the populated example), and the hooks manifest.
- *   B — IDENTITY: a toolfunnel.json placed in the home BEFORE first run drives the initialize
- *                 serverInfo — identity travels with the pack, not the package.
- *   C — LIVE:     tools/list serves the meta-tools; toolfunnel_run_tool(tf_tool_add) executes the
+ *   B - IDENTITY: a toolfunnel.json placed in the home BEFORE first run drives the initialize
+ *                 serverInfo - identity travels with the pack, not the package.
+ *   C - LIVE:     tools/list serves the meta-tools; toolfunnel_run_tool(tf_tool_add) executes the
  *                 SEEDED management script (engine via TOOLFUNNEL_PKG), writes the new entry +
  *                 script INTO THE HOME, and the new tool then RUNS from the home.
- *   D — ISOLATION: after all of it, the package's own tools.register.json is byte-identical.
+ *   D - ISOLATION: after all of it, the package's own tools.register.json is byte-identical.
  *
  * NON-DESTRUCTIVE: the home is an OS tmpdir (removed in finally); the package tree is only read.
  * Node built-ins only. Run:  node test/config-home.test.js   (exit 0 = pass)
@@ -78,7 +78,7 @@ function textOf(resp) {
   return Array.isArray(c) && c[0] && typeof c[0].text === 'string' ? c[0].text : '';
 }
 
-/** tools/call toolfunnel_run_tool over the wire → { isError, output, payload, raw }. On success
+/** tools/call toolfunnel_run_tool over the wire -> { isError, output, payload, raw }. On success
  *  content[0].text IS the tool's output object {ok,code,stdout,stderr}; payload = the script's
  *  own stdout JSON (null when unavailable). */
 async function runTool(client, name, args) {
@@ -89,7 +89,7 @@ async function runTool(client, name, args) {
   const raw = textOf(resp);
   const isError = !!(resp && resp.result && resp.result.isError);
   let output = null;
-  try { output = JSON.parse(raw); } catch (_e) { /* an error result is plain text — leave null */ }
+  try { output = JSON.parse(raw); } catch (_e) { /* an error result is plain text - leave null */ }
   let payload = null;
   if (output && output.ok === true && typeof output.stdout === 'string') {
     try { payload = JSON.parse(output.stdout.trim()); } catch (_e) { /* leave null */ }
@@ -111,7 +111,7 @@ function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
       JSON.stringify({ serverName: 'packed-mcp', serverVersion: '1.2.3' }, null, 2) + '\n');
 
     child = spawn(process.execPath, [ENTRY], {
-      cwd: os.tmpdir(), // NOT the repo — nothing may resolve via cwd
+      cwd: os.tmpdir(), // NOT the repo - nothing may resolve via cwd
       env: { ...process.env, TOOLFUNNEL_HOME: home },
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
@@ -121,7 +121,7 @@ function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
     child.stderr.on('data', (c) => { stderr += c; });
     const client = makeClient(child);
 
-    // B — identity travels with the home.
+    // B - identity travels with the home.
     const init = await client.request('initialize', {
       protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'config-home.test', version: '0' },
     });
@@ -132,7 +132,7 @@ function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
       assert.strictEqual(si.version, '1.2.3', 'got ' + JSON.stringify(si));
     });
 
-    // A — the empty home was seeded from the shipped defaults.
+    // A - the empty home was seeded from the shipped defaults.
     check('A: the home was seeded (register, scripts incl. tf-env.js, hooks manifest)', () => {
       assert.ok(fs.existsSync(path.join(home, 'tools', 'tools.register.json')), 'register not seeded');
       assert.ok(fs.existsSync(path.join(home, 'tools', 'scripts', 'tf-tool-add.js')), 'management script not seeded');
@@ -147,7 +147,7 @@ function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
       assert.ok(!fs.existsSync(path.join(home, 'tools', 'tools.state.json')), 'tools.state.json should be absent');
     });
 
-    // C — the surface is alive, and a management mutation lands IN THE HOME.
+    // C - the surface is alive, and a management mutation lands IN THE HOME.
     const list = await client.request('tools/list', {});
     check('C: tools/list serves the meta-tools from the seeded home', () => {
       const names = ((list.result && list.result.tools) || []).map((t) => t && t.name);
@@ -173,7 +173,7 @@ function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
     });
 
     // The running gateway picks the new entry up via the register WATCHER (fs.watch + 150 ms
-    // debounce), so poll rather than race it — same pattern as reload.test.js.
+    // debounce), so poll rather than race it - same pattern as reload.test.js.
     let probe = null;
     const probeDeadline = Date.now() + 8000;
     while (Date.now() < probeDeadline) {
@@ -186,7 +186,7 @@ function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
       assert.ok(probe.payload && probe.payload.probe === 'ran-from-home', 'payload: ' + JSON.stringify(probe && probe.payload));
     });
 
-    // D — the package tree is untouched by ANY of it.
+    // D - the package tree is untouched by ANY of it.
     check('D: the PACKAGE register is byte-identical (every mutation confined to the home)', () => {
       assert.strictEqual(fs.readFileSync(PKG_REGISTER, 'utf8'), pkgRegisterSnap, 'the package register CHANGED');
     });
@@ -207,10 +207,10 @@ function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
   const expected = 9;
   const ok = !fatal && passed === results.length && results.length === expected;
   if (ok) {
-    console.log(`\nPASS: config-home test — ${passed}/${expected} assertions passed (seeded home, pack identity, seeded-script engine shim, home-confined mutations, package untouched)`);
+    console.log(`\nPASS: config-home test - ${passed}/${expected} assertions passed (seeded home, pack identity, seeded-script engine shim, home-confined mutations, package untouched)`);
     process.exit(0);
   } else {
-    console.log(`\nFAIL: config-home test — ${passed}/${results.length} assertions passed`);
+    console.log(`\nFAIL: config-home test - ${passed}/${results.length} assertions passed`);
     process.exit(1);
   }
 })().catch((e) => { console.log('CONFIG-HOME TEST CRASHED: ' + ((e && e.stack) || e)); process.exit(1); });

@@ -2,7 +2,7 @@ name: CI
 
 # Cross-platform proof: the full suite must pass on Linux, macOS, and Windows, across the supported
 # Node range (engines: >=18). This is what makes "works everywhere" a standing guarantee rather than a
-# one-machine check — it caught nothing only because the spawn + framing bugs were fixed first; it
+# one-machine check - it caught nothing only because the spawn + framing bugs were fixed first; it
 # exists so a platform regression can never ship silently again.
 on:
   push:
@@ -31,10 +31,10 @@ jobs:
       - name: Run the test suite
         run: npm test
 
-  # Integration: prove interop against implementations we did NOT write — a real npx-launched MCP
+  # Integration: prove interop against implementations we did NOT write - a real npx-launched MCP
   # (server-everything) and the official MCP SDK client over Streamable HTTP. Gated behind
   # TF_INTEGRATION=1 (network + the SDK devDep), so it runs only here, not in the offline matrix above.
-  # ubuntu = the POSIX spawn path, windows = the cmd.exe shim path — the two that the bugs lived in.
+  # ubuntu = the POSIX spawn path, windows = the cmd.exe shim path - the two that the bugs lived in.
   integration:
     name: integration (real MCP + SDK client, ${{ matrix.os }})
     runs-on: ${{ matrix.os }}

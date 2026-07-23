@@ -1,12 +1,12 @@
 'use strict';
 
 /**
- * registry.js — the dynamic, persisted Tool Register (see the architecture doc §5).
+ * registry.js - the dynamic, persisted Tool Register (see the architecture doc §5).
  *
  * This is distinct from src/core/tool-registry.js: that one is the in-memory
  * catalogue of tools handed to a backend at connect time. THIS one is the
  * structured, on-disk register the lean meta-tools (toolfunnel_list_tools /
- * toolfunnel_tool_instructions / toolfunnel_run_tool) read every call — so register edits
+ * toolfunnel_tool_instructions / toolfunnel_run_tool) read every call - so register edits
  * are visible with no reconnect (§1, "no restart for register changes").
  *
  * Register entry shape (tools.register.json -> { version, description, tools:[] }):
@@ -15,9 +15,9 @@
  *     { type: "script", path: "scripts/<file>" }   // run a host-local script
  *     { type: "shell",  command: "..." }            // run a shell command
  *   mode (optional) is one of:
- *     "gateway"   — execute the invoke server-side via the gated run path (default for
+ *     "gateway"   - execute the invoke server-side via the gated run path (default for
  *                   a script/shell invoke; the original behaviour).
- *     "reference" — do NOT execute; toolfunnel_run_tool returns the instructions so the
+ *     "reference" - do NOT execute; toolfunnel_run_tool returns the instructions so the
  *                   connected AI runs the action itself. invoke may be omitted.
  *   When mode is absent it is inferred: script/shell invoke -> "gateway", else "reference".
  *
@@ -28,7 +28,7 @@
  *   add(entry) / update(id,patch) / remove(id)  -> mutate + ATOMIC persist
  *   resolveExecution(id, args)  -> { type, run: () => Promise<result> }
  *                                  describes HOW to run the invoke. It does NOT
- *                                  gate — gating is gated-run.js's job (§9).
+ *                                  gate - gating is gated-run.js's job (§9).
  *
  * Pure-ish: the registry only touches its own JSON file + (for script invokes)
  * spawns node on a path resolved under this src/tools dir. Dependencies that a
@@ -45,9 +45,9 @@ const VALID_INVOKE_TYPES = new Set(['script', 'shell']);
 
 /**
  * Execution modes (optional per-entry "mode" field):
- *   "gateway"   — ToolFunnel EXECUTES the invoke server-side through the gated run path
+ *   "gateway"   - ToolFunnel EXECUTES the invoke server-side through the gated run path
  *                 (the original behaviour for every script/shell tool).
- *   "reference" — ToolFunnel does NOT execute. toolfunnel_run_tool returns the tool's
+ *   "reference" - ToolFunnel does NOT execute. toolfunnel_run_tool returns the tool's
  *                 instructions so the connected AI performs the action in ITS OWN
  *                 environment. A reference tool needs no invoke (nothing runs here).
  */
@@ -110,7 +110,7 @@ function validateEntry(entry, { requireId = true } = {}) {
     );
   }
   // A reference tool executes nothing server-side, so its invoke may be omitted. Only an
-  // EXPLICIT mode:"reference" relaxes this — with mode absent the invoke is still required
+  // EXPLICIT mode:"reference" relaxes this - with mode absent the invoke is still required
   // (backward-compatible: every existing tool keeps its mandatory invoke).
   if (entry.mode === 'reference' && entry.invoke === undefined) {
     return entry;
@@ -130,7 +130,7 @@ function validateEntry(entry, { requireId = true } = {}) {
   if (inv.type === 'shell' && (typeof inv.command !== 'string' || inv.command.length === 0)) {
     throw new Error(`Registry: shell invoke needs a non-empty "command" (id=${entry.id})`);
   }
-  // Optional MCP input schema. When present it must be a plain object — a hot-promoted tool
+  // Optional MCP input schema. When present it must be a plain object - a hot-promoted tool
   // advertises it VERBATIM to MCP clients (tools/list), so a typo'd shape must fail loudly at
   // authoring time rather than silently degrade to the free-form fallback at surface time.
   if (
@@ -145,11 +145,11 @@ function validateEntry(entry, { requireId = true } = {}) {
 /**
  * Default script executor: spawn `node <resolved script>` with the structured
  * args passed in env TOOLFUNNEL_TOOL_ARGS. Resolves with { ok, code, stdout, stderr }.
- * Never rejects on a non-zero exit — the caller (the gated runner / meta-tool)
+ * Never rejects on a non-zero exit - the caller (the gated runner / meta-tool)
  * decides how to surface a tool failure. It DOES reject only on spawn failure.
  *
  * Path safety: the script path must resolve INSIDE scriptsRoot (defense-in-depth
- * for the isolation rule — a register entry must not become a path-escape).
+ * for the isolation rule - a register entry must not become a path-escape).
  */
 function defaultRunScript(scriptsRoot, invoke, args) {
   return new Promise((resolve, reject) => {
@@ -213,7 +213,7 @@ class Registry {
   // ---- read API -----------------------------------------------------------
 
   /**
-   * Briefs only — the surface toolfunnel_list_tools returns. Optional case-insensitive
+   * Briefs only - the surface toolfunnel_list_tools returns. Optional case-insensitive
    * substring `filter` (matched against id/name/summary) and exact `category`.
    * @returns {Array<{id,name,summary,category}>} in insertion order.
    */
@@ -294,9 +294,9 @@ class Registry {
   }
 
   /**
-   * Re-read the register FILE and swap the in-memory index — the hot-reload seam. A running
+   * Re-read the register FILE and swap the in-memory index - the hot-reload seam. A running
    * gateway holds ONE Registry instance (captured by the protocol adapter at build time), while
-   * tf_tool_add / the UI / a hand edit mutate the FILE from another process — without this, those
+   * tf_tool_add / the UI / a hand edit mutate the FILE from another process - without this, those
    * edits are invisible until restart. LAST-GOOD semantics: the replacement index is built and
    * fully validated FIRST; any read/parse/validation failure (including a mid-write partial file)
    * leaves the current index untouched and returns false. NEVER throws.
@@ -307,7 +307,7 @@ class Registry {
     try {
       data = JSON.parse(fs.readFileSync(this._filePath, 'utf8'));
     } catch (_e) {
-      return false; // unreadable / mid-write / bad JSON → keep last-good
+      return false; // unreadable / mid-write / bad JSON -> keep last-good
     }
     if (!data || typeof data !== 'object' || Array.isArray(data)) return false;
     const tools = Array.isArray(data.tools) ? data.tools : [];
@@ -319,7 +319,7 @@ class Registry {
         next.set(t.id, cloneEntry(t));
       }
     } catch (_e) {
-      return false; // an invalid entry → keep last-good
+      return false; // an invalid entry -> keep last-good
     }
     if (typeof data.version === 'number') this._version = data.version;
     if (typeof data.description === 'string') this._description = data.description;
@@ -332,12 +332,12 @@ class Registry {
    *
    * Resolves path.basename(invokePath) under scriptsRoot (basename strips any
    * directory traversal) and GUARDS that the resolved path stays inside
-   * scriptsRoot — the same path-escape defence as defaultRunScript, so a
+   * scriptsRoot - the same path-escape defence as defaultRunScript, so a
    * tf_tool_add(scriptText) can never write outside the isolation root. Writes
    * `text` via a temp file in the same dir + fsync + rename (mirror of
    * atomicWriteJson): a crash leaves either no file or the complete file.
    *
-   * @param {string} invokePath  e.g. "scripts/foo.js" — only the basename is honoured
+   * @param {string} invokePath  e.g. "scripts/foo.js" - only the basename is honoured
    * @param {string} text        full file contents to write
    * @returns {string} the resolved absolute path that was written
    */
@@ -375,7 +375,7 @@ class Registry {
   /**
    * Describe HOW to run a tool's invoke. Returns { type, run } where `run` is a
    * zero-arg function returning a Promise of the tool result. resolveExecution
-   * performs NO gating — toolfunnel_run_tool / gated-run.js fires the PreToolUse hook
+   * performs NO gating - toolfunnel_run_tool / gated-run.js fires the PreToolUse hook
    * and only then calls `run()` (the architecture doc §2/§9). Keeping the gate
    * out of here keeps the safety case in one auditable place.
    *
@@ -397,7 +397,7 @@ class Registry {
 
     // ---- reference mode: nothing runs here. ----------------------------------
     // The connected AI performs the action in its own environment. We hand back the
-    // tool's instructions (no `run`) so the run-path takes the no-spawn branch — a
+    // tool's instructions (no `run`) so the run-path takes the no-spawn branch - a
     // reference tool never spawns server-side. The instruction HANDOFF is still gated
     // in protocol.runTool (a PreToolUse deny withholds the instructions); it's execution,
     // not the gate, that's absent here.

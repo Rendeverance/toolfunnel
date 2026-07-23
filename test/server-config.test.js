@@ -1,17 +1,17 @@
 'use strict';
 
 /**
- * server-config.test.js — the OPTIONAL toolfunnel.json identity/port config (item 6 of the 0.4.0
+ * server-config.test.js - the OPTIONAL toolfunnel.json identity/port config (item 6 of the 0.4.0
  * board): a wrapped MCP built on toolfunnel must be able to introduce itself as ITSELF.
  *
- *   A — UNIT loadServerConfig: absent file → the compiled-in defaults (name "toolfunnel",
+ *   A - UNIT loadServerConfig: absent file -> the compiled-in defaults (name "toolfunnel",
  *       version from package.json, ports 9998/9777).
- *   B — UNIT: a full valid file overrides every field; a PARTIAL file overrides only its fields.
- *   C — UNIT tolerance, field by field: bad JSON → all defaults; an invalid FIELD (empty name,
+ *   B - UNIT: a full valid file overrides every field; a PARTIAL file overrides only its fields.
+ *   C - UNIT tolerance, field by field: bad JSON -> all defaults; an invalid FIELD (empty name,
  *       port 0 / out-of-range / non-integer) falls back to that field's default without
  *       poisoning the valid fields next to it.
- *   D — E2E: with a toolfunnel.json at the repo root, a REAL spawned gateway (stdio) reports the
- *       custom serverInfo in the initialize handshake — the wrapped-MCP identity story, proven at
+ *   D - E2E: with a toolfunnel.json at the repo root, a REAL spawned gateway (stdio) reports the
+ *       custom serverInfo in the initialize handshake - the wrapped-MCP identity story, proven at
  *       the wire. Without it (restored), serverInfo is "toolfunnel" @ package.json version.
  *
  * NON-DESTRUCTIVE: the repo root's toolfunnel.json is snapshotted (normally ABSENT) and re-absented
@@ -85,19 +85,26 @@ function initializeServerInfo() {
   let fatal = null;
 
   try {
-    // A — absent file → defaults.
+    // A - absent file -> defaults.
     const dirA = scratchWith(null); scratchDirs.push(dirA);
     const a = loadServerConfig(dirA);
-    check('A: absent toolfunnel.json → default identity + ports', () => {
-      assert.deepStrictEqual(a, { serverName: 'toolfunnel', serverVersion: PKG_VERSION, httpPort: 9998, uiPort: 9777 });
+    check('A: absent toolfunnel.json -> default identity + ports', () => {
+      // clientName/clientVersion default null = "use the built-in client identity" - absent
+      // config must produce byte-identical wire behaviour to before they existed.
+      assert.deepStrictEqual(a, { serverName: 'toolfunnel', serverVersion: PKG_VERSION,
+        clientName: null, clientVersion: null, httpPort: 9998, uiPort: 9777, serveLegacy: true });
     });
 
-    // B — full override + partial override.
-    const dirB = scratchWith(JSON.stringify({ serverName: 'my-mcp', serverVersion: '2.5.0', httpPort: 7001, uiPort: 7002 }));
+    // B - full override + partial override.
+    const dirB = scratchWith(JSON.stringify({ serverName: 'my-mcp', serverVersion: '2.5.0',
+      clientName: 'my-client', clientVersion: '1.2.3', httpPort: 7001, uiPort: 7002,
+      serveLegacy: false }));
     scratchDirs.push(dirB);
     const b = loadServerConfig(dirB);
     check('B: a full valid file overrides every field', () => {
-      assert.deepStrictEqual(b, { serverName: 'my-mcp', serverVersion: '2.5.0', httpPort: 7001, uiPort: 7002 });
+      assert.deepStrictEqual(b, { serverName: 'my-mcp', serverVersion: '2.5.0',
+        clientName: 'my-client', clientVersion: '1.2.3', httpPort: 7001, uiPort: 7002,
+        serveLegacy: false });
     });
     const dirB2 = scratchWith(JSON.stringify({ serverName: 'partial-mcp' })); scratchDirs.push(dirB2);
     const b2 = loadServerConfig(dirB2);
@@ -108,9 +115,9 @@ function initializeServerInfo() {
       assert.strictEqual(b2.uiPort, 9777);
     });
 
-    // C — tolerance: bad JSON → defaults; invalid fields fall back individually.
+    // C - tolerance: bad JSON -> defaults; invalid fields fall back individually.
     const dirC = scratchWith('{ this is not json'); scratchDirs.push(dirC);
-    check('C: bad JSON → all defaults (the gateway must still start)', () => {
+    check('C: bad JSON -> all defaults (the gateway must still start)', () => {
       assert.deepStrictEqual(loadServerConfig(dirC), a);
     });
     const dirC2 = scratchWith(JSON.stringify({ serverName: '   ', serverVersion: 7, httpPort: 0, uiPort: 70000 }));
@@ -127,7 +134,7 @@ function initializeServerInfo() {
       assert.strictEqual(c3.httpPort, 9998);
     });
 
-    // D — E2E at the wire: the spawned gateway introduces itself per the root config.
+    // D - E2E at the wire: the spawned gateway introduces itself per the root config.
     fs.writeFileSync(ROOT_CONFIG, JSON.stringify({ serverName: 'wrapped-mcp-e2e', serverVersion: '9.9.9' }, null, 2) + '\n');
     const custom = await initializeServerInfo();
     check('D: initialize reports the configured identity (wrapped-MCP handshake)', () => {
@@ -162,10 +169,10 @@ function initializeServerInfo() {
   const expected = 8;
   const ok = !fatal && passed === results.length && results.length === expected;
   if (ok) {
-    console.log(`\nPASS: server-config test — ${passed}/${expected} assertions passed (defaults, overrides, per-field tolerance, e2e identity at the wire)`);
+    console.log(`\nPASS: server-config test - ${passed}/${expected} assertions passed (defaults, overrides, per-field tolerance, e2e identity at the wire)`);
     process.exit(0);
   } else {
-    console.log(`\nFAIL: server-config test — ${passed}/${results.length} assertions passed`);
+    console.log(`\nFAIL: server-config test - ${passed}/${results.length} assertions passed`);
     process.exit(1);
   }
 })().catch((e) => { console.log('SERVER-CONFIG TEST CRASHED: ' + ((e && e.stack) || e)); process.exit(1); });

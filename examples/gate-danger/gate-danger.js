@@ -2,24 +2,24 @@
 'use strict';
 
 /**
- * gate-danger.js — a shippable PreToolUse gate for the "Danger Demo" tool.
+ * gate-danger.js - a shippable PreToolUse gate for the "Danger Demo" tool.
  *
  * This is a worked example of how to gate a tool with ToolFunnel. Drop it into
  * `hooks/scripts/`, register the manifest entry from `manifest.snippet.json`, and the
  * gateway will route every `danger` call through it BEFORE the tool's side effect runs.
  *
  * Behaviour: deny unless the call passes `{ "confirm": true }` as its args. The denied
- * call never reaches the tool — `execute()` is not invoked, so `danger`'s only side effect
+ * call never reaches the tool - `execute()` is not invoked, so `danger`'s only side effect
  * (appending a line to the file named by TOOLFUNNEL_DANGER_LOG) never happens. The proof
  * the gate held is the ABSENCE of that line.
  *
  * Contract (hook-runner.js, docs/hooks-and-gating.md): the runner pipes the PreToolUse
- * event JSON to this script's stdin, then reads the result. Two ways to deny — this example
+ * event JSON to this script's stdin, then reads the result. Two ways to deny - this example
  * uses the simplest:
  *
- *   - exit 2  → BLOCK; stderr is the reason. (Used here.)
+ *   - exit 2  -> BLOCK; stderr is the reason. (Used here.)
  *   - exit 0 + JSON on stdout with hookSpecificOutput.permissionDecision === "deny"
- *              → BLOCK with a structured reason. (Shown commented below.)
+ *              -> BLOCK with a structured reason. (Shown commented below.)
  *
  * It FAILS CLOSED: an unparsable payload is treated as a denial. Node built-ins only.
  */
@@ -34,17 +34,17 @@ process.stdin.on('end', () => {
   try {
     event = JSON.parse(raw || '{}');
   } catch (_err) {
-    process.stderr.write('gate-danger: unparsable event payload — denying.\n');
+    process.stderr.write('gate-danger: unparsable event payload - denying.\n');
     process.exit(2); // fail closed
   }
 
   const args = (event && event.tool_input) || {};
 
   if (args.confirm === true) {
-    process.exit(0); // ALLOW — execute() will run
+    process.exit(0); // ALLOW - execute() will run
   }
 
-  // DENY — execute() is NEVER called.
+  // DENY - execute() is NEVER called.
   process.stderr.write('Danger Demo is gated: pass { "confirm": true } to proceed.\n');
   process.exit(2);
 

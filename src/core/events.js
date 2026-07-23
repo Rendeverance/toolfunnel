@@ -1,10 +1,10 @@
 'use strict';
 
 /**
- * events.js — lifecycle event names + per-event stdin payload builder.
+ * events.js - lifecycle event names + per-event stdin payload builder.
  *
  * This is the contract surface from HOOK_ENGINE.md §1 (the six events) and §2
- * (the exact stdin JSON shape). Field names are FROZEN by §2's table — they must
+ * (the exact stdin JSON shape). Field names are FROZEN by §2's table - they must
  * match Claude Code's documented hook input byte-for-byte so the real hook
  * scripts run unchanged. Do not rename or add fields.
  *
@@ -35,12 +35,12 @@ const EVENT_NAMES = Object.freeze(Object.values(EVENTS));
  *   session_id, transcript_path, cwd, hook_event_name
  * supplied by `ctx`. Each event then adds its own fields from `extra`:
  *
- *   SessionStart      → source            : "startup" | "resume" | "compact"
- *   UserPromptSubmit  → prompt            : "<user text>"
- *   PreToolUse        → tool_name, tool_input
- *   PostToolUse       → tool_name, tool_input, tool_response
- *   Stop              → stop_hook_active   : true | false
- *   PreCompact        → trigger ("manual"|"auto"), custom_instructions
+ *   SessionStart      -> source            : "startup" | "resume" | "compact"
+ *   UserPromptSubmit  -> prompt            : "<user text>"
+ *   PreToolUse        -> tool_name, tool_input
+ *   PostToolUse       -> tool_name, tool_input, tool_response
+ *   Stop              -> stop_hook_active   : true | false
+ *   PreCompact        -> trigger ("manual"|"auto"), custom_instructions
  *
  * @param {string} event  one of EVENTS (the hook_event_name).
  * @param {object} ctx    common fields: { session_id, transcript_path, cwd }.
@@ -56,7 +56,7 @@ function buildPayload(event, ctx, extra) {
   const c = ctx || {};
   const e = extra || {};
 
-  // Common fields — present on EVERY event, in the order §2 lists them.
+  // Common fields - present on EVERY event, in the order §2 lists them.
   // hook_event_name is always the canonical event string (not whatever ctx held).
   const payload = {
     session_id: c.session_id,
@@ -65,8 +65,8 @@ function buildPayload(event, ctx, extra) {
     hook_event_name: event,
   };
 
-  // Event-specific additions. Each branch sets EXACTLY the fields §2 names —
-  // no more, no fewer — so the payload matches Claude Code's shape precisely.
+  // Event-specific additions. Each branch sets EXACTLY the fields §2 names -
+  // no more, no fewer - so the payload matches Claude Code's shape precisely.
   switch (event) {
     case EVENTS.SessionStart:
       payload.source = e.source;

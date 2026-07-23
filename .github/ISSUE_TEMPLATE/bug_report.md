@@ -35,4 +35,4 @@ Steps, smallest possible:
 Any error output or relevant log lines (redact tokens!).
 
 > ⚠️ If this is security-relevant (auth bypass, gate bypass, credential leak),
-> do NOT file it here — see [SECURITY.md](../SECURITY.md).
+> do NOT file it here - see [SECURITY.md](../SECURITY.md).

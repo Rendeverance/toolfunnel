@@ -1,14 +1,14 @@
 'use strict';
 
 /**
- * spawn-shim.test.js — proves the CROSS-PLATFORM upstream spawn.
+ * spawn-shim.test.js - proves the CROSS-PLATFORM upstream spawn.
  *
- * Real-world MCP servers are almost always launched via a SHIM: `npx`, `npm`, `uvx`, `pnpm` — which
+ * Real-world MCP servers are almost always launched via a SHIM: `npx`, `npm`, `uvx`, `pnpm` - which
  * on Windows are `.cmd` files. child_process with shell:false CANNOT run a `.cmd` (a bare name
  * ENOENTs; an explicit `.cmd` throws EINVAL since the CVE-2024-27980 mitigation), so before the
  * winLaunch fix an `npx`-based MCP simply would not attach on Windows. POSIX is unaffected (the shim
  * is a real executable on PATH). The rest of the suite spawns the mock upstream via `node` directly,
- * so this is the ONLY test that exercises shim resolution — the exact blind spot that hid the bug.
+ * so this is the ONLY test that exercises shim resolution - the exact blind spot that hid the bug.
  *
  * No network: the shim just launches the BUNDLED mock upstream (mcp/servers/mock-upstream/server.js)
  * via the current node binary. We attach it THROUGH the shim and assert the full MCP round-trip
@@ -42,7 +42,7 @@ async function checkAsync(name, fn) {
 
 /**
  * Write a shim that launches the mock upstream via the absolute node binary (so it never depends on
- * `node` being on PATH inside the shim — the test is about ToolFunnel resolving the SHIM, not the
+ * `node` being on PATH inside the shim - the test is about ToolFunnel resolving the SHIM, not the
  * shim's own internals). `@echo off` / `exec` keep the shim from polluting the JSON-RPC stdout stream.
  * @returns {{ shim: string, dir: string }}
  */
@@ -62,7 +62,7 @@ function writeShim() {
 (async () => {
   let fatal = null;
 
-  // ── 1. winLaunch unit — the platform branch (deterministic, no spawn) ──────────────────────────
+  // ── 1. winLaunch unit - the platform branch (deterministic, no spawn) ──────────────────────────
   check('winLaunch: a shim command is routed through cmd.exe on Windows, passed through on POSIX', () => {
     const r = winLaunch('npx', ['-y', '@scope/pkg']);
     if (isWin) {
@@ -92,7 +92,7 @@ function writeShim() {
     await checkAsync('tools/list: the shim-launched upstream advertises its tools', async () => {
       tools = await client.listTools();
       assert.ok(Array.isArray(tools) && tools.some((t) => t && t.name === 'ping'),
-        'expected a ping tool — got ' + JSON.stringify(tools.map((t) => t && t.name)));
+        'expected a ping tool - got ' + JSON.stringify(tools.map((t) => t && t.name)));
     });
 
     await checkAsync('tools/call: a call through the shim-launched upstream returns its real answer ("pong")', async () => {
@@ -118,11 +118,11 @@ function writeShim() {
   const ok = !fatal && failed === 0 && results.length > 0;
 
   if (ok) {
-    console.log(`\nPASS: spawn-shim test — ${passed}/${results.length} assertions passed ` +
+    console.log(`\nPASS: spawn-shim test - ${passed}/${results.length} assertions passed ` +
       `(winLaunch platform branch; an MCP launched via a real ${isWin ? '.cmd' : '.sh'} shim attaches + lists + calls)`);
     process.exit(0);
   } else {
-    console.log(`\nFAIL: spawn-shim test — ${passed}/${results.length} assertions passed, ${failed} failed`);
+    console.log(`\nFAIL: spawn-shim test - ${passed}/${results.length} assertions passed, ${failed} failed`);
     process.exit(1);
   }
 })().catch((e) => {

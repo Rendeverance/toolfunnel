@@ -2,12 +2,12 @@
 'use strict';
 
 /**
- * tf-tool-add.js — a first-party MANAGEMENT tool that ADDS a register entry.
+ * tf-tool-add.js - a first-party MANAGEMENT tool that ADDS a register entry.
  *
  * Purpose
  * -------
  * The write-side counterpart to the read-only status / inventory tools: it lets
- * the manager surface a NEW tool in the register at runtime (no reconnect — the
+ * the manager surface a NEW tool in the register at runtime (no reconnect - the
  * running gateway watches tools.register.json and hot-reloads its register on
  * change). Optionally it also writes the host-local script the new entry invokes,
  * so a single call can create both the register entry AND its backing script
@@ -25,11 +25,11 @@
  *             invoke: { type:'script'|'shell', path?|command? },
  *             scriptText? }
  *       inputSchema (a JSON Schema object) is what a HOT-promoted tool advertises verbatim in
- *       the top-level tools/list — dropping it here was the gap between "your own tools" and
+ *       the top-level tools/list - dropping it here was the gap between "your own tools" and
  *       "your own tools AND schemas".
  *       When scriptText is a string AND invoke.type === 'script', the script is
  *       written first (registry.writeScript), THEN the entry is added.
- *   - Prints a SINGLE JSON object to stdout and exits 0 — ALWAYS exit 0, even on
+ *   - Prints a SINGLE JSON object to stdout and exits 0 - ALWAYS exit 0, even on
  *     a logical error (reported as { ok:false, error }), never a thrown exception.
  *
  * Output (stdout), exactly one JSON object:
@@ -38,10 +38,10 @@
  *
  * Safety invariants:
  *   - Touches ONLY files inside the toolfunnel root, resolved from THIS script's
- *     own location (__dirname) — never a caller-supplied absolute path. The
+ *     own location (__dirname) - never a caller-supplied absolute path. The
  *     register's writeScript guards path-escape (basename + inside-root check).
  *   - NO network. Writes are atomic (temp + fsync + rename) via the register module.
- *   - NEVER throws for ordinary bad input — only well-shaped JSON on stdout.
+ *   - NEVER throws for ordinary bad input - only well-shaped JSON on stdout.
  */
 
 const path = require('node:path');
@@ -81,14 +81,19 @@ function run(args) {
   if (!args || typeof args !== 'object' || Array.isArray(args)) {
     return {
       ok: false,
-      error: 'args must be an object { id, name, summary?, category?, instructions?, inputSchema?, invoke, scriptText? }',
+      error: 'args must be an object { id, name, summary?, category?, instructions?, inputSchema?, mode?, invoke?, scriptText? }',
     };
   }
-  const { id, name, summary, category, instructions, inputSchema, invoke, scriptText } = args;
+  const { id, name, summary, category, instructions, inputSchema, mode, invoke, scriptText } = args;
 
   // Build a clean register entry (only carry through the optional fields when
   // present so the persisted entry stays tidy). registry.add validates shape.
-  const entry = { id, name, invoke };
+  // `mode` MUST ride along: a reference-mode tool has NO invoke at all, and dropping the field
+  // here made the agent path reject every reference tool with "entry.invoke is required" while
+  // the UI path accepted them.
+  const entry = { id, name };
+  if (invoke !== undefined) entry.invoke = invoke;
+  if (mode !== undefined) entry.mode = mode;
   if (summary !== undefined) entry.summary = summary;
   if (category !== undefined) entry.category = category;
   if (instructions !== undefined) entry.instructions = instructions;

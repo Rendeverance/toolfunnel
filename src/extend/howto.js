@@ -1,22 +1,24 @@
 'use strict';
 
 /**
- * howto.js — the loader behind the `toolfunnel_howto` meta-tool (architecture notes §2 + §6).
+ * howto.js - the loader behind the `toolfunnel_howto` meta-tool (architecture notes §2 + §6).
  *
  * `toolfunnel_howto({ topic })` returns the self-extension instructions for one topic. This module
  * resolves a topic to its authored markdown file (the topic -> file map below) and reads it.
  *
  *   howto(topic) -> string   // the markdown content for that topic
  *
- * Topics (the four documented in §2): create-tool | add-mcp | add-hook | package.
+ * Topics: create-tool | add-mcp | add-hook | package | wrap | configure
+ * (the original four from §2, plus the 0.6.0 pair - the transparent wrap and the no-code
+ * config map - so a primer-less agent can learn the headline feature from inside).
  * Unknown topics THROW (the protocol layer turns that into a clean tool error, not a crash).
  *
  * Isolation: reads are confined to THIS directory (src/extend). The topic map is a fixed
- * allow-list of basenames — there is no path interpolation from the caller, so a malicious
+ * allow-list of basenames - there is no path interpolation from the caller, so a malicious
  * `topic` cannot traverse out of src/extend. We additionally re-verify the resolved path is
  * inside this directory (defense-in-depth, mirroring the hook loader's writeScript guard).
  *
- * CommonJS only. Node built-ins only. No transport, pure file read — unit-testable directly.
+ * CommonJS only. Node built-ins only. No transport, pure file read - unit-testable directly.
  */
 
 const fs = require('node:fs');
@@ -35,6 +37,8 @@ const TOPIC_FILES = Object.freeze({
   'add-mcp': 'add-mcp.md',
   'add-hook': 'add-hook.md',
   package: 'package.md',
+  wrap: 'wrap.md',
+  configure: 'configure.md',
 });
 
 /**
@@ -49,7 +53,7 @@ function topics() {
 /**
  * Resolve a topic to the instruction markdown content.
  *
- * @param {string} topic one of: create-tool | add-mcp | add-hook | package
+ * @param {string} topic one of: create-tool | add-mcp | add-hook | package | wrap | configure
  * @returns {string} the UTF-8 markdown content of the matching file
  * @throws {Error} if `topic` is not a string, is unknown, or (defensively) resolves outside
  *                 src/extend or the file is missing.
@@ -61,7 +65,7 @@ function howto(topic) {
     );
   }
 
-  // Look up against the fixed allow-list — own property only (guards against "constructor",
+  // Look up against the fixed allow-list - own property only (guards against "constructor",
   // "__proto__", etc. resolving via the prototype chain).
   if (!Object.prototype.hasOwnProperty.call(TOPIC_FILES, topic)) {
     throw new Error(

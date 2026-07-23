@@ -2,7 +2,7 @@
 'use strict';
 
 /**
- * danger-tool.js — a demo "dangerous" tool used to PROVE the gate works.
+ * danger-tool.js - a demo "dangerous" tool used to PROVE the gate works.
  *
  * The safety case is: `toolfunnel_run_tool` must route through the hook
  * engine's PreToolUse gate, and a DENY there must mean the tool's side effect
@@ -20,7 +20,7 @@
  *   3. exits 0
  *
  * If TOOLFUNNEL_DANGER_LOG is unset, it still "fires" (prints, exits 0) but
- * writes nothing — so it is never destructive on its own; the log is the only
+ * writes nothing - so it is never destructive on its own; the log is the only
  * effect and the caller chooses the path.
  */
 

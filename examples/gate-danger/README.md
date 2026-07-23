@@ -5,7 +5,7 @@ so it only runs when the caller passes `{ "confirm": true }`. It is the runnable
 [`docs/hooks-and-gating.md`](../../docs/hooks-and-gating.md).
 
 A **gate** is a `PreToolUse` hook. Before any tool runs, ToolFunnel fires `PreToolUse` through the
-hook engine; if a hook **denies**, the tool's `execute()` is never called — no side effect, no
+hook engine; if a hook **denies**, the tool's `execute()` is never called - no side effect, no
 output. The `danger` tool's only side effect is appending one line to the file named by
 `TOOLFUNNEL_DANGER_LOG` (`tools/scripts/danger.js`), so a held gate is observable as the **absence
 of that line**.
@@ -25,7 +25,7 @@ of that line**.
    cp examples/gate-danger/gate-danger.js  hooks/scripts/gate-danger.js
    ```
 
-   Hook scripts live under `hooks/scripts/` (tool scripts live under `tools/scripts/` — separate
+   Hook scripts live under `hooks/scripts/` (tool scripts live under `tools/scripts/` - separate
    trees, separate path guards; don't cross them).
 
 2. **Register the hook.** Add the entry from `manifest.snippet.json` to the `hooks` array in
@@ -48,24 +48,24 @@ tools, use an alternation: `"Danger Demo|Bash"`. `""`, `undefined`, or `"*"` mat
 
 | Call | `PreToolUse` result | `danger.js` side effect |
 |---|---|---|
-| `toolfunnel_run_tool({ name: "danger" })` | **blocked** — reason from stderr | **none**: `execute()` never runs; no line in `TOOLFUNNEL_DANGER_LOG` |
+| `toolfunnel_run_tool({ name: "danger" })` | **blocked** - reason from stderr | **none**: `execute()` never runs; no line in `TOOLFUNNEL_DANGER_LOG` |
 | `toolfunnel_run_tool({ name: "danger", args: { confirm: true } })` | allowed | the tool runs; one line appended to the log |
 
-The denied call returns `{ ok: false, blocked: true, reason: "Danger Demo is gated: …" }`. Because
+The denied call returns `{ ok: false, blocked: true, reason: "Danger Demo is gated: ..." }`. Because
 the gate sits *before* `execute()`, the proof is the absence of the log line.
 
 ## Two ways to deny
 
-`gate-danger.js` uses **exit 2** (stderr is the reason) — the simplest deny. The runner also honours
+`gate-danger.js` uses **exit 2** (stderr is the reason) - the simplest deny. The runner also honours
 the **JSON protocol on exit 0**: print `{ "hookSpecificOutput": { "hookEventName": "PreToolUse",
-"permissionDecision": "deny", "permissionDecisionReason": "…" } }` and exit `0`. Use that when you
-want a structured reason. (Note: `exit 2` is the **only** blocking exit code — any other non-zero
+"permissionDecision": "deny", "permissionDecisionReason": "..." } }` and exit `0`. Use that when you
+want a structured reason. (Note: `exit 2` is the **only** blocking exit code - any other non-zero
 exit is a *non-blocking* error and your deny would silently pass through.) The commented block at the
 bottom of `gate-danger.js` shows the JSON form.
 
 ## Proof it works
 
-`test/gate.test.js` proves the invariant headlessly — a `PreToolUse` deny prevents `execute()` from
+`test/gate.test.js` proves the invariant headlessly - a `PreToolUse` deny prevents `execute()` from
 ever running (a sentinel side-effect file is never written), while an empty/non-matching manifest
 allows it. It uses its own fixtures under `test/fixtures/` and never mutates the shipped
 `hooks/hooks.manifest.json`. Run the suite with `npm test`.

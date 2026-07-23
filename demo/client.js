@@ -2,12 +2,12 @@
 'use strict';
 
 /**
- * demo/client.js — a REAL MCP client for the demo recording (and for anyone who wants proof).
+ * demo/client.js - a REAL MCP client for the demo recording (and for anyone who wants proof).
  *
  * What it does, visibly and honestly:
  *   1. copies demo/home to a TEMP config home (so a demo run never dirties the repo),
  *   2. spawns the real gateway (`node bin/toolfunnel.js --config-dir <tmp>`) over stdio,
- *   3. speaks actual MCP JSON-RPC: initialize → tools/list → tools/call,
+ *   3. speaks actual MCP JSON-RPC: initialize -> tools/list -> tools/call,
  *   4. prints what any MCP client would see: THEIR server name, THEIR tools, a live result.
  *
  * `--denied` adds the gate beat: call the destructive tool, show the server-side deny.
@@ -43,7 +43,7 @@ function copyDir(src, dest) {
 (async () => {
   const wantDenied = process.argv.includes('--denied');
 
-  // 1. A throwaway copy of the demo home — the repo stays pristine.
+  // 1. A throwaway copy of the demo home - the repo stays pristine.
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'toolfunnel-demo-'));
   copyDir(DEMO_HOME, home);
 
@@ -88,32 +88,32 @@ function copyDir(src, dest) {
       protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'demo-client', version: '1.0.0' },
     });
     const si = (init.result && init.result.serverInfo) || {};
-    console.log(`${dim('initialize        →')} ${bold(si.name)} ${si.version}`);
+    console.log(`${dim('initialize        ->')} ${bold(si.name)} ${si.version}`);
 
     const list = await rpc('tools/list', {});
     const tools = (list.result && list.result.tools) || [];
-    console.log(`${dim('tools/list        →')} ${tools.length} tools`);
+    console.log(`${dim('tools/list        ->')} ${tools.length} tools`);
     for (const t of tools) {
       console.log(`   ${cyan(String(t.name).padEnd(11))} ${dim(t.description || '')}`);
     }
-    console.log(`   ${dim('(no toolfunnel_* meta-tools — hidden by config, not code)')}`);
+    console.log(`   ${dim('(no toolfunnel_* meta-tools - hidden by config, not code)')}`);
 
     const call = await rpc('tools/call', {
       name: 'slugify', arguments: { text: 'Zero Code, Zero Dependencies!' },
     });
     const out = JSON.parse(textOf(call));
     const slug = out && typeof out.stdout === 'string' ? JSON.parse(out.stdout.trim()) : null;
-    console.log(`${dim('tools/call slugify →')} ${green('"' + slug + '"')}`);
+    console.log(`${dim('tools/call slugify ->')} ${green('"' + slug + '"')}`);
 
     if (wantDenied) {
       const denied = await rpc('tools/call', { name: 'cleanup', arguments: { path: 'build/' } });
       const msg = textOf(denied);
       const isErr = !!(denied.result && denied.result.isError);
-      console.log(`${dim('tools/call cleanup →')} ${isErr ? red('DENIED') : 'allowed?!'} ${dim(msg.slice(0, 80))}`);
-      console.log(`   ${dim('(a PreToolUse policy hook — enforced SERVER-side, travels with the pack)')}`);
+      console.log(`${dim('tools/call cleanup ->')} ${isErr ? red('DENIED') : 'allowed?!'} ${dim(msg.slice(0, 80))}`);
+      console.log(`   ${dim('(a PreToolUse policy hook - enforced SERVER-side, travels with the pack)')}`);
     }
 
-    console.log(green('✓') + bold(' a real MCP server — zero code written, zero dependencies installed'));
+    console.log(green('✓') + bold(' a real MCP server - zero code written, zero dependencies installed'));
   } catch (err) {
     console.error('demo failed: ' + ((err && err.message) || err));
     process.exitCode = 1;

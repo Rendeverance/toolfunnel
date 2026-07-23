@@ -1,31 +1,31 @@
 'use strict';
 
 /**
- * auth/resource-server.js — OPTIONAL OAuth 2.1 resource-server token validation.
+ * auth/resource-server.js - OPTIONAL OAuth 2.1 resource-server token validation.
  *
  * This is the ONLY module that touches `jose`, and it does so with a LAZY require so the core
- * gateway keeps `dependencies: {}` (zero runtime deps). `jose` is installed on demand — the CLI
- * `toolfunnel install-oauth` or the admin-UI button (see src/auth/install.js) — and pulled in here
+ * gateway keeps `dependencies: {}` (zero runtime deps). `jose` is installed on demand - the CLI
+ * `toolfunnel install-oauth` or the admin-UI button (see src/auth/install.js) - and pulled in here
  * only when auth is enabled. If it is not installed, every entry point fails CLOSED with a clear,
  * actionable message; it never silently allows a request through.
  *
  * Why a library and not hand-rolled node:crypto: validating a JWT securely is not the signature
- * math (node:crypto has that) — it is the protocol discipline around it. The dangerous, CVE-prone
- * decisions are (1) PINNING the accepted algorithm so an attacker can't downgrade RS256→HS256 and
+ * math (node:crypto has that) - it is the protocol discipline around it. The dangerous, CVE-prone
+ * decisions are (1) PINNING the accepted algorithm so an attacker can't downgrade RS256->HS256 and
  * forge a token by signing with the public key as an HMAC secret, (2) rejecting `alg:none`, (3)
  * ignoring attacker-controlled header params (jku/jwk/x5u), (4) validating iss/aud/exp/nbf, and (5)
  * JWKS caching + key rotation. `jose` encodes all of these into its API; we MUST drive that API
- * correctly — above all, ALWAYS pass the `algorithms` allowlist and the `audience` (the RFC 8707
+ * correctly - above all, ALWAYS pass the `algorithms` allowlist and the `audience` (the RFC 8707
  * confused-deputy defence). `jose` v5's `require` build uses Node's native crypto (Node ≥18, no
  * Web-Crypto-global dependency), which is why it is the pinned major for this CommonJS project.
  *
- * NOTHING here throws out of validate() — a verification failure is a structured unauthorized
+ * NOTHING here throws out of validate() - a verification failure is a structured unauthorized
  * result, not an exception. CommonJS only; Node built-ins (node:url, global fetch) + lazy jose.
  */
 
 /**
  * The PINNED jose version installed on demand. A caret range so patch/minor security fixes flow,
- * but the major (v5 — the CommonJS, Node-native-crypto build; v6 is ESM-only and would force a
+ * but the major (v5 - the CommonJS, Node-native-crypto build; v6 is ESM-only and would force a
  * Node ≥22 require-of-ESM floor incompatible with this project's `engines: >=18`) is fixed.
  */
 const JOSE_PIN = '^5.10.0';
@@ -34,7 +34,7 @@ const JOSE_PIN = '^5.10.0';
 let _jose = undefined;
 
 /**
- * loadJose — lazily require('jose'), cached. Returns the module or null if it is not installed.
+ * loadJose - lazily require('jose'), cached. Returns the module or null if it is not installed.
  * NEVER throws (a missing/incompatible jose returns null; the caller fails closed with a message).
  * @returns {object|null}
  */
@@ -54,7 +54,7 @@ function isJoseInstalled() {
   return loadJose() != null;
 }
 
-/** Reset the lazy cache — used by tests and by the UI right after an on-demand install. */
+/** Reset the lazy cache - used by tests and by the UI right after an on-demand install. */
 function _resetJoseCache() {
   _jose = undefined;
 }
@@ -114,7 +114,7 @@ async function resolveJwksUri(cfg, timeoutMs) {
       const doc = await fetchJson(url, timeoutMs);
       if (doc && typeof doc.jwks_uri === 'string' && doc.jwks_uri.length > 0) {
         // ORIGIN-PIN the discovered value. The ISSUER is operator-trusted config, but the discovery
-        // DOCUMENT arrives over the network — it must not be able to point key fetching at a
+        // DOCUMENT arrives over the network - it must not be able to point key fetching at a
         // foreign origin (key-substitution + SSRF-adjacent surface). Cross-origin JWKS hosting is
         // real (e.g. Google's issuer and JWKS live on different hosts), so the escape hatch is an
         // EXPLICIT trust statement: set "jwksUri" in the auth config and discovery is skipped.
@@ -122,11 +122,11 @@ async function resolveJwksUri(cfg, timeoutMs) {
         try {
           sameOrigin = new URL(doc.jwks_uri).origin === new URL(cfg.issuer).origin;
         } catch (_e) {
-          /* malformed URL on either side → treat as cross-origin → refuse */
+          /* malformed URL on either side -> treat as cross-origin -> refuse */
         }
         if (!sameOrigin) {
           throw new Error(
-            `discovered jwks_uri "${doc.jwks_uri}" is not on the issuer origin — refusing the ` +
+            `discovered jwks_uri "${doc.jwks_uri}" is not on the issuer origin - refusing the ` +
               'cross-origin discovery result. If your IdP intentionally hosts JWKS on a separate ' +
               'origin, state that trust explicitly by setting "jwksUri" in auth/auth.config.json.'
           );
@@ -142,7 +142,7 @@ async function resolveJwksUri(cfg, timeoutMs) {
 }
 
 /**
- * GET + parse JSON with a hard timeout. Throws on non-2xx, network error, bad JSON — or a REDIRECT:
+ * GET + parse JSON with a hard timeout. Throws on non-2xx, network error, bad JSON - or a REDIRECT:
  * discovery metadata must come from the exact well-known URL derived from the trusted issuer
  * (following a redirect would let a bounced endpoint serve the document from anywhere, hollowing
  * out the origin pin above). Only discovery uses this helper; the JWKS fetch itself is jose's.
@@ -178,7 +178,7 @@ function scopesOf(claims) {
 }
 
 /**
- * createValidator — build a token validator from a resolved auth config.
+ * createValidator - build a token validator from a resolved auth config.
  *
  * @param {object} cfg  the resolved config (see auth/config.js getConfig()).
  * @param {object} [opts]
@@ -197,9 +197,9 @@ function createValidator(cfg, opts) {
   const log = typeof o.log === 'function' ? o.log : () => {};
   const discoveryTimeoutMs = Number.isFinite(o.discoveryTimeoutMs) ? o.discoveryTimeoutMs : 10000;
 
-  // The JWKS resolver is built ONCE, lazily, on first validate — memoised across calls. jose's
+  // The JWKS resolver is built ONCE, lazily, on first validate - memoised across calls. jose's
   // createRemoteJWKSet owns the HTTP fetch, in-memory cache, cooldown, and refetch-on-unknown-kid
-  // (key rotation) — we do not hand-roll any of that. A build failure is recomputed next call so a
+  // (key rotation) - we do not hand-roll any of that. A build failure is recomputed next call so a
   // transient discovery outage self-heals.
   let jwks = null;
   let jwksBuildPromise = null;
@@ -234,13 +234,13 @@ function createValidator(cfg, opts) {
   }
 
   async function validate(authorizationHeader) {
-    // Fail closed if the dependency or configuration is not coherent — never allow on misconfig.
+    // Fail closed if the dependency or configuration is not coherent - never allow on misconfig.
     const jose = loadJose();
     if (!jose) {
       return unauthorized(500, 'server_error', 'authentication unavailable', 'jose not installed');
     }
     if (!cfg.audience) {
-      // Without an audience we cannot bind the token to THIS resource (RFC 8707) — refuse rather
+      // Without an audience we cannot bind the token to THIS resource (RFC 8707) - refuse rather
       // than validate an unbound token (the confused-deputy hole). Belt-and-braces: the transport
       // refuses to start in this state, but a request must still never slip through.
       return unauthorized(500, 'server_error', 'authentication misconfigured', 'no audience configured');
@@ -248,7 +248,7 @@ function createValidator(cfg, opts) {
 
     const token = extractBearer(authorizationHeader);
     if (!token) {
-      // No credentials → a BARE challenge (no error code), the canonical "authenticate, please".
+      // No credentials -> a BARE challenge (no error code), the canonical "authenticate, please".
       return unauthorized(401, '', '', 'missing or malformed Authorization header');
     }
 
@@ -256,7 +256,7 @@ function createValidator(cfg, opts) {
     try {
       resolver = await ensureJwks();
     } catch (e) {
-      // Cannot reach/parse the key source → cannot verify → reject (do not leak the URL/reason).
+      // Cannot reach/parse the key source -> cannot verify -> reject (do not leak the URL/reason).
       return unauthorized(401, 'invalid_token', 'unable to verify token', `jwks unavailable: ${(e && e.message) || e}`);
     }
 
@@ -264,13 +264,13 @@ function createValidator(cfg, opts) {
     try {
       // The security-critical call. algorithms PINS the allowlist (blocks alg-confusion + alg:none);
       // issuer + audience are ENFORCED by jose; clockTolerance bounds exp/nbf skew. We never read the
-      // token header to choose the algorithm — the allowlist is fixed from config.
+      // token header to choose the algorithm - the allowlist is fixed from config.
       result = await jose.jwtVerify(token, resolver, {
         issuer: cfg.issuer || undefined,
         audience: cfg.audience,
         algorithms: cfg.algorithms,
         clockTolerance: cfg.clockToleranceSec,
-        // Require `exp` to be PRESENT — jose only checks exp/nbf when present, so without this a
+        // Require `exp` to be PRESENT - jose only checks exp/nbf when present, so without this a
         // token that omits exp would be accepted as never-expiring. RFC 9068 access tokens carry
         // exp; a resource server should reject one that does not.
         requiredClaims: ['exp'],
@@ -281,7 +281,7 @@ function createValidator(cfg, opts) {
 
     const claims = result && result.payload ? result.payload : {};
 
-    // Optional scope enforcement — every required scope must be present, else 403 insufficient_scope.
+    // Optional scope enforcement - every required scope must be present, else 403 insufficient_scope.
     if (Array.isArray(cfg.requiredScopes) && cfg.requiredScopes.length > 0) {
       const have = scopesOf(claims);
       const missing = cfg.requiredScopes.filter((s) => !have.has(s));
@@ -312,7 +312,7 @@ function createValidator(cfg, opts) {
 }
 
 /**
- * protectedResourceMetadata — the RFC 9728 Protected Resource Metadata document for this gateway.
+ * protectedResourceMetadata - the RFC 9728 Protected Resource Metadata document for this gateway.
  * Served (unauthenticated) at /.well-known/oauth-protected-resource so a client can discover which
  * authorization server issues tokens for this resource. NEVER throws.
  * @param {object} cfg  the resolved auth config

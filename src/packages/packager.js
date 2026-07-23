@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * packager.js — export/import shareable {tool|hook|mcp} packages
+ * packager.js - export/import shareable {tool|hook|mcp} packages
  * (the authoritative package format is src/extend/package.md §2/§3/§4).
  *
  * Packaging is a BYPRODUCT of the gateway design: every unit is already structured and
@@ -20,7 +20,7 @@
  * for the HARD ISOLATION RULE).
  *
  * Safety contract (mirrors src/tools/registry.js and src/mcp/expose-store.js):
- *   - loadPackageList NEVER throws — a malformed package is skipped with a `note`.
+ *   - loadPackageList NEVER throws - a malformed package is skipped with a `note`.
  *   - exportPackage / importPackage VALIDATE fully BEFORE writing, so a mid-operation
  *     failure cannot leave a half-written register/manifest/expose store. Validation
  *     errors throw a clear message; nothing is persisted on a validation failure.
@@ -33,11 +33,11 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-// ROOT = the CONFIG HOME (TOOLFUNNEL_HOME / --config-dir; defaults to the package root — see
+// ROOT = the CONFIG HOME (TOOLFUNNEL_HOME / --config-dir; defaults to the package root - see
 // src/core/config-home.js). Packages are config-tree citizens: they export FROM and import INTO
 // the home's register/manifest/expose stores, and the packages/ tree itself lives in the home.
 const { resolveConfigHome } = require('../core/config-home');
-const ROOT = resolveConfigHome(); // <…> config home
+const ROOT = resolveConfigHome(); // <...> config home
 
 const PACKAGE_MANIFEST = 'package.json';
 
@@ -94,7 +94,7 @@ function assertInside(target, root, label) {
   const inside = resolvedTarget === resolvedRoot || resolvedTarget.startsWith(rootWithSep);
   if (!inside) {
     throw new Error(
-      `packager: path-traversal blocked — "${resolvedTarget}" is outside ${label || 'the allowed root'} "${resolvedRoot}"`
+      `packager: path-traversal blocked - "${resolvedTarget}" is outside ${label || 'the allowed root'} "${resolvedRoot}"`
     );
   }
   return resolvedTarget;
@@ -105,7 +105,7 @@ function assertInside(target, root, label) {
  * real ROOT. The HARD ISOLATION guard therefore confines writes to BOTH: a destination
  * must sit inside the caller-supplied destination root AND that destination root must be a
  * directory the caller chose (we never derive a write path from untrusted package content
- * alone — we always re-anchor it under the supplied root via path.basename for files).
+ * alone - we always re-anchor it under the supplied root via path.basename for files).
  */
 
 /** Ensure a directory exists (recursive). Never throws on an already-existing dir. */
@@ -120,7 +120,7 @@ function copyFileInto(srcPath, destPath) {
 }
 
 /**
- * The basename of a register/manifest script reference (e.g. "scripts/echo.js" → "echo.js").
+ * The basename of a register/manifest script reference (e.g. "scripts/echo.js" -> "echo.js").
  * Returns null for an empty/inline reference. Tolerates either path separator.
  * @param {*} ref
  * @returns {string|null}
@@ -133,7 +133,7 @@ function scriptBasename(ref) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// loadPackageList — scan packagesDir/*/package.json (never throws)
+// loadPackageList - scan packagesDir/*/package.json (never throws)
 // ──────────────────────────────────────────────────────────────────────────
 
 /**
@@ -141,7 +141,7 @@ function scriptBasename(ref) {
  *
  * For every immediate subdirectory containing a readable, well-formed `package.json`,
  * returns a row. A subdirectory whose manifest is missing/unreadable/malformed is
- * SKIPPED with a `note` (never throws — the safety contract). `counts` reports how
+ * SKIPPED with a `note` (never throws - the safety contract). `counts` reports how
  * many tools/hooks/mcp units the package declares.
  *
  * @param {string} packagesDir absolute path to the packages/ directory
@@ -155,7 +155,7 @@ function loadPackageList(packagesDir) {
   try {
     entries = fs.readdirSync(packagesDir, { withFileTypes: true });
   } catch (_) {
-    return out; // missing/unreadable packages dir → empty list
+    return out; // missing/unreadable packages dir -> empty list
   }
 
   for (const ent of entries) {
@@ -213,7 +213,7 @@ function loadPackageList(packagesDir) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// exportPackage — bundle units into packages/<name>/
+// exportPackage - bundle units into packages/<name>/
 // ──────────────────────────────────────────────────────────────────────────
 
 /**
@@ -298,7 +298,7 @@ function exportPackage(args) {
       files = [`tools/scripts/${base}`];
       toolUnits.push({ entry, files, _srcFile: srcFile, _destRel: `tools/scripts/${base}` });
     } else {
-      // shell (or other) invoke — no file travels with it
+      // shell (or other) invoke - no file travels with it
       toolUnits.push({ entry, files });
     }
   }
@@ -321,7 +321,7 @@ function exportPackage(args) {
       const enabled = Object.prototype.hasOwnProperty.call(state, id)
         ? state[id] === true
         : entry.enabled === true;
-      // Embed a CLEAN copy of the manifest entry (drop the live enabled — it travels as `enabled`).
+      // Embed a CLEAN copy of the manifest entry (drop the live enabled - it travels as `enabled`).
       const cleanEntry = Object.assign({}, entry);
       delete cleanEntry.enabled;
       let files = [];
@@ -402,16 +402,16 @@ function exportPackage(args) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// importPackage — install a package's units into the gateway stores
+// importPackage - install a package's units into the gateway stores
 // ──────────────────────────────────────────────────────────────────────────
 
 /**
  * Install a package's units (package.md §4).
  *
- * Tools → copied into `toolScriptsRoot` + `registry.add(entry)`.
- * Hooks → copied into `hookScriptsRoot` + appended to `hooks.manifest.json` (atomic) and
+ * Tools -> copied into `toolScriptsRoot` + `registry.add(entry)`.
+ * Hooks -> copied into `hookScriptsRoot` + appended to `hooks.manifest.json` (atomic) and
  *         their enabled flag written into `hooks.state.json` (atomic).
- * MCP   → `exposeStore.addUpstream(upstream)` + `exposeStore.addExpose(selection)` per selection.
+ * MCP   -> `exposeStore.addUpstream(upstream)` + `exposeStore.addExpose(selection)` per selection.
  *
  * The whole package.json is VALIDATED first; nothing is written until validation passes,
  * so a mid-import error never leaves a partially-corrupt store. Every destination path is
@@ -660,7 +660,7 @@ function readManifestRaw(manifestPath) {
 }
 
 /**
- * Read a hooks.state.json overlay leniently. Missing/unreadable/malformed → {} (never
+ * Read a hooks.state.json overlay leniently. Missing/unreadable/malformed -> {} (never
  * throws). Coerces values to strict booleans, keyed by hook id.
  *
  * @param {string} statePath
@@ -693,7 +693,7 @@ function pickFileForBase(files, base) {
   if (Array.isArray(files)) {
     for (const f of files) {
       if (isNonEmptyString(f) && scriptBasename(f) === base) {
-        // Re-anchor on the basename only; never trust the directory portion blindly —
+        // Re-anchor on the basename only; never trust the directory portion blindly -
         // but keep the mirrored prefix for clarity. assertInside re-validates anyway.
         const norm = f.split('\\').join('/');
         return norm;

@@ -1,11 +1,11 @@
 'use strict';
 /*
- * http-reload.test.js — the HTTP host's config hot-reload (added 0.5.0).
+ * http-reload.test.js - the HTTP host's config hot-reload (added 0.5.0).
  *
  * Covers the code that shipped in 0.5.0 and previously had no test:
  *   1. reloadExpose(null) is a caught no-op (the NEVER-throws contract; was a crash).
  *   2. The HTTP host hot-reloads a hook toggle with NO restart: danger RUNS, then after a live
- *      tf_hook_set enable it is BLOCKED by the gate (fail-closed) — proving startConfigWatchers is
+ *      tf_hook_set enable it is BLOCKED by the gate (fail-closed) - proving startConfigWatchers is
  *      wired into the HTTP host and the watchFile fallback catches the (atomic) config write.
  *   3. stop() tears the host down cleanly (no throw; port released for an immediate re-bind).
  *
@@ -13,7 +13,7 @@
  * throwaway config home. No network beyond loopback.
  */
 const assert = require('node:assert');
-const { spawn, spawnSync } = require('node:child_process');
+const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -52,7 +52,9 @@ const isBlocked = (r) => { const t = JSON.stringify(r).toLowerCase(); return t.i
   // ── 2 + 3. HTTP host hot-reload end to end ────────────────────────────────────────────────────
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'tf-httpreload-'));
   for (const d of ['tools', 'hooks', 'mcp']) {
-    spawnSync('xcopy', [path.join(ROOT, d), path.join(home, d), '/E', '/I', '/Q', '/Y'], { shell: true });
+    // fs.cpSync, not xcopy: args-array + shell:true trips Node's DEP0190 (a hard error in a
+    // future Node), and cpSync is cross-platform anyway.
+    fs.cpSync(path.join(ROOT, d), path.join(home, d), { recursive: true });
   }
   const child = spawn(process.execPath, [path.join(ROOT, 'bin', 'toolfunnel.js'), '--http', '--port', String(PORT), '--config-dir', home], { cwd: ROOT, stdio: 'ignore' });
 
@@ -75,12 +77,12 @@ const isBlocked = (r) => { const t = JSON.stringify(r).toLowerCase(); return t.i
       const r = await rpc(PORT, 100 + s, 'tools/call', { name: 'toolfunnel_run_tool', arguments: { name: 'danger', args: { note: DANGER } } });
       if (isBlocked(r)) { blocked = true; break; }
     }
-    ok('gate HOT-RELOADS after tf_hook_set enable — danger BLOCKED with no restart', blocked);
+    ok('gate HOT-RELOADS after tf_hook_set enable - danger BLOCKED with no restart', blocked);
   } finally {
     child.kill();
     try { fs.rmSync(home, { recursive: true, force: true }); } catch (e) { /* ignore */ }
   }
 
-  console.log('\nPASS: http-reload test — ' + pass + '/' + pass + ' assertions passed (reloadExpose null-safe; HTTP host hot-reloads a hook toggle with no restart)');
+  console.log('\nPASS: http-reload test - ' + pass + '/' + pass + ' assertions passed (reloadExpose null-safe; HTTP host hot-reloads a hook toggle with no restart)');
   process.exit(0);
-})().catch((err) => { console.error('FAIL: http-reload test —', (err && err.message) || String(err)); process.exit(1); });
+})().catch((err) => { console.error('FAIL: http-reload test -', (err && err.message) || String(err)); process.exit(1); });

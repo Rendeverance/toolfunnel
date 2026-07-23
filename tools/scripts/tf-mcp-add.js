@@ -2,12 +2,12 @@
 'use strict';
 
 /**
- * tf-mcp-add.js — gateway-run MANAGEMENT tool: register an upstream MCP in the
+ * tf-mcp-add.js - gateway-run MANAGEMENT tool: register an upstream MCP in the
  * ExposeStore and (optionally) curate which of its tools are exposed downstream.
  *
  * This is a first-party "management" script-tool: it is discovered via list_tools
  * and executed via run_tool through the PreToolUse gate. It does not add new
- * MCP-protocol commands — it edits ToolFunnel's own MCP config (mcp/expose.json)
+ * MCP-protocol commands - it edits ToolFunnel's own MCP config (mcp/expose.json)
  * by way of the ExposeStore, the on-disk source of truth the aggregator consumes.
  *
  * Contract with the register (`defaultRunScript`)
@@ -19,7 +19,7 @@
  *         args?:[], env?:{}, transport?='stdio', enabled?=true, description?,
  *         expose?:[ { tool, as?, category?, enabled? } ]
  *       }
- *   - Prints EXACTLY ONE JSON line to stdout and exits 0 — ALWAYS. A logical
+ *   - Prints EXACTLY ONE JSON line to stdout and exits 0 - ALWAYS. A logical
  *     failure (bad args, validation error from the store) is reported as
  *     { ok:false, error }, never a non-zero exit or a crash.
  *
@@ -28,11 +28,11 @@
  *   failure: { ok:false, error }
  *
  * Behaviour
- *   - addUpstream({ id, command, args, env, transport, enabled, description }) —
+ *   - addUpstream({ id, command, args, env, transport, enabled, description }) -
  *     the store validates (unique non-empty id, transport==='stdio', non-empty
  *     command) and persists atomically.
  *   - For each expose[] item: addExpose({ upstream:id, tool, as, category, enabled }).
- *     The store requires the upstream to exist (it does — we just added it), a
+ *     The store requires the upstream to exist (it does - we just added it), a
  *     non-empty tool, and a unique (upstream,tool) pair.
  *
  * Note: there is no cross-step transaction. If the upstream is added but a later
@@ -66,7 +66,7 @@ function parseArgs() {
 }
 
 /**
- * Perform the add. May throw — main() turns any throw into { ok:false, error }.
+ * Perform the add. May throw - main() turns any throw into { ok:false, error }.
  * @returns {object} the success payload
  */
 function run() {

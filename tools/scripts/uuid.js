@@ -2,7 +2,7 @@
 'use strict';
 
 /**
- * uuid-tool.js — a safe, dependency-free local UUID generator.
+ * uuid-tool.js - a safe, dependency-free local UUID generator.
  *
  * Purpose
  * -------
@@ -13,10 +13,10 @@
  * Contract with the register (the register's `defaultRunScript`)
  * ----------------------------------------------------------
  *   - Structured args arrive as JSON in env TOOLFUNNEL_TOOL_ARGS.
- *   - Args: { count?: <integer> } — how many UUIDs to mint. Defaults to 1.
+ *   - Args: { count?: <integer> } - how many UUIDs to mint. Defaults to 1.
  *     count is clamped to the range [1, 100] so a runaway request cannot ask
  *     for an unbounded number.
- *   - Prints a SINGLE JSON object to stdout and exits 0 — ALWAYS exit 0, even
+ *   - Prints a SINGLE JSON object to stdout and exits 0 - ALWAYS exit 0, even
  *     on bad input (reported as { ok:false, error }), never a thrown exception.
  *
  * Output (stdout), exactly one JSON object:
@@ -27,7 +27,7 @@
  *   - NO filesystem, NO network, NO process mutation. Pure CPU on the args.
  *   - count is hard-capped at 100; a non-integer / out-of-range count is an
  *     error rather than a silent surprise.
- *   - NEVER throws for ordinary bad input — only well-shaped JSON on stdout.
+ *   - NEVER throws for ordinary bad input - only well-shaped JSON on stdout.
  */
 
 const crypto = require('node:crypto');
@@ -57,7 +57,7 @@ function parseStructuredArgs() {
  * @returns {object} the JSON-serialisable result
  */
 function run(args) {
-  // No args (or null) is valid — default to a single UUID.
+  // No args (or null) is valid - default to a single UUID.
   let count = 1;
   if (args !== null && args !== undefined) {
     if (typeof args !== 'object' || Array.isArray(args)) {
