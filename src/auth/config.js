@@ -99,7 +99,7 @@ function getConfig() {
   }
 }
 
-/** A fresh, mutation-safe copy of the defaults (arrays cloned so a caller can't poison the frozen one). */
+/** A fresh, mutation-safe copy of the defaults (arrays cloned so a caller can't corrupt the frozen one). */
 function cloneDefaults() {
   return {
     enabled: DEFAULTS.enabled,
@@ -118,7 +118,7 @@ function cloneDefaults() {
  * rather than silently mis-validating. Only meaningful when `enabled` is true.
  *
  * Enforcement requires: an issuer, an audience (the RFC 8707 confused-deputy defence - a gateway
- * that does not bind tokens to its own resource URI is exploitable), at least one pinned algorithm,
+ * that does not bind tokens to its own resource URI is unsafe), at least one pinned algorithm,
  * and a key source (explicit jwksUri OR an issuer to derive one from via OIDC discovery).
  *
  * @param {object} [cfg]  defaults to getConfig()

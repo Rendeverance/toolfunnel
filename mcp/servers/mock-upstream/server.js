@@ -33,7 +33,7 @@
 
 const PROTOCOL_VERSION = '2024-11-05';
 // `title` is a fidelity fixture: the 2025-06-18 spec added serverInfo.title, and the wrap must
-// deliver it VERBATIM (a whitelist in wrappedIdentity used to eat it - wrap-lab, 2026-07-17).
+// deliver it VERBATIM (a whitelist in wrappedIdentity used to eat it - found wire-testing the wrap, 2026-07-17).
 const SERVER_INFO = { name: 'mock-upstream', version: '1.0.0', title: 'Mock Upstream Fixture' };
 
 const TOOLS = [
@@ -88,12 +88,12 @@ const TOOLS = [
   },
   {
     name: 'elicit',
-    description: 'Elicitation fixture (Bridge B): sends a server-initiated elicitation/create mid-call, holds the call open, completes from the answer.',
+    description: 'Elicitation fixture: sends a server-initiated elicitation/create mid-call, holds the call open, completes from the answer.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   },
 ];
 
-// Outstanding SERVER->CLIENT requests this mock has issued (Bridge B fixture): id -> callback fed
+// Outstanding SERVER->CLIENT requests this mock has issued (elicitation-bridge fixture): id -> callback fed
 // with the client's response ({ result } or { error }).
 const outstandingServerRequests = new Map();
 let nextServerRequestId = 9001;
@@ -115,6 +115,15 @@ function handleMessage(msg) {
   const method = msg.method;
   const params = msg.params || {};
 
+  // Era-negotiation fixture: when TF_MOCK_METHOD_LOG is set, RECORD every incoming method in
+  // arrival order. A reconnect test reads the log to prove WHICH negotiation a fresh connection
+  // ran (server/discover probe vs straight initialize) - the wire is the only honest witness.
+  if (typeof method === 'string' && process.env.TF_MOCK_METHOD_LOG) {
+    try {
+      require('node:fs').appendFileSync(process.env.TF_MOCK_METHOD_LOG, method + '\n');
+    } catch (_e) { /* fixture logging must never crash the mock */ }
+  }
+
   // Notifications carry no id and must never be answered. Cancel-fidelity fixture: when
   // TF_MOCK_CANCEL_LOG is set, RECORD each received notifications/cancelled requestId - a
   // gateway test can then prove which id (translated or raw) actually reached this server.
@@ -128,7 +137,7 @@ function handleMessage(msg) {
   }
 
   // A message with an id and NO method is a client RESPONSE - route it to the outstanding
-  // server-initiated request it answers (Bridge B fixture). Unknown ids are dropped.
+  // server-initiated request it answers (elicitation-bridge fixture). Unknown ids are dropped.
   if (method === undefined) {
     const cb = outstandingServerRequests.get(id);
     if (cb) {
@@ -140,6 +149,17 @@ function handleMessage(msg) {
 
   switch (method) {
     case 'initialize':
+      // Era-memo self-heal fixture: while the file named by TF_MOCK_INIT_REFUSE_FILE EXISTS,
+      // REFUSE the legacy handshake - the shape of an upstream upgraded to modern-only across a
+      // restart. File-gated (not env-gated) so a test can flip the behaviour BETWEEN respawns of
+      // this same fixture without touching the upstream's configured env.
+      if (process.env.TF_MOCK_INIT_REFUSE_FILE &&
+          require('node:fs').existsSync(process.env.TF_MOCK_INIT_REFUSE_FILE)) {
+        return writeMessage({
+          jsonrpc: '2.0', id,
+          error: { code: -32000, message: 'initialize refused (TF_MOCK_INIT_REFUSE_FILE fixture)' },
+        });
+      }
       // Identity-mirroring fixture: RECORD the clientInfo each connect presents when
       // TF_MOCK_CLIENTINFO_LOG is set. A wire test reads the log across a reconnect - first
       // entry = the gateway's boot identity, last entry = the mirrored downstream client.
@@ -163,6 +183,16 @@ function handleMessage(msg) {
       });
 
     case 'tools/list':
+      // Era-memo invariant fixture: while the file named by TF_MOCK_LIST_FAIL_FILE EXISTS,
+      // tools/list errors AFTER a successful handshake - the shape of an upstream that half-boots.
+      // File-gated so a test can flip the behaviour between respawns of this same fixture.
+      if (process.env.TF_MOCK_LIST_FAIL_FILE &&
+          require('node:fs').existsSync(process.env.TF_MOCK_LIST_FAIL_FILE)) {
+        return writeMessage({
+          jsonrpc: '2.0', id,
+          error: { code: -32000, message: 'tools/list unavailable (TF_MOCK_LIST_FAIL_FILE fixture)' },
+        });
+      }
       return writeMessage({ jsonrpc: '2.0', id, result: { tools: TOOLS } });
 
     case 'server/discover':
@@ -203,7 +233,7 @@ function handleMessage(msg) {
       const uri = params.uri;
       if (uri === 'mock://upstream/slow') {
         // In-flight fixture: reply after 2s so a gateway test has a WIDE window to fire a
-        // cancel at a genuinely outstanding forwarded request (400ms made W1 a flake candidate
+        // cancel at a genuinely outstanding forwarded request (400ms made the wire cancel test a flake candidate
         // on a loaded runner).
         setTimeout(() => writeMessage({
           jsonrpc: '2.0', id,
@@ -267,7 +297,7 @@ function handleMessage(msg) {
           return;
         }
         if (name === 'elicit') {
-          // Bridge B fixture: ask the CLIENT a question mid-call, hold the tools/call open, and
+          // elicitation-bridge fixture: ask the CLIENT a question mid-call, hold the tools/call open, and
           // complete it from the answer - exactly what a real eliciting legacy server does.
           const reqId = nextServerRequestId++;
           outstandingServerRequests.set(reqId, (resp) => {

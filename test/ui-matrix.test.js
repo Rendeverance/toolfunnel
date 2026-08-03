@@ -311,11 +311,11 @@ function req(base, method, p, body, extraHeaders) {
     // L - the CSRF guard: the bind address stops the network, not the browser. A cross-origin
     // Origin on a mutating request is rejected; the UI's own origin and non-browser clients
     // (no Origin - every other POST in this file) pass. GETs stay open.
-    const csrfEvil = await req(url, 'POST', '/api/tools/state',
-      { id: 'uuid', hot: false }, { Origin: 'https://evil.example' });
+    const csrfCross = await req(url, 'POST', '/api/tools/state',
+      { id: 'uuid', hot: false }, { Origin: 'https://disallowed.example' });
     check('L: a cross-origin POST is refused (CSRF guard)', () => {
-      assert.strictEqual(csrfEvil.status, 403, 'expected 403, got ' + csrfEvil.status);
-      assert.ok(/cross-origin/i.test((csrfEvil.json && csrfEvil.json.error) || ''), 'error names the guard: ' + JSON.stringify(csrfEvil.json));
+      assert.strictEqual(csrfCross.status, 403, 'expected 403, got ' + csrfCross.status);
+      assert.ok(/cross-origin/i.test((csrfCross.json && csrfCross.json.error) || ''), 'error names the guard: ' + JSON.stringify(csrfCross.json));
     });
     const csrfSelf = await req(url, 'POST', '/api/tools/state',
       { id: 'uuid', hot: false }, { Origin: url });
@@ -327,7 +327,7 @@ function req(base, method, p, body, extraHeaders) {
     check('L: a "null" (sandboxed/file) Origin is refused', () => {
       assert.strictEqual(csrfNull.status, 403, 'expected 403, got ' + csrfNull.status);
     });
-    const csrfGet = await req(url, 'GET', '/api/tools', null, { Origin: 'https://evil.example' });
+    const csrfGet = await req(url, 'GET', '/api/tools', null, { Origin: 'https://disallowed.example' });
     check('L: GETs stay open regardless of Origin (read-only)', () => {
       assert.strictEqual(csrfGet.status, 200, 'expected 200, got ' + csrfGet.status);
     });

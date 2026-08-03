@@ -196,16 +196,30 @@ const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
     assert.strictEqual(garbage.ok, false, 'B2: a non-Bearer scheme is rejected');
     pass.push('B2: missing/garbage Authorization -> 401 bare Bearer challenge w/ resource_metadata');
 
-    // B3: wrong audience (the confused-deputy attack) is rejected.
-    const wrongAud = await validator.validate('Bearer ' + (await mint({ audience: 'https://evil.test' })));
+    // B3: wrong audience (the confused-deputy problem) is rejected.
+    const wrongAud = await validator.validate('Bearer ' + (await mint({ audience: 'https://denied.test' })));
     assert.strictEqual(wrongAud.ok, false, 'B3: a token for a different audience is rejected');
     assert.strictEqual(wrongAud.error, 'invalid_token', 'B3: -> invalid_token');
     pass.push('B3: wrong-audience token rejected (confused-deputy defence)');
 
     // B4: wrong issuer rejected.
-    const wrongIss = await validator.validate('Bearer ' + (await mint({ issuer: 'https://evil.test' })));
+    const wrongIss = await validator.validate('Bearer ' + (await mint({ issuer: 'https://denied.test' })));
     assert.strictEqual(wrongIss.ok, false, 'B4: a token from a different issuer is rejected');
     pass.push('B4: wrong-issuer token rejected');
+
+    // B4b: a BLANK config issuer must FAIL CLOSED, not silently skip the issuer check. With issuer:''
+    //      the pre-fix validator passed issuer:undefined to jose, disabling the check, so a token from
+    //      ANY issuer validated as long as audience/signature/exp held. configError refuses this at
+    //      start-up, but the UI can persist an enabled+blank-issuer config that takes effect on the
+    //      next request with no restart, so the runtime path must refuse it too (like the audience guard).
+    const blankIssuerValidator = resourceServer.createValidator(
+      Object.assign({}, vcfg, { issuer: '' }),
+      { resourceMetadataUrl: 'http://x/.well-known/oauth-protected-resource' }
+    );
+    const foreignOnBlank = await blankIssuerValidator.validate('Bearer ' + (await mint({ issuer: 'https://attacker.test' })));
+    assert.strictEqual(foreignOnBlank.ok, false, 'B4b: a blank config issuer must NOT accept a foreign-issuer token');
+    assert.strictEqual(foreignOnBlank.status, 500, 'B4b: a blank issuer is a misconfig -> 500, fail closed (not a token-level 401)');
+    pass.push('B4b: blank config issuer fails closed (no silent issuer-check skip)');
 
     // B5: expired token rejected (exp in the past, beyond clock tolerance).
     const expired = await validator.validate('Bearer ' + (await mint({ exp: Math.floor(Date.now() / 1000) - 600 })));
@@ -220,7 +234,7 @@ const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
     pass.push('B6: alg:none token rejected');
 
     // B7: algorithm confusion - an HS256 token is rejected because the validator PINS RS256.
-    //     (The classic attack signs HS256 using the RSA public key as the HMAC secret; whatever the
+    //     (The classic failure signs HS256 using the RSA public key as the HMAC secret; whatever the
     //     secret, an HS256 token must never validate against an RS256-pinned resource server.)
     const hsTok = await new SignJWT({})
       .setProtectedHeader({ alg: 'HS256', kid: KID })
@@ -228,7 +242,7 @@ const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
       .setIssuer(ISSUER)
       .setAudience(AUDIENCE)
       .setExpirationTime('5m')
-      .sign(new TextEncoder().encode('attacker-chosen-secret-or-the-rsa-public-key-bytes'));
+      .sign(new TextEncoder().encode('caller-chosen-secret-or-the-rsa-public-key-bytes'));
     const algConfusion = await validator.validate('Bearer ' + hsTok);
     assert.strictEqual(algConfusion.ok, false, 'B7: an HS256 token is rejected under an RS256 allowlist');
     pass.push('B7: HS256 token rejected (algorithm-confusion defence - pinned allowlist)');

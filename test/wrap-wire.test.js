@@ -14,7 +14,7 @@
  *   W2  cancel of a QUEUED request suppresses it: no reply, nothing forwarded upstream (F1)
  *   W3  tools/call _meta.progressToken forwarded; upstream progress relayed back w/ token (F5)
  *   W3b ...on a pipe whose initialize carried modern _meta - the era latch must not flip (F6)
- *   W4  serverInfo.title + tool title/annotations arrive VERBATIM through the wrap (wrap-lab)
+ *   W4  serverInfo.title + tool title/annotations arrive VERBATIM through the wrap (wire-tested regressions)
  *   W5  direct resources/subscribe -> updated arrives; upstream CRASH -> auto-reconnect REPLAYS
  *       the subscribe (fresh process logs it) and updates resume (F3b)
  *   W6  upstream death under the wrap fires notifications/tools/list_changed (F2)
@@ -132,7 +132,7 @@ const logLines = (p) => { try { return fs.readFileSync(p, 'utf8').split('\n').fi
 
     send({ jsonrpc: '2.0', method: 'notifications/initialized' });
 
-    // ── W4: identity + tool-def fidelity (the wrap-lab regressions, now fixture-pinned).
+    // ── W4: identity + tool-def fidelity (the wire-test regressions, now fixture-pinned).
     check('W4: serverInfo.title VERBATIM through the wrap',
       !!(init && init.result && init.result.serverInfo && init.result.serverInfo.title === 'Mock Upstream Fixture'),
       JSON.stringify(init && init.result && init.result.serverInfo));
@@ -245,7 +245,9 @@ const logLines = (p) => { try { return fs.readFileSync(p, 'utf8').split('\n').fi
       if (r && r.result && !r.result.isError) alive = r;
     }
     check('W7: upstream recovered for the bridge test', !!alive);
-    const MODERN_META = { 'io.modelcontextprotocol/protocolVersion': '2026-07-28', 'io.modelcontextprotocol/clientCapabilities': {} };
+    // Since 0.7.0, receiving input_required requires the caller to DECLARE the
+    // elicitation capability on the request - this client models a conforming MRTR client.
+    const MODERN_META = { 'io.modelcontextprotocol/protocolVersion': '2026-07-28', 'io.modelcontextprotocol/clientCapabilities': { elicitation: {} } };
     send({ jsonrpc: '2.0', id: 200, method: 'tools/call', params: { name: 'elicit', arguments: {}, _meta: MODERN_META } });
     const suspended = await waitReply(200, 10000);
     const sr = (suspended && suspended.result) || {};

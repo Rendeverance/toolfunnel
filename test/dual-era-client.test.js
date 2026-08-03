@@ -170,7 +170,7 @@ function check(label, cond) {
     // onUpstreamNotification hook (McpClient.onNotification -> _forwardUpstreamNotification), and a
     // non-bridged notification does NOT.
     let captured = null;
-    const capturingFactory = (upstream, _v3Root, onClose) =>
+    const capturingFactory = (upstream, _gatewayRoot, onClose) =>
       (captured = new McpClient({ id: upstream.id, command: process.execPath, args: upstream.args, onClose }));
     const store3 = new ExposeStore({
       filePath: path.join(REPO_ROOT, 'test', '.dual-era-client-expose3.json'),

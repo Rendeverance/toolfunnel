@@ -113,7 +113,13 @@ function validateModernRequest(msg) {
     return {
       code: ERR_MODERN.UNSUPPORTED_PROTOCOL_VERSION,
       message: 'Unsupported protocol version',
-      data: { supported: supportedVersions(), requested: version },
+      // Filtered AT THE ERROR SITE only: this `supported` answers "what may _meta
+      // protocolVersion carry" and the only lawful value is the modern version. Advertising the
+      // legacy versions here re-armed a measured retry loop - a client offered 2024-11-05
+      // re-pins it in _meta and is rejected forever (they are initialize-channel vocabulary,
+      // not _meta vocabulary). supportedVersions() itself stays whole: server/discover and
+      // /health legitimately span both eras.
+      data: { supported: [MODERN_PROTOCOL_VERSION], requested: version },
       httpStatus: 400,
     };
   }
@@ -142,6 +148,26 @@ function validateModernRequest(msg) {
  * @param {object} msg      the parsed JSON-RPC body
  * @returns {null | { code:number, message:string, httpStatus:number }}
  */
+/**
+ * Decode a header value that carries the Base64 sentinel `=?base64?{data}?=` (the
+ * 2026-07-28 Streamable HTTP spec, Base64-Encoded Header Values). UNCONDITIONAL on the
+ * sentinel shape - the spec obliges clients
+ * to encode ANY value that even looks like the sentinel, so there is no legal raw value of this
+ * shape and no try-decode-and-fall-back: a sentinel-shaped header decodes (possibly to a
+ * mismatching string - node's forgiving base64 makes garbage compare unequal, which fails
+ * closed at the comparison site). Markers are case-sensitive lowercase per spec. Non-sentinel
+ * values pass through verbatim.
+ * @param {any} v  the raw header value
+ * @returns {any} the decoded string, or v untouched when not sentinel-shaped
+ */
+function decodeHeaderSentinel(v) {
+  if (typeof v !== 'string') return v;
+  if (v.length >= 11 && v.startsWith('=?base64?') && v.endsWith('?=')) {
+    return Buffer.from(v.slice(9, -2), 'base64').toString('utf8');
+  }
+  return v;
+}
+
 function validateModernHeaders(headers, msg) {
   const h = headers || {};
   const mismatch = (message) => ({ code: ERR_MODERN.HEADER_MISMATCH, message, httpStatus: 400 });
@@ -171,13 +197,17 @@ function validateModernHeaders(headers, msg) {
   const nameField = NAMED_METHODS[msg.method];
   if (nameField) {
     const bodyName = msg.params ? msg.params[nameField] : undefined;
-    const headerName = h['mcp-name'];
-    if (typeof headerName !== 'string' || headerName.length === 0) {
+    const rawHeaderName = h['mcp-name'];
+    if (typeof rawHeaderName !== 'string' || rawHeaderName.length === 0) {
       return mismatch(`Header mismatch: Mcp-Name header is required for ${msg.method}`);
     }
+    // 4.2: decode the Base64 sentinel BEFORE comparing (spec MUST) - tool names are only
+    // SHOULD-constrained to header-safe characters and resource URIs are not constrained at
+    // all, so an encoded Mcp-Name is a first-class shape, not an error.
+    const headerName = decodeHeaderSentinel(rawHeaderName);
     if (headerName !== bodyName) {
       return mismatch(
-        `Header mismatch: Mcp-Name header value '${headerName}' does not match body value '${bodyName}'`
+        `Header mismatch: Mcp-Name header value '${rawHeaderName}' does not match body value '${bodyName}'`
       );
     }
   }
@@ -185,20 +215,22 @@ function validateModernHeaders(headers, msg) {
 }
 
 /** The protocol versions this dual-era server speaks (modern first; legacy negotiated via
- *  initialize). Kept as a function so the legacy version is injected once by the server, not
- *  duplicated here. server.js seeds it via setLegacyVersion(). */
-let _legacyVersion = null;
+ *  initialize). Kept as a function so the legacy set is injected once by the server, not
+ *  duplicated here. server.js seeds it via setLegacyVersion() - a LIST since 0.7.0
+ *  (a single string is still accepted for compatibility). */
+let _legacyVersions = [];
 function setLegacyVersion(v) {
-  if (typeof v === 'string' && v.length > 0) _legacyVersion = v;
+  if (typeof v === 'string' && v.length > 0) _legacyVersions = [v];
+  else if (Array.isArray(v)) _legacyVersions = v.filter((x) => typeof x === 'string' && x.length > 0);
 }
 function supportedVersions() {
-  return _legacyVersion ? [MODERN_PROTOCOL_VERSION, _legacyVersion] : [MODERN_PROTOCOL_VERSION];
+  return [MODERN_PROTOCOL_VERSION].concat(_legacyVersions);
 }
 
 /**
  * Decorate a result object for the modern era, in place-safe copy:
  *   - `resultType: 'complete'` when absent - the preserve-if-present branch below is
- *     LOAD-BEARING for Bridge B, whose suspensions arrive here already carrying
+ *     LOAD-BEARING for the elicitation bridge, whose suspensions arrive here already carrying
  *     `resultType: 'input_required'` and must pass through undamaged (the elicitation
  * bridge DOES originate input_required).
  *   - `_meta[serverInfo]` (SHOULD on every result).
@@ -359,6 +391,8 @@ module.exports = {
   isModernRequest,
   validateModernRequest,
   validateModernHeaders,
+  // 4.2: exported for the transport's Mcp-Param-* handling (4.3) + tests.
+  decodeHeaderSentinel,
   setLegacyVersion,
   supportedVersions,
   decorateResult,

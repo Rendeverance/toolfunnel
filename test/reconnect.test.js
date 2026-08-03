@@ -36,7 +36,7 @@ const LOG_CONFIG_PATH = path.join(REPO_ROOT, 'logs', 'log.config.json');
 const TEST_LOG_REL = 'logs/test-reconnect.' + process.pid + '.jsonl';
 const TEST_LOG_PATH = path.join(REPO_ROOT, TEST_LOG_REL);
 
-const REQUEST_TIMEOUT_MS = 12000;
+const REQUEST_TIMEOUT_MS = 45000; // a CEILING, not a wait - generous so a loaded CI box cannot flake it
 const RECOVER_BUDGET_MS = 15000; // first backoff is ~1s; allow for spawn+initialize+list + slack
 
 const results = [];

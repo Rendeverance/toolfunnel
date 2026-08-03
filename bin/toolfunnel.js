@@ -11,6 +11,7 @@
  *   toolfunnel --ui                 Start the OPTIONAL config web UI on 127.0.0.1:9777
  *   toolfunnel --ui --port <n>      Bind a specific UI port (0 = OS-assigned)
  *   toolfunnel install-oauth        Install the OPTIONAL OAuth 2.1 dependency (jose) on demand
+ *   toolfunnel --version            Print the version
  *   toolfunnel --help               Show this help
  *
  * Zero runtime dependencies. The stdio path runs the server's main(); the HTTP
@@ -21,9 +22,37 @@
 
 const args = process.argv.slice(2);
 
+/**
+ * Read a flag's value, accepting BOTH `--flag value` and `--flag=value` (0.7.0). Only the
+ * space-separated form was handled, so `--config-dir=/my/home` was silently ignored and the config
+ * home fell back to the package root - exactly the class of quiet misconfiguration the resolved-home
+ * stderr line and the positional parsing below exist to prevent. The `=` form is what most people
+ * type first, and getting it wrong wrote config somewhere they were not looking.
+ */
 function flagValue(name, fallback) {
-  const i = args.indexOf(name);
-  return i !== -1 && i + 1 < args.length ? args[i + 1] : fallback;
+  // ONE left-to-right scan, LAST occurrence wins whichever form it uses. Scanning the = form
+  // across all args before the space form made precedence depend on spelling, not position
+  // (`--port 9 --port=8` and `--port=8 --port 9` both answered 8). A present-but-EMPTY `=`
+  // value (`--config-dir=`) is an error, not a silent fallback - downstream it is
+  // indistinguishable from "not given", which for --config-dir meant config quietly written to
+  // the package root, the exact misconfiguration this parser exists to prevent.
+  const eq = name + '=';
+  let value = fallback;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (typeof a !== 'string') continue;
+    if (a.startsWith(eq)) {
+      const v = a.slice(eq.length);
+      if (v.length === 0) {
+        process.stderr.write(`toolfunnel: ${name}= requires a value (write ${name}=<value> or ${name} <value>)\n`);
+        process.exit(2);
+      }
+      value = v;
+    } else if (a === name && i + 1 < args.length) {
+      value = args[i + 1];
+    }
+  }
+  return value;
 }
 
 // POSITIONAL arguments - the subcommand and its target - recognised regardless of where global
@@ -35,9 +64,16 @@ const VALUE_FLAGS = new Set(['--config-dir', '--port', '--host', '--as']);
 const positionals = [];
 for (let i = 0; i < args.length; i++) {
   const a = args[i];
+  // `--flag value` consumes the next token; `--flag=value` is self-contained and is skipped by the
+  // generic leading-dash rule below, so it must NOT also eat the following token.
   if (VALUE_FLAGS.has(a)) { i++; continue; }
   if (typeof a === 'string' && a.length && a[0] === '-') continue;
   positionals.push(a);
+}
+
+if (args.includes('--version') || args.includes('-v')) {
+  process.stdout.write(require('../package.json').version + '\n');
+  process.exit(0);
 }
 
 if (args.includes('--help') || args.includes('-h')) {
@@ -58,6 +94,7 @@ if (args.includes('--help') || args.includes('-h')) {
       '                                working with modern clients. `wrap --off` restores normal.',
       '  toolfunnel install-oauth      Install the optional OAuth 2.1 dependency (jose)',
       '  toolfunnel --config-dir <dir> Use <dir> as the CONFIG HOME (see below)',
+      '  toolfunnel --version          Print the version',
       '  toolfunnel --help             Show this help',
       '',
       'CONFIG HOME: the mutable config (tools/ mcp/ hooks/ auth/ logs/ toolfunnel.json) lives in',
@@ -78,6 +115,10 @@ if (args.includes('--help') || args.includes('-h')) {
 // Resolve + seed the config home FIRST - before any src/ module is required - so every
 // module-load-time anchor (register/expose/hooks paths, auth + log config, identity) reads the
 // same resolved home. Precedence: --config-dir > TOOLFUNNEL_HOME env > the package root.
+// Whether the user EXPLICITLY placed the home must be captured BEFORE init: initConfigHome
+// exports the resolved home into process.env.TOOLFUNNEL_HOME for the child tools it spawns,
+// so reading the env afterwards is always-true and the hint branch was dead (0.7.0).
+const explicitHome = !!(flagValue('--config-dir', '') || process.env.TOOLFUNNEL_HOME);
 const { initConfigHome } = require('../src/core/config-home');
 const configHome = initConfigHome({ dir: flagValue('--config-dir', '') }).home;
 
@@ -85,7 +126,7 @@ const configHome = initConfigHome({ dir: flagValue('--config-dir', '') }).home;
 // `git status` after running from a clone was the discovery mechanism. Defaulted homes get
 // the relocation hint.
 process.stderr.write('[toolfunnel] config home: ' + configHome +
-  ((flagValue('--config-dir', '') || process.env.TOOLFUNNEL_HOME)
+  (explicitHome
     ? '\n'
     : ' (default: the package root - use --config-dir <dir> or TOOLFUNNEL_HOME to relocate)\n'));
 
@@ -157,12 +198,40 @@ if (positionals[0] === 'wrap') {
     // up front - informed consent, not a silent default (the old behaviour was worse: the guard
     // still applied, and `wrap` reported success while the gateway refused to connect).
     {
-      const { looksLikePath, isInside } = require('../src/mcp/aggregator');
-      const outsideArgs = (Array.isArray(upstream.args) ? upstream.args : [])
-        .filter((a) => looksLikePath(a) && !isInside(home, a));
-      if (outsideArgs.length) {
-        process.stderr.write('[toolfunnel] ⚠ WRAP SECURITY NOTICE - upstream "' + target + '" uses paths outside the gateway root:\n' +
-          outsideArgs.map((a) => '    ' + a).join('\n') + '\n' +
+      // Enumerate EVERY class the wrap excuses, using the guard's own lists so the notice and the
+      // guard can never classify differently. Args-only was the defect: the archetypal wrap target
+      // (a filesystem server on a documents folder) HAS an outside arg so the notice fired there,
+      // while a clean-args upstream carrying NODE_OPTIONS=--require and an outside cwd wrapped in
+      // total silence - the one moment of informed consent, blind to the class that loads code.
+      const { looksLikePath, isInside, isDriveRelative, CODE_OPT_ENV, CODE_PATH_ENV } = require('../src/mcp/aggregator');
+      const findings = (Array.isArray(upstream.args) ? upstream.args : [])
+        .filter((a) => looksLikePath(a) && !isInside(home, a))
+        .map((a) => 'arg   ' + a);
+      if (typeof upstream.cwd === 'string' && upstream.cwd.length > 0
+        && (isDriveRelative(upstream.cwd) || !isInside(home, upstream.cwd))) {
+        findings.push('cwd   ' + upstream.cwd + '   (bare args resolve against this)');
+      }
+      const envObj = upstream.env && typeof upstream.env === 'object' ? upstream.env : null;
+      if (envObj) {
+        for (const key in envObj) {
+          const upper = String(key).toUpperCase();
+          const isOpt = key === '__proto__' || CODE_OPT_ENV.includes(upper);
+          const isPathVar = CODE_PATH_ENV.includes(upper);
+          if (!isOpt && !isPathVar) continue;
+          let raw;
+          try { raw = String(envObj[key]); } catch (_e) { raw = '(unreadable)'; }
+          // An option-string var loads code whatever its value; a path-list var only when a piece
+          // of it points outside - the same rule the guard applies, so the two agree by construction.
+          if (isPathVar && raw !== '(unreadable)') {
+            const parts = (raw.match(/[A-Za-z]:[^;:]*|[^;:]+/g) || []).filter((t) => t.length > 0);
+            if (!parts.some((t) => isDriveRelative(t) || !isInside(home, t))) continue;
+          }
+          findings.push('env   ' + key + '=' + raw + '   (loads code into the child)');
+        }
+      }
+      if (findings.length) {
+        process.stderr.write('[toolfunnel] ⚠ WRAP SECURITY NOTICE - upstream "' + target + '" reaches outside the gateway root:\n' +
+          findings.map((a) => '    ' + a).join('\n') + '\n' +
           '  While WRAPPED, the path-isolation guard is suspended for this upstream: ToolFunnel is a\n' +
           '  transparent wrapper here, and the wrapped server can reach whatever those paths reach.\n' +
           '  Every call still passes the PreToolUse gate. To restrict it AFTER wrapping: add a\n' +
@@ -181,26 +250,36 @@ if (positionals[0] === 'wrap') {
     // (server/discover), and only on failure fall back to the legacy initialize - otherwise a
     // dual-era upstream would be misreported as legacy just because the legacy handshake works.
     // Separate child per stage: a badly behaved legacy server may react badly to an unknown
-    // method, and the fallback must not inherit a poisoned child.
+    // method, and the fallback must not inherit a soured child.
     if (upstream.transport === 'stdio') {
-      const { McpClient } = require('../src/mcp/mcp-client');
-      const clientOpts = {
+      const { defaultClientFactory } = require('../src/mcp/aggregator');
+      // The probe SPAWNS this upstream, so it goes through the same factory - and therefore the
+      // same isolation guard - as every other spawn. Building McpClient directly here meant the
+      // one code path that runs an upstream's command before the operator has seen anything was
+      // also the one path with no guard on args/cwd/env, while the docs claimed otherwise.
+      // allowOutsidePaths is TRUE because this IS the wrap path: outside references are the
+      // operator's explicit declaration, so the guard warns instead of refusing (same rule the
+      // running gateway applies to the wrapped upstream).
+      const probeUpstream = Object.assign({}, upstream, {
         id: target,
-        command: upstream.command,
-        args: Array.isArray(upstream.args) ? upstream.args : [],
-        env: upstream.env || {},
         // Default the probe's cwd to the CONFIG HOME, same as the aggregator's spawn: relative
         // arg paths are guarded against the home, so they must spawn against it too.
         cwd: upstream.cwd || home,
         // Honour a configured slow-boot window; the probe default stays tight.
         requestTimeoutMs: Number.isFinite(upstream.requestTimeoutMs) && upstream.requestTimeoutMs > 0
           ? upstream.requestTimeoutMs : 6000,
-      };
+        // The probe decides the era ITSELF (server/discover, then a legacy fallback on a fresh
+        // child). Neutralise the stored era policy so a pinned upstream still gets both stages -
+        // otherwise the factory would force one era and the probe would report its own input.
+        legacyPin: false,
+        modernOnly: false,
+      });
+      const newProbeClient = () => defaultClientFactory(probeUpstream, home, () => {}, true, undefined);
 
       let reported = false;
       // Stage 1: modern probe (server/discover).
       try {
-        const probe = new McpClient(clientOpts);
+        const probe = newProbeClient();
         try {
           const disc = await probe.probeDiscover();
           const versions = disc && Array.isArray(disc.supportedVersions) ? disc.supportedVersions : [];
@@ -226,7 +305,7 @@ if (positionals[0] === 'wrap') {
       // Stage 2: legacy fallback (initialize) - the era every current MCP speaks.
       if (!reported) {
         try {
-          const legacy = new McpClient(clientOpts);
+          const legacy = newProbeClient();
           try {
             const init = await legacy.connect();
             const v = init && typeof init.protocolVersion === 'string' ? init.protocolVersion : 'unknown';

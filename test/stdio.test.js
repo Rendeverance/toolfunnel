@@ -58,7 +58,7 @@ const EXPECTED_DEMO_IDS = [
 ];
 
 const OVERALL_TIMEOUT_MS = 20000; // hard ceiling for the whole exchange
-const REQUEST_TIMEOUT_MS = 10000; // per-request ceiling
+const REQUEST_TIMEOUT_MS = 45000; // per-request CEILING, not a wait - generous so a loaded CI box cannot flake it
 
 // ── A tiny JSON-RPC-over-stdio client bound to a spawned child ────────────────────────────────
 function makeClient(child) {

@@ -2,7 +2,7 @@
 
 This example gates the built-in **`danger`** demo tool (register display name **`Danger Demo`**)
 so it only runs when the caller passes `{ "confirm": true }`. It is the runnable companion to
-[`docs/hooks-and-gating.md`](../../docs/hooks-and-gating.md).
+section 10 of `docs/MANUAL.pdf`.
 
 A **gate** is a `PreToolUse` hook. Before any tool runs, ToolFunnel fires `PreToolUse` through the
 hook engine; if a hook **denies**, the tool's `execute()` is never called - no side effect, no

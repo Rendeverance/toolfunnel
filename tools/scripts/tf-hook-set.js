@@ -22,8 +22,10 @@
  *   failure:        { ok:false, error }
  *
  * Mapping (verified against src/core/hook-loader.js):
- *   - enable  -> loader.setEnabled(id, true)   (persists the state overlay + manifest)
- *   - disable -> loader.setEnabled(id, false)
+ *   - enable  -> loader.setEnabled(id, true)   (persists the state overlay + manifest;
+ *               returns false on a miss - no manifest row, no detected script - and
+ *               writes NOTHING, so a miss is reported as { ok:false, error })
+ *   - disable -> loader.setEnabled(id, false)  (same miss contract)
  *   - remove  -> loader.removeEntry(id)        (returns false if the id was absent;
  *               that is information, not a fault, so ok stays true)
  *
@@ -89,7 +91,13 @@ function run(args) {
   }
 
   const desired = action === 'enable';
-  loader.setEnabled(id, desired);
+  // setEnabled reports whether the toggle matched anything (a manifest row or a
+  // detected script). A miss writes nothing, so claiming ok:true here would report
+  // a gate toggled when nothing changed.
+  const applied = loader.setEnabled(id, desired);
+  if (!applied) {
+    return { ok: false, error: `no hook with id "${id}" - nothing was changed` };
+  }
   return { ok: true, id, action, enabled: desired };
 }
 

@@ -6,12 +6,12 @@
  *
  *   A - JOIN-BEFORE-INSPECT: a second ensureConnected arriving while a connect is in flight
  *       JOINS it - it must not see the pre-handshake cached client as "stale", close it
- *       (killing the in-flight child), then join the connect it just doomed (M1).
+ *       (killing the in-flight child), then join the connect it just doomed.
  *   B - RUN-PATH CONTRACT: allowConnect:false during an in-flight connect still fails clean
  *       (never joins - joining would block the serialized stdio chain).
  *   C - RECONNECT SELF-HEAL: Aggregator.reconnect() destroyed a connection deliberately, so a
  *       failed reconnect MUST schedule the background retry - one transient connect failure
- *       must not wedge the upstream with no client, no in-flight connect and no timer (M2).
+ *       must not wedge the upstream with no client, no in-flight connect and no timer.
  *   D - STRUCTURED CONTENT: McpClient.callTool passes structuredContent through verbatim -
  *       the curated-direct path must not strip what the raw wrap path preserves.
  *

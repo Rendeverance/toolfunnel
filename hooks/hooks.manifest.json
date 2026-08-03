@@ -10,7 +10,7 @@
       "script": "scripts/example-deny-dangerous.js",
       "timeout": 10,
       "enabled": false,
-      "description": "EXAMPLE (disabled by default). A PreToolUse policy gate: denies any tool call whose arguments contain an obviously-destructive shell pattern (rm -rf, mkfs, drive format, fork bomb). A non-zero exit fails closed and blocks the call before it runs. Enable it in the UI Hooks tab (or set enabled:true here) to see the gate bite; edit scripts/example-deny-dangerous.js to encode your own policy."
+      "description": "EXAMPLE (disabled by default). A PreToolUse policy gate: denies any tool call whose arguments contain an obviously-destructive shell pattern (rm -rf, mkfs, drive format, fork bomb). Exit 2 denies and blocks the call before it runs; exit 0 allows. Any OTHER exit (a crash, a missing script, a timeout) is a non-blocking error and the call PROCEEDS - write denies as exit 2, never as a bare non-zero. Enable it in the UI Hooks tab (or set enabled:true here) to see the gate bite; edit scripts/example-deny-dangerous.js to encode your own policy."
     },
     {
       "id": "post-tool-use/example-audit",

@@ -3,8 +3,8 @@
 /**
  * events.js - lifecycle event names + per-event stdin payload builder.
  *
- * This is the contract surface from HOOK_ENGINE.md §1 (the six events) and §2
- * (the exact stdin JSON shape). Field names are FROZEN by §2's table - they must
+ * This is the hook contract surface: the six lifecycle events and
+ * (the exact stdin JSON shape). Field names are FROZEN - they are the hook wire contract and must
  * match Claude Code's documented hook input byte-for-byte so the real hook
  * scripts run unchanged. Do not rename or add fields.
  *
@@ -12,7 +12,7 @@
  */
 
 /**
- * The six lifecycle events v3 supports (HOOK_ENGINE.md §1).
+ * The six lifecycle events v3 supports.
  * Values equal the `hook_event_name` written into the stdin payload.
  * Frozen so callers can rely on identity comparison and can't mutate the set.
  */
@@ -31,7 +31,7 @@ const EVENT_NAMES = Object.freeze(Object.values(EVENTS));
 /**
  * Build the stdin JSON object the runner pipes to a hook command.
  *
- * Every event carries the four common fields (HOOK_ENGINE.md §2):
+ * Every event carries the same four common fields:
  *   session_id, transcript_path, cwd, hook_event_name
  * supplied by `ctx`. Each event then adds its own fields from `extra`:
  *
@@ -45,7 +45,7 @@ const EVENT_NAMES = Object.freeze(Object.values(EVENTS));
  * @param {string} event  one of EVENTS (the hook_event_name).
  * @param {object} ctx    common fields: { session_id, transcript_path, cwd }.
  * @param {object} [extra] event-specific fields (see table above).
- * @returns {object} the stdin payload, with frozen field names per §2.
+ * @returns {object} the stdin payload, with the contract's frozen field names.
  * @throws {Error} if `event` is not one of the six known events.
  */
 function buildPayload(event, ctx, extra) {
@@ -56,7 +56,7 @@ function buildPayload(event, ctx, extra) {
   const c = ctx || {};
   const e = extra || {};
 
-  // Common fields - present on EVERY event, in the order §2 lists them.
+  // Common fields - present on EVERY event, in their contract order.
   // hook_event_name is always the canonical event string (not whatever ctx held).
   const payload = {
     session_id: c.session_id,
@@ -65,7 +65,7 @@ function buildPayload(event, ctx, extra) {
     hook_event_name: event,
   };
 
-  // Event-specific additions. Each branch sets EXACTLY the fields §2 names -
+  // Event-specific additions. Each branch sets EXACTLY the fields the contract names -
   // no more, no fewer - so the payload matches Claude Code's shape precisely.
   switch (event) {
     case EVENTS.SessionStart:

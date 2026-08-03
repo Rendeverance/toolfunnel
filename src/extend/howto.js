@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * howto.js - the loader behind the `toolfunnel_howto` meta-tool (architecture notes §2 + §6).
+ * howto.js - the loader behind the `toolfunnel_howto` meta-tool.
  *
  * `toolfunnel_howto({ topic })` returns the self-extension instructions for one topic. This module
  * resolves a topic to its authored markdown file (the topic -> file map below) and reads it.
@@ -9,12 +9,12 @@
  *   howto(topic) -> string   // the markdown content for that topic
  *
  * Topics: create-tool | add-mcp | add-hook | package | wrap | configure
- * (the original four from §2, plus the 0.6.0 pair - the transparent wrap and the no-code
+ * (the original four topics, plus the 0.6.0 pair - the transparent wrap and the no-code
  * config map - so a primer-less agent can learn the headline feature from inside).
  * Unknown topics THROW (the protocol layer turns that into a clean tool error, not a crash).
  *
  * Isolation: reads are confined to THIS directory (src/extend). The topic map is a fixed
- * allow-list of basenames - there is no path interpolation from the caller, so a malicious
+ * allow-list of basenames - there is no path interpolation from the caller, so an untrusted
  * `topic` cannot traverse out of src/extend. We additionally re-verify the resolved path is
  * inside this directory (defense-in-depth, mirroring the hook loader's writeScript guard).
  *

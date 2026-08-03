@@ -2,7 +2,7 @@
 
 This is the instruction served by `toolfunnel_howto({ topic: "add-hook" })`. It explains how to add a hook
 to the Hook Engine: the manifest entry shape, where the script goes, and how the enabled/disabled
-state is persisted separately in `hooks.state.json`. The full contract is HOOK_ENGINE.md - this is
+state is persisted separately in `hooks.state.json`. This is
 the authoring view.
 
 A hook is exactly two things:
@@ -79,7 +79,7 @@ The payload a tool event receives on stdin:
 (`PreToolUse` → `tool_name` + `tool_input`; `PostToolUse` adds `tool_response`. Tool-less
 events carry their own fields - `prompt`, `source` - instead.)
 
-Two protocols (HOOK_ENGINE.md §3):
+Two protocols:
 
 **A) Exit-code (simple):**
 - `exit 0` → success. On `SessionStart`/`UserPromptSubmit`, stdout becomes **injected context**;

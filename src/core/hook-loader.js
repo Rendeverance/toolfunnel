@@ -3,7 +3,7 @@
 /**
  * hook-loader.js - load and persist the hook manifest, resolve runnable specs.
  *
- * Contract: HOOK_ENGINE.md §7 (manifest shape) and §8 (loader API).
+ * Contract: the manifest shape and the loader API are both specified below.
  *
  * Responsibilities:
  *   - loadManifest(path): read hooks.manifest.json, expand ${HOOKS_DIR} (the absolute
@@ -14,7 +14,7 @@
  *   - writeScript(id, text): save to the COPY under src/hooks/scripts - and REFUSE any
  *     resolved path outside src/hooks/scripts (path-traversal guard, isolation rule).
  *
- * Hook Manager v2 additions (see the architecture notes §4) - all ADDITIVE; the API above
+ * Hook Manager v2 additions - all ADDITIVE; the API above
  * keeps its exact behaviour so the existing loader tests still pass:
  *   - AUTO-DETECT: autodetect() scans <hooksDir>/scripts for hook scripts and reconciles
  *     them with the manifest. The FOLDER is the source of truth for what EXISTS; the
@@ -37,6 +37,10 @@ const path = require('node:path');
 // Lifecycle event names (frozen) - used to validate addEntry specs against the
 // six supported events. events.js has zero host imports, so this cannot cycle.
 const { EVENT_NAMES } = require('./events');
+
+// The matcher-compile discriminator - addEntry refuses a matcher that can never be
+// evaluated (matcher.js has zero host imports, so this cannot cycle either).
+const { matcherError } = require('./matcher');
 
 /**
  * Extensions we treat as hook scripts during auto-detect. Everything else in the
@@ -251,7 +255,7 @@ class HookLoader {
     };
   }
 
-  /** @returns {object} alias of {@link HookLoader#autodetect} (contract §4 naming). */
+  /** @returns {object} alias of {@link HookLoader#autodetect} (compatibility naming). */
   reconcile() { return this.autodetect(); }
   /** @returns {object} alias of {@link HookLoader#autodetect}. */
   reconcileScripts() { return this.autodetect(); }
@@ -313,12 +317,7 @@ class HookLoader {
     const liveSpec = this.getSpec(id);
     if (liveSpec) liveSpec.enabled = desired;
 
-    // (1) Persist the overlay - the authoritative, precedence-winning store.
-    const overlay = this.readState();
-    overlay[id] = desired;
-    this.writeState(overlay);
-
-    // (2) Mirror into the manifest when a matching row exists (keeps the manifest a
+    // (1) Mirror into the manifest when a matching row exists (keeps the manifest a
     //     faithful default and preserves the v1 setEnabled contract). Skipped for
     //     detected-only ids that have no manifest row.
     let raw;
@@ -330,17 +329,32 @@ class HookLoader {
       raw = collapseManifest(this.manifest, this.hooksDir);
     }
 
+    let manifestRow = false;
     if (raw && Array.isArray(raw.hooks)) {
       const rawSpec = raw.hooks.find((h) => h && h.id === id);
       if (rawSpec) {
+        manifestRow = true;
         rawSpec.enabled = desired;
         atomicWriteJson(this.manifestPath, raw);
       }
     }
 
-    // True if we toggled a known manifest hook; also true if we recorded the overlay
-    // for a detected (manifest-less) hook so the manager can persist its state.
-    return !!liveSpec || true;
+    // (2) Persist the overlay - the authoritative, precedence-winning store - ONLY for an id
+    //     that matched something. The first correction here fixed the constant-true return
+    //     (`!!liveSpec || true`) but left this write unconditional, so a typo'd id still left a
+    //     stray key in hooks.state.json forever. Strays are not inert: applyState() lays the
+    //     overlay over the manifest at every load, so a future hook adopting the id would boot
+    //     silently in the stale recorded state - a pre-disabled gate.
+    if (liveSpec || manifestRow) {
+      const overlay = this.readState();
+      overlay[id] = desired;
+      this.writeState(overlay);
+    }
+
+    // True if we toggled a known manifest hook; also true for a detected (manifest-less) hook
+    // so the manager can persist its state. An id matching NEITHER is a miss: report false,
+    // write nothing.
+    return !!liveSpec || manifestRow;
   }
 
   /**
@@ -357,7 +371,9 @@ class HookLoader {
    *   - id: non-empty string; must not already exist in the manifest (rejected if it does)
    *   - event: one of the lifecycle EVENTS (EVENT_NAMES)
    *   - command: non-empty string
-   *   - matcher/script/timeout/description: optional, stored verbatim
+   *   - matcher: optional string; must COMPILE under matcher.js's anchoring (rejected
+   *     otherwise - an uncompilable matcher can never be evaluated)
+   *   - script/timeout/description: optional, stored verbatim
    *   - enabled: defaults to (spec.enabled === true)
    * @returns {object} the stored spec (exactly as written to the manifest)
    * @throws TypeError/Error if validation fails or the id already exists
@@ -376,6 +392,23 @@ class HookLoader {
     }
     if (typeof spec.command !== 'string' || spec.command.length === 0) {
       throw new Error('addEntry: spec.command must be a non-empty string');
+    }
+    // A matcher that does not compile can never be evaluated - storing it would author a
+    // hook whose gate the engine must refuse on every tool-bearing call (hook-engine's
+    // unreadable-gate rule). Refuse HERE so the UI's POST /api/hooks/add and tf_hook_add
+    // both answer with the problem instead of 200/ok. (0.7.0; matcher-compile.test.js.)
+    if (spec.matcher !== undefined && spec.matcher !== null && typeof spec.matcher !== 'string') {
+      throw new Error('addEntry: spec.matcher must be a string when provided');
+    }
+    {
+      const compileProblem = matcherError(spec.matcher);
+      if (compileProblem) {
+        throw new Error(
+          `addEntry: spec.matcher ${JSON.stringify(spec.matcher)} does not compile as a ` +
+          `regular expression (${compileProblem}) - matchers are anchored regexes ` +
+          '(e.g. "Bash|Write"), not globs'
+        );
+      }
     }
 
     // The stored spec: every supplied field VERBATIM, with enabled normalized to a

@@ -2,7 +2,7 @@
 'use strict';
 
 /**
- * server.js - the HAND-ROLLED minimal MCP server over stdio (see the architecture notes §7).
+ * server.js - the HAND-ROLLED minimal MCP server over stdio.
  *
  * Runnable as:  node src/mcp/server.js
  *
@@ -13,7 +13,7 @@
  * JSON-RPC methods handled (MCP, the subset our test client speaks):
  *   - "initialize"  -> { protocolVersion, serverInfo, capabilities: { tools: {} } }
  *   - "tools/list"  -> { tools: [ ...protocol.toolDefinitions() ] }   (the 4 meta-tools;
- *                       a clear seam is left for curated-direct tools - Phase 2)
+ *                       a clear seam is left for curated-direct tools)
  *   - "tools/call"  { name, arguments } -> protocol.dispatch(name, arguments), wrapped in the
  *                       MCP tools/call result shape: { content:[{ type:"text", text: JSON }],
  *                       isError? }. On a protocol error result we set isError:true.
@@ -26,7 +26,7 @@
  * framing on the way out keeps the transport trivial and matches "newline-delimited JSON is fine
  * for our test client".
  *
- * Wiring (see the architecture notes §8 - Phase 1): a real Registry (loaded from
+ * Wiring: a real Registry (loaded from
  * src/tools/tools.register.json - the canonical tool register), a real HookEngine over the hooks
  * manifest, the real gatedRun, and the real howto. A small ADAPTER bridges the register's
  * resolveExecution({type,run}) shape to the { execute, toolName, args } shape protocol.runTool
@@ -39,10 +39,11 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
+const reaper = require('../core/child-reaper');
 
 const { makeProtocol } = require('./protocol');
 const { gatedRun } = require('./gated-run');
-const { Aggregator } = require('./aggregator');
+const { Aggregator, withForwardedToolMeta } = require('./aggregator');
 const { loadExposeStore } = require('./expose-store');
 const { loadRegistry } = require('../tools/registry');
 const { loadToolState, loadToolStateResult, isToolEnabled, isToolHot, getPassthrough } = require('../tools/tool-state');
@@ -73,19 +74,58 @@ const REGISTER_PATH = path.join(ROOT, 'tools', 'tools.register.json');
 const TOOL_STATE_PATH = path.join(ROOT, 'tools', 'tools.state.json');
 const MANIFEST_PATH = path.join(ROOT, 'hooks', 'hooks.manifest.json');
 const SCRIPTS_ROOT = path.join(ROOT, 'tools', 'scripts');
-// Phase 2: the persisted curated-expose + upstream-MCP config. Default is EMPTY, so the
+// The persisted curated-expose + upstream-MCP config. Default is EMPTY, so the
 // aggregator connects to nothing and the curated-direct surface is empty - the server is
-// behaviourally identical to Phase 1 until an upstream + expose entry is added.
+// behaviourally identical to the bare gateway until an upstream + expose entry is added.
 const EXPOSE_PATH = path.join(ROOT, 'mcp', 'expose.json');
 
+// Every legacy revision this server speaks, NEWEST FIRST (0.7.0). initialize echoes the
+// requested member (2.1); an unsupported string gets LEGACY_VERSIONS[0] (lifecycle SHOULD:
+// "the latest version supported by the server").
+const LEGACY_VERSIONS = Object.freeze(['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05']);
+// Hard cap on JSON-RPC batch members (0.7.0) - see handleBatch. Well past any real client's
+// batching, far short of buying unbounded gated execution with one message.
+const MAX_BATCH_MEMBERS = 64;
+// LOCAL shell-tool bounds (0.7.0), matching tools/registry.js's script executor: 120 s (the
+// upstream PAYLOAD window) and a 4 MiB output ceiling. Without a clock a hanging shell tool
+// wedged the serialised stdio chain and starved every later request, `ping` included.
+// Test seam: the suite proves the timeout/cap BEHAVIOUR by shrinking the windows via env;
+// production never sets them (same seam as tools/registry.js).
+const SHELL_TIMEOUT_MS = Number(process.env.TOOLFUNNEL_SHELL_TIMEOUT_MS) > 0
+  ? Number(process.env.TOOLFUNNEL_SHELL_TIMEOUT_MS) : 120000;
+const MAX_SHELL_OUTPUT_BYTES = Number(process.env.TOOLFUNNEL_SHELL_OUTPUT_CAP) > 0
+  ? Number(process.env.TOOLFUNNEL_SHELL_OUTPUT_CAP) : 4 * 1024 * 1024;
+
+/**
+ * Kill a spawned shell AND its descendants, per platform: taskkill /T on Windows, the process
+ * group on POSIX (the spawn sets `detached` so the shell leads one). Killing the shell alone
+ * orphans grandchildren that keep the stdio pipes open. Best-effort; never throws.
+ * @param {import('node:child_process').ChildProcess} child
+ */
+function killShellTree(child) {
+  if (!child) return;
+  try {
+    if (child.pid != null && process.platform === 'win32') {
+      require('node:child_process').execFile('taskkill', ['/pid', String(child.pid), '/T', '/F'], () => {});
+    } else if (child.pid != null) {
+      try { process.kill(-child.pid, 'SIGKILL'); } catch (_eg) { child.kill('SIGKILL'); }
+    } else {
+      child.kill('SIGKILL');
+    }
+  } catch (_e) {
+    try { child.kill(); } catch (_e2) { /* nothing more we can do */ }
+  }
+}
+// The FROZEN answer for an absent or non-string protocolVersion - byte-for-byte the 0.6.0
+// behaviour (pinned frozen behaviour: absent-pass stays the oldest, not the newest).
 const PROTOCOL_VERSION = '2024-11-05';
 // The 2026-07-28 ("modern") era, as a pure module - era detection, validation, result decoration,
 // server/discover and subscriptions/listen shapes. This server is DUAL-ERA: a request carrying
 // modern per-request _meta is served under 2026-07-28 semantics; initialize selects THIS legacy
-// path, byte-for-byte the 0.5.0 behaviour. modern.js needs the legacy version string only for
+// path, byte-for-byte the 0.5.0 behaviour. modern.js needs the legacy version list only for
 // server/discover's supportedVersions - seeded once here so it is never duplicated.
 const modern = require('./modern');
-modern.setLegacyVersion(PROTOCOL_VERSION);
+modern.setLegacyVersion(LEGACY_VERSIONS);
 // Identity comes from the OPTIONAL toolfunnel.json at the root (absent -> name "toolfunnel",
 // version from package.json - serverInfo can never drift from the released version). The config
 // seam is what lets a wrapped MCP introduce itself as ITSELF in the initialize handshake and
@@ -161,26 +201,79 @@ function makeRegistryAdapter(registry, opts) {
           cwd: ROOT,
           env: Object.assign({}, process.env, { TOOLFUNNEL_TOOL_ARGS: JSON.stringify(args == null ? null : args) }),
           windowsHide: true,
+          // POSIX process group so the timeout can kill the shell's descendants too; Windows
+          // uses taskkill /T inside killTree.
+          detached: process.platform !== 'win32',
         });
       } catch (err) {
         reject(new Error(`shell spawn failed: ${err.message}`));
         return;
       }
+      reaper.track(child); // last-resort sweep if the gateway dies without its kill path
       let stdout = '';
       let stderr = '';
       let settled = false;
-      if (child.stdout) child.stdout.on('data', (d) => { stdout += d.toString('utf8'); });
-      if (child.stderr) child.stderr.on('data', (d) => { stderr += d.toString('utf8'); });
+      // TIMED + BOUNDED (0.7.0) - the twin of the script executor's fix in tools/registry.js. A
+      // shell tool with no clock wedged the serialised stdio chain for its whole lifetime, and
+      // unbounded accumulation made a chatty tool a memory risk in the gateway process.
+      const finish = (result) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        // Release the pipes and unref the handle - the ChildProcess itself keeps the event loop
+        // referenced until the child exits (same fix as core/hook-runner.js and tools/registry.js).
+        for (const s of [child.stdout, child.stderr]) {
+          try { if (s && typeof s.destroy === 'function') s.destroy(); } catch (_e) { /* ignore */ }
+        }
+        try { if (typeof child.unref === 'function') child.unref(); } catch (_e) { /* ignore */ }
+        reaper.untrack(child);
+        resolve(result);
+      };
+      const timer = setTimeout(() => {
+        killShellTree(child);
+        finish({
+          ok: false,
+          code: -1,
+          stdout,
+          stderr: (stderr ? stderr + '\n' : '') + `shell tool timed out after ${SHELL_TIMEOUT_MS}ms and was terminated`,
+          timedOut: true,
+        });
+      }, SHELL_TIMEOUT_MS);
+      if (typeof timer.unref === 'function') timer.unref();
+      // setEncoding so multi-byte UTF-8 split across chunks decodes correctly; count REAL bytes
+      // (String.length is UTF-16 code units - non-ASCII ran ~3x past a "byte" cap).
+      let shOutBytes = 0;
+      let shErrBytes = 0;
+      if (child.stdout) {
+        child.stdout.setEncoding('utf8');
+        child.stdout.on('data', (d) => {
+          if (shOutBytes >= MAX_SHELL_OUTPUT_BYTES) return;
+          stdout += d;
+          shOutBytes += Buffer.byteLength(d, 'utf8');
+          if (shOutBytes >= MAX_SHELL_OUTPUT_BYTES) {
+            killShellTree(child);
+            finish({ ok: false, code: -1, stdout, stderr: stderr + '\nshell tool output exceeded the cap and was terminated', outputCapped: true });
+          }
+        });
+      }
+      if (child.stderr) {
+        child.stderr.setEncoding('utf8');
+        child.stderr.on('data', (d) => {
+          if (shErrBytes >= MAX_SHELL_OUTPUT_BYTES) return;
+          stderr += d;
+          shErrBytes += Buffer.byteLength(d, 'utf8');
+        });
+      }
       child.on('error', (err) => {
         if (settled) return;
         settled = true;
+        clearTimeout(timer);
+        reaper.untrack(child);
         reject(new Error(`shell spawn failed: ${err.message}`));
       });
       child.on('close', (code) => {
-        if (settled) return;
-        settled = true;
         const c = typeof code === 'number' ? code : -1;
-        resolve({ ok: c === 0, code: c, stdout, stderr });
+        finish({ ok: c === 0, code: c, stdout, stderr });
       });
     });
   }
@@ -235,7 +328,13 @@ function makeRegistryAdapter(registry, opts) {
     // Build the { execute, toolName, args, mode } resolution protocol.runTool hands to gatedRun.
     resolveExecution(nameOrId, args) {
       const id = resolveId(nameOrId);
+      // ENABLED means "lean-visible AND runnable" (tool-state.js) - the off-switch must switch the
+      // tool OFF, not merely hide it from the lean list (0.7.0). Read FRESH like list()
+      // so a UI toggle is live. Disabled resolves to null -> the existing clean "not runnable"
+      // error; indistinguishable from absent, which is the point.
+      const state = toolStatePath ? loadToolState(toolStatePath) : null;
       if (id) {
+        if (state && !isToolEnabled(state, id)) return null;
         // LOCAL tool - byte-for-byte the pre-slice-2 path. A local name that resolves but isn't
         // runnable returns null and does NOT fall through to upstream (local-register WINS: a local
         // name never silently resolves to a remote upstream).
@@ -272,6 +371,8 @@ function makeRegistryAdapter(registry, opts) {
       // No local tool by this name - try the LEAN upstream forward. resolveLeanExecution returns a
       // resolution whose execute thunk lazy-(re)connects + unwraps; the gate matches fwd.toolName (the
       // surfaced name). mode is 'gateway' so it goes THROUGH gatedRun - never the reference handoff.
+      // Same enabled rule as the local branch, keyed by the SURFACED name (what the overlay stores).
+      if (state && !isToolEnabled(state, nameOrId)) return null;
       const agg = liveAggregator();
       if (!agg || typeof agg.resolveLeanExecution !== 'function') return null;
       let fwd = null;
@@ -286,10 +387,10 @@ function makeRegistryAdapter(registry, opts) {
 // All wiring failures are caught so the server still starts and reports a clean JSON-RPC error
 // instead of dying - a dead server hangs the client (and the test).
 //
-// Returns an OBJECT, not just the protocol, because the Phase-2 curated-direct call path needs
+// Returns an OBJECT, not just the protocol, because the curated-direct call path needs
 // more than the protocol:
 //   { protocol, aggregator, engine, ctx }
-//   - protocol   : the 4 meta-tools (unchanged Phase-1 logic) - callers needing just the
+//   - protocol   : the 4 meta-tools (the meta-tool logic, unchanged) - callers needing just the
 //                  protocol read it off `.protocol` (backward compat).
 //   - aggregator : the upstream-MCP connection + curated-expose set (built from expose.json).
 //                  Default expose.json is EMPTY so it connects to nothing.
@@ -342,12 +443,12 @@ function buildProtocol() {
   });
   build.engine = new HookEngine(loader, { cwd: ROOT });
 
-  // Phase 2: the aggregator over expose.json (EMPTY by default -> nothing connects).
+  // The aggregator over expose.json (EMPTY by default -> nothing connects).
   // loadExposeStore on a missing/empty file returns an empty store; Aggregator over an empty store
   // advertises no curated-direct tools and connectAll() is an instant no-op.
   const store = loadExposeStore(EXPOSE_PATH);
   build.aggregator = new Aggregator({
-    store, v3Root: ROOT,
+    store, gatewayRoot: ROOT,
     // The WRAPPED upstream is exempt from the path-isolation guard (transparent-wrapper mode,
     // by design). Fresh state read per connect, so a live wrap change counts.
     wrapTargetProvider: () => {
@@ -412,7 +513,7 @@ function makeError(id, code, message, data) {
 // A wrap must be indistinguishable from connecting to the wrapped MCP directly, so we present ITS
 // identity verbatim - name, version, capabilities, instructions - instead of ToolFunnel's own.
 function handleInitialize(params, wrapId) {
-  // protocolVersion + serverInfo + capabilities { tools:{} } (see the architecture notes §7,
+  // protocolVersion + serverInfo + capabilities { tools:{} } (
   // mcp-server.test.js asserts a `tools` capability + a protocolVersion).
   // Activity log (self-gating; no-op unless logging is enabled): the CLIENT-connected half of
   // connect logging - the aggregator logs the upstream half. Wrapped though logger.log never throws.
@@ -443,11 +544,19 @@ function handleInitialize(params, wrapId) {
     return out;
   }
 
+  // NEGOTIATE (non-wrap only - the wrap branch above stays upstream-clamped): echo the
+  // requested version when we speak it; an unsupported STRING gets our latest legacy (lifecycle
+  // SHOULD - includes a requested 2026-07-28: initialize IS the legacy path); an absent or
+  // non-string request keeps the frozen 2024-11-05 answer.
+  const requested = params && typeof params.protocolVersion === 'string' ? params.protocolVersion : null;
+  const negotiated = requested === null
+    ? PROTOCOL_VERSION
+    : (LEGACY_VERSIONS.includes(requested) ? requested : LEGACY_VERSIONS[0]);
   return {
-    protocolVersion: PROTOCOL_VERSION,
+    protocolVersion: negotiated,
     serverInfo: SERVER_INFO,
     capabilities: {
-      // We are a tool host. `tools: {}` declares the capability. Phase 2 wires curated-direct
+      // We are a tool host. `tools: {}` declares the capability. The aggregator wires curated-direct
       // hot-updates, so we now advertise listChanged:true - the server may emit
       // notifications/tools/list_changed when the curated-direct expose set changes (see
       // emitToolsListChanged). The mcp-server.test.js assertion only requires a `tools`
@@ -472,7 +581,7 @@ function handleToolsList(protocol, aggregator, opts) {
   // Precedence is local-register-wins over an upstream of the same name (matches the lean rule), and
   // a META-tool can NEVER be shadowed by a local/upstream tool of the same name (safety). With the
   // default EMPTY state + EMPTY expose.json this is exactly the 4 meta-tools - byte-identical to the
-  // pre-matrix surface. `opts` is OPTIONAL: a Phase-1 / bare-protocol caller (no registry/state) gets
+  // pre-matrix surface. `opts` is OPTIONAL: a bare-protocol caller (no registry/state) gets
   // meta-tools (all hot) + curated-direct, the prior behaviour. NEVER throws.
   const o = opts || {};
   const registry = o.registry || null;
@@ -520,12 +629,16 @@ function handleToolsList(protocol, aggregator, opts) {
     }
   }
 
-  // 3. CURATED-DIRECT (expose[]) - unchanged. exposedToolDefinitions never throws, but guard anyway.
-  //    Skip any def colliding with a RESERVED meta name (never advertise a phantom uncallable tool).
+  // 3. CURATED-DIRECT (expose[]) - AND enabled: a state-disabled tool refuses to run,
+  //    so advertising it would put a phantom uncallable tool on the surface. exposedToolDefinitions
+  //    never throws, but guard anyway. Skip any def colliding with a RESERVED meta name, OR with a
+  //    name a LOCAL register tool owns (id or display name) - the same guard block 4 applies below:
+  //    the advertised name must resolve to what actually runs, and a local-register collision would
+  //    otherwise advertise the upstream's schema while the call resolves to the local tool.
   if (aggregator && typeof aggregator.exposedToolDefinitions === 'function') {
     try {
       const defs = aggregator.exposedToolDefinitions();
-      if (Array.isArray(defs)) for (const def of defs) if (def && !byName.has(def.name) && !metaNames.has(def.name)) byName.set(def.name, def);
+      if (Array.isArray(defs)) for (const def of defs) if (def && !byName.has(def.name) && !metaNames.has(def.name) && !localNameTaken(registry, def.name) && isToolEnabled(state, def.name)) byName.set(def.name, def);
     } catch (err) {
       logErr('exposedToolDefinitions failed:', (err && err.message) || String(err));
     }
@@ -537,10 +650,26 @@ function handleToolsList(protocol, aggregator, opts) {
   //    (a local display-name collision would otherwise advertise the upstream but run the local tool).
   if (aggregator && typeof aggregator.leanToolDefinitions === 'function') {
     try {
-      for (const d of aggregator.leanToolDefinitions()) {
+      // 6.2: iterate hot-upstream tools in STORE order (expose.json's upstream sequence), not
+      // connection-map order - a death/recovery re-insertion re-orders the map and would
+      // silently shuffle the advertised surface between restarts. Scoped HERE only: the wrap's
+      // passthroughDefinitions walks leanToolDefinitions itself and must stay untouched.
+      const leanDefs = aggregator.leanToolDefinitions();
+      const order = typeof aggregator.upstreamOrder === 'function' ? aggregator.upstreamOrder() : [];
+      const rank = new Map(order.map((id, i) => [id, i]));
+      const stable = leanDefs.map((d, i) => ({ d, i }));
+      stable.sort((a, b) => {
+        const ra = rank.has(a.d && a.d.upstream) ? rank.get(a.d.upstream) : order.length;
+        const rb = rank.has(b.d && b.d.upstream) ? rank.get(b.d.upstream) : order.length;
+        return ra !== rb ? ra - rb : a.i - b.i; // store order first; original order within an upstream
+      });
+      for (const { d } of stable) {
         if (!d || byName.has(d.name) || metaNames.has(d.name) || localNameTaken(registry, d.name)) continue;
         if (isToolHot(state, d.name, false) && isToolEnabled(state, d.name)) {
-          byName.set(d.name, { name: d.name, description: d.description || '', inputSchema: d.inputSchema || { type: 'object' } });
+          // 3.7: the same selective-add as the aggregator's builders - the hot projection must
+          // never re-strip what the lean def now carries (nor leak its routing ids via spread).
+          byName.set(d.name, withForwardedToolMeta(
+            { name: d.name, description: d.description || '', inputSchema: d.inputSchema || { type: 'object' } }, d));
         }
       }
     } catch (err) {
@@ -594,7 +723,7 @@ function passthroughDefinitions(aggregator, state, upstreamId) {
     // The upstream's RAW discovered defs - a wrapped surface must advertise the tool exactly as
     // the upstream does (annotations, title, outputSchema, future fields). The old projection to
     // {name, description, inputSchema} made all 13 real server-everything tools differ from a
-    // direct connection (wrap-lab, 2026-07-17). leanToolDefinitions still drives the walk: it
+    // direct connection (found wire-testing the wrap, 2026-07-17). leanToolDefinitions still drives the walk: it
     // carries the SURFACED name (the stable enabled:false key) and the collision guard.
     const rawByName = new Map();
     if (typeof aggregator.toolsByUpstream === 'function') {
@@ -719,7 +848,7 @@ async function handleToolsCall(protocol, aggregator, deps, params) {
     };
   }
 
-  // ── Routing (see the architecture notes §2; the curated-direct invariant in §9; the MATRIX) ────
+  // ── Routing (the curated-direct invariant + the MATRIX) ─────────────────────────────────────
   //   1. A meta-tool name -> protocol.dispatch (unchanged; a meta-tool can NEVER be shadowed).
   //   2. ELSE a LOCAL tool promoted HOT, called directly -> run it exactly like toolfunnel_run_tool
   //      {name,args}: ONE path, reusing the PreToolUse gate + reference-mode + register resolution.
@@ -746,7 +875,7 @@ async function handleToolsCall(protocol, aggregator, deps, params) {
   //    wrap must run the upstream regardless of a local shadow; runLeanForward resolves straight off
   //    the aggregator, so the gate still fires on the surfaced name and the upstream always runs.
   const passthroughId = getPassthrough(state);
-  // Bridge B RESUME: an MRTR retry carries requestState (+ inputResponses) - answer the
+  // Elicitation-bridge RESUME: an MRTR retry carries requestState (+ inputResponses) - answer the
   // upstream's held question and continue the SUSPENDED call. It never re-enters the gate:
   // the gate fired when the original call started, and no new upstream call is issued.
   // Checked BEFORE the passthrough guard: a retry after the wrap was CLEARED mid-suspension
@@ -755,7 +884,8 @@ async function handleToolsCall(protocol, aggregator, deps, params) {
   // leaking an "Unknown meta-tool" funnel tell mid-conversation. requestState
   // is protocol-level MRTR vocabulary, never ordinary tool args, so this intercept is safe.
   if (p.requestState !== undefined || p.inputResponses !== undefined) {
-    return await resumeElicit(p, d0.modernCaller === true, passthroughId, d0.cancelKey || null);
+    return await resumeElicit(p, d0.modernCaller === true, passthroughId, d0.cancelKey || null,
+      d0.clientCapabilities || null);
   }
   if (passthroughId) {
     // The client calls the ORIGINAL tool name (as advertised); resolve it to the SURFACED name the
@@ -767,7 +897,8 @@ async function handleToolsCall(protocol, aggregator, deps, params) {
       // for every wrapped call.
       const meta = stripProtocolMeta(p._meta);
       return await runLeanForward(aggregator, { engine: d0.engine, ctx: d0.ctx }, surfaced, args,
-        { calledName: name, meta, cancelKey: d0.cancelKey || null, modernCaller: d0.modernCaller === true });
+        { calledName: name, meta, cancelKey: d0.cancelKey || null, modernCaller: d0.modernCaller === true,
+          clientCapabilities: d0.clientCapabilities || null });
     }
     return { content: [{ type: 'text', text: `Unknown tool "${name}".` }], isError: true };
   }
@@ -790,6 +921,12 @@ async function handleToolsCall(protocol, aggregator, deps, params) {
   }
 
   if (aggregator && typeof aggregator.isExposed === 'function' && aggregator.isExposed(name)) {
+    // enabled:false must actually switch the tool OFF (tool-state contract: "AND runnable" -
+    // 0.7.0): the same clean unknown-tool error as every other not-on-the-surface call,
+    // so a disabled tool is indistinguishable from an absent one.
+    if (!isToolEnabled(state, name)) {
+      return { content: [{ type: 'text', text: `Unknown tool "${name}".` }], isError: true };
+    }
     // The caller's non-protocol _meta rides the forward here too - the progressToken is the
     // upstream-side keep-alive (beats are NOT fanned out to funnel clients; wrap mode relays them).
     return await runCuratedDirect(aggregator, deps, name, args, stripProtocolMeta(p._meta));
@@ -877,7 +1014,10 @@ function stripProtocolMeta(m) {
   if (!m || typeof m !== 'object' || Array.isArray(m)) return undefined;
   const out = {};
   for (const k of Object.keys(m)) {
-    if (!k.startsWith('io.modelcontextprotocol/')) out[k] = m[k];
+    // logLevel is EXEMPT (1.4): the caller's severity choice must survive to the upstream hop -
+    // the McpClient owns the era boundary (modern: forwarded in _meta; legacy: translated to
+    // logging/setLevel and never leaked). Every other protocol key is ours to strip.
+    if (!k.startsWith('io.modelcontextprotocol/') || k === modern.META_KEYS.LOG_LEVEL) out[k] = m[k];
   }
   return Object.keys(out).length ? out : undefined;
 }
@@ -929,7 +1069,7 @@ async function runCuratedDirect(aggregator, deps, name, args, meta) {
       result && result.reason,
       'curated tool call failed'
     );
-    return { content: [{ type: 'text', text: stringifyContent(message) }], isError: true };
+    return { content: [{ type: 'text', text: stringifyContent(withUpstreamData(message, result)) }], isError: true };
   }
 
   // Success: result.output IS the upstream's own tools/call envelope ({ content, isError }).
@@ -944,6 +1084,11 @@ async function runCuratedDirect(aggregator, deps, name, args, meta) {
     // silently stripped modern upstreams' structured results on the curated-direct path while
     // the wrap path returned them verbatim.
     if (out.structuredContent !== undefined) shaped.structuredContent = out.structuredContent;
+    // Result _meta forwards MINUS the protocol-identity keys (3.10, funnel half): an upstream's
+    // io.modelcontextprotocol/* result keys (serverInfo!) would misidentify this gateway; app
+    // keys are the client's business and ride through. Same rule as the request-side strip.
+    const fm = stripProtocolMeta(out._meta);
+    if (fm !== undefined) shaped._meta = fm;
     return shaped;
   }
   // Defensive fallback: a non-standard upstream payload - wrap it as text so the client still gets
@@ -998,14 +1143,16 @@ async function runHotUpstreamDirect(aggregator, deps, name, args, meta) {
       result && result.reason,
       'tool call failed'
     );
-    return { content: [{ type: 'text', text: stringifyContent(message) }], isError: true };
+    return { content: [{ type: 'text', text: stringifyContent(withUpstreamData(message, result)) }], isError: true };
   }
   // Success: result.output IS the upstream's own tools/call envelope - pass it through, with
-  // structuredContent riding along (same shaping as runCuratedDirect).
+  // structuredContent + app-key result _meta riding along (same shaping as runCuratedDirect).
   const out = result.output;
   if (out && typeof out === 'object' && Array.isArray(out.content)) {
     const shaped = { content: out.content, isError: out.isError === true };
     if (out.structuredContent !== undefined) shaped.structuredContent = out.structuredContent;
+    const fm = stripProtocolMeta(out._meta);
+    if (fm !== undefined) shaped._meta = fm;
     return shaped;
   }
   // Defensive fallback: a non-standard upstream payload still returns a well-formed envelope.
@@ -1043,7 +1190,7 @@ async function runLeanForward(aggregator, deps, surfaced, args, opts) {
   // forwardWrapped - a wrapped tools/call is the DOMINANT long-running-cancel case and was the
   // one hole left in the map. Registered post-gate: a cancel landing during the gate phase is a
   // best-effort drop (micro-window, same accepted class as the rpc-issue microtask window).
-  // The rpc id is ALSO captured locally: a Bridge B suspension must extend that request's
+  // The rpc id is ALSO captured locally: an elicitation-bridge suspension must extend that request's
   // timeout (a human answers at human speed; the dead-upstream clock must not kill the hold).
   let upstreamRpcId = null;
   const track = {
@@ -1061,7 +1208,7 @@ async function runLeanForward(aggregator, deps, surfaced, args, opts) {
   if (!resolution || typeof resolution.execute !== 'function') {
     return { content: [{ type: 'text', text: `tool "${called}" failed` }], isError: true };
   }
-  // Bridge B: the upstream may send `elicitation/create` mid-call and hold the call open. Race
+  // Elicitation bridge: the upstream may send `elicitation/create` mid-call and hold the call open. Race
   // the real forward against an elicit INSIDE the gated execute, so the gate + PostToolUse fire
   // exactly once around whichever wins. An elicit win resolves gatedRun with a sentinel; the real
   // upstream promise keeps running and is either suspended (modern caller -> MRTR) or completed
@@ -1097,17 +1244,24 @@ async function runLeanForward(aggregator, deps, surfaced, args, opts) {
   }
   if (result && result.ok === true && result.output && result.output.__tfElicit && elicitCaught) {
     const elicit = elicitCaught;
-    if (o.modernCaller === true) {
+    // 5.1/5.2: suspension requires a modern caller that DECLARED the matching elicitation
+    // capability on THIS request. Everyone else - legacy, capability-less modern, form-only
+    // modern facing a url-mode question - takes the existing auto-decline branch (no new
+    // error channel; handleToolsCall is shared with the frozen legacy path).
+    if (o.modernCaller === true && callerAcceptsElicit(o.clientCapabilities, elicit.params)) {
       return suspendForElicit(elicit, realPromise, resolution.upstream, called, upstreamRpcId);
     }
-    // Legacy caller: it cannot receive a backwards request, and the relay is future work -
-    // DECLINE so the upstream's held call completes, then serve its actual outcome.
-    logErr(`bridge-b: legacy client cannot receive elicitation - auto-declined for "${called}"`);
+    // The caller cannot receive this backwards request - DECLINE so the upstream's held call
+    // completes, then serve its actual outcome.
+    logErr(`bridge-b: caller cannot receive this elicitation (legacy, or capability not declared) - auto-declined for "${called}"`);
     try { elicit.client.respondToServer(elicit.elicitId, { action: 'decline' }); } catch (_e) { /* ignore */ }
     try {
       const out = await realPromise;
       result = { ok: true, blocked: false, output: out };
-    } catch (_err) {
+    } catch (err) {
+      // The declined-elicit completion can ALSO end in a raw upstream JSON-RPC error - relay it
+      // with the same fidelity as the direct path.
+      if (err && err.rpcError) return rpcErrorSentinel(err.rpcError);
       return { content: [{ type: 'text', text: `tool "${called}" failed` }], isError: true };
     }
   }
@@ -1116,6 +1270,12 @@ async function runLeanForward(aggregator, deps, surfaced, args, opts) {
   if (result && result.ok === true && result.output && typeof result.output === 'object' &&
       Array.isArray(result.output.content)) {
     return result.output;
+  }
+  // A raw JSON-RPC error from the wrapped upstream relays VERBATIM: McpClient preserved
+  // it as error.rpcError; ride the sentinel to the dispatch seam, where the caller's era shapes
+  // the wire error. (A gate block never carries error - the guard is belt-and-braces.)
+  if (result && result.ok !== true && result.blocked !== true && result.error && result.error.rpcError) {
+    return rpcErrorSentinel(result.error.rpcError);
   }
   // A gate BLOCK carries its reason ONLY when it is deliberate operator policy. An INTERNAL
   // fail-closed (engine wiring/crash - gatedRun marks it internal:true) holds gateway strings:
@@ -1126,6 +1286,50 @@ async function runLeanForward(aggregator, deps, surfaced, args, opts) {
   }
   if (result && result.ok === true) return wrapProtocolResult(result); // malformed envelope - legacy shaping
   return { content: [{ type: 'text', text: `tool "${called}" failed` }], isError: true };
+}
+
+/**
+ * The wrap error-relay sentinel (0.7.0). A raw JSON-RPC error from the WRAPPED upstream
+ * must reach the caller as a JSON-RPC ERROR (README: identity, tools, results, ERRORS,
+ * notifications - byte-for-byte), never a flattened `tool "X" failed` result. The tools/call
+ * handlers return result ENVELOPES, so the verbatim error rides this sentinel to the dispatch
+ * seams (legacy + modern), where relayedRpcError mints the era-correct wire error.
+ */
+function rpcErrorSentinel(rpcError) {
+  const e = rpcError || {};
+  return { __tfRpcError: { code: e.code, message: e.message, data: e.data } };
+}
+
+/**
+ * Mint the wire JSON-RPC error for a relayed upstream error, era-shaped:
+ *  - LEGACY caller: VERBATIM - code + message + data byte-for-byte (the wrap promise).
+ *  - MODERN caller: 2026-07-28's error-code allocation policy (base protocol, Error Handling)
+ *    forbids emitting implementation-band codes it does not define, and names -32602 as -32002's
+ *    replacement. Band codes are re-minted (-32002 -> -32602, all others -> internal) with the
+ *    original preserved VERBATIM under data.upstreamCode / data.upstreamData. Standard JSON-RPC
+ *    codes and application-space codes relay untouched in both eras.
+ */
+function relayedRpcError(id, sentinel, modernCaller) {
+  const e = (sentinel && sentinel.__tfRpcError) || {};
+  if (!modernCaller) return makeError(id, e.code, e.message, e.data);
+  const preserved = e.data !== undefined
+    ? { upstreamCode: e.code, upstreamData: e.data }
+    : { upstreamCode: e.code };
+  if (e.code === -32002) return makeError(id, -32602, e.message, preserved);
+  if (typeof e.code === 'number' && e.code >= -32099 && e.code <= -32000) {
+    return makeError(id, ERR.INTERNAL, e.message, preserved);
+  }
+  return makeError(id, e.code, e.message, e.data);
+}
+
+/** Append relayed upstream error DATA to a funnel error message (the funnel half: the
+ *  message + code already survive via McpClient's text; the structured data was the lost third).
+ *  Wire-parsed data has no cycles, but stay defensive - shaping must never throw. */
+function withUpstreamData(message, result) {
+  const e = result && result.error && result.error.rpcError;
+  if (!e || e.data === undefined) return message;
+  try { return `${message} | upstream error data: ${JSON.stringify(e.data)}`; }
+  catch (_e) { return message; }
 }
 
 /**
@@ -1146,6 +1350,8 @@ function wrapProtocolResult(result) {
       result && result.reason,
       'tool call failed'
     );
+    // Same data preservation as the curated/hot paths - covers the lean run_tool route.
+    payload = withUpstreamData(payload, result);
   } else if (result && result.output !== undefined) {
     payload = result.output;
   } else if (result && result.mode === 'reference') {
@@ -1222,9 +1428,9 @@ function renderUpstreamInstructions(def) {
 }
 
 /**
- * Normalise the first argument of handleMessage / createStdioLoop into the canonical Phase-2
+ * Normalise the first argument of handleMessage / createStdioLoop into the canonical full-build
  * build shape { protocol, aggregator, engine, ctx }. Backward compat: a caller may still pass a
- * bare protocol (Phase-1 callers / older tests) - we wrap it with a null aggregator + no deps so
+ * bare protocol (older tests) - we wrap it with a null aggregator + no deps so
  * the meta-tool path is identical and the curated-direct path is simply never taken (isExposed
  * is unreachable without an aggregator). A protocol is detected by its dispatch() method.
  * @param {object} arg  either { protocol, aggregator, engine, ctx } or a bare protocol
@@ -1233,7 +1439,7 @@ function renderUpstreamInstructions(def) {
 function normaliseBuild(arg) {
   const a = arg || {};
   if (a && typeof a.dispatch === 'function') {
-    // It's a bare protocol - Phase-1 shape (no register/state -> no hot promotion; meta + curated only).
+    // It's a bare protocol - the meta-only shape (no register/state -> no hot promotion; meta + curated only).
     return { protocol: a, aggregator: null, engine: null, ctx: null, registry: null, toolStatePath: null };
   }
   return {
@@ -1252,11 +1458,48 @@ function normaliseBuild(arg) {
 // Dispatch ONE parsed JSON-RPC message. Returns a response object to send, or null for
 // notifications / messages that take no reply. NEVER throws.
 //
-// `build` is the Phase-2 build object { protocol, aggregator, engine, ctx } (a bare protocol is
+// `build` is the full build object { protocol, aggregator, engine, ctx } (a bare protocol is
 // still accepted for backward compat - see normaliseBuild). The aggregator + engine + ctx are
 // threaded into tools/list and tools/call so the curated-direct surface is advertised and runs
 // THROUGH the PreToolUse gate.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
+/**
+ * handleBatch - process a JSON-RPC batch (0.7.0). Batching exists ONLY in the
+ * 2025-03-26 revision (added there, removed again in 2025-06-18), so the CALLER owns the gate:
+ * stdio admits a batch iff the session negotiated 2025-03-26 (build.negotiatedLegacyVersion);
+ * HTTP admits on header discipline (absent-or-2025-03-26 MCP-Protocol-Version - the header
+ * itself postdates the batching revision). Members run SEQUENTIALLY in arrival order through
+ * handleMessage - the same ordering guarantee single messages get; a malformed member earns its
+ * own -32600 entry (handleMessage already answers that shape per member).
+ * @returns {Promise<object[]|object|null>} the response array; null when every member was a
+ *   notification (transport answers nothing / 202); or the single JSON-RPC 2.0 -32600 object
+ *   for an EMPTY batch.
+ */
+async function handleBatch(build, arr, connKey) {
+  if (!Array.isArray(arr) || arr.length === 0) {
+    return makeError(null, ERR.INVALID_REQUEST, 'Invalid Request: empty batch');
+  }
+  // Enforced HERE so BOTH transports are covered by one rule (0.7.0):
+  //  - a MODERN-shaped member is illegal in a batch at all (batching is 2025-03-26 only, which
+  //    predates the modern era), and admitting one skipped the modern header contract entirely;
+  //  - members are executed SEQUENTIALLY with a gated tool call possible in every slot, so an
+  //    uncapped array is unbounded work bought with one message.
+  if (arr.length > MAX_BATCH_MEMBERS) {
+    return makeError(null, ERR.INVALID_REQUEST,
+      `Invalid Request: batch too large (${arr.length} members, max ${MAX_BATCH_MEMBERS})`);
+  }
+  if (arr.some((m) => modern.isModernRequest(m))) {
+    return makeError(null, ERR.INVALID_REQUEST,
+      'Invalid Request: modern-era messages cannot be batched (JSON-RPC batching is 2025-03-26 only)');
+  }
+  const out = [];
+  for (const member of arr) {
+    const r = await handleMessage(build, member, connKey);
+    if (r != null) out.push(r);
+  }
+  return out.length ? out : null;
+}
+
 async function handleMessage(build, msg, connKey) {
   // connKey: OPTIONAL stable per-connection identity from the transport. stdio (one client per
   // process) passes a constant; HTTP passes nothing - each POST is a fresh connection, so no
@@ -1286,7 +1529,14 @@ async function handleMessage(build, msg, connKey) {
     const text = method === 'initialize'
       ? 'modern-only gateway (serveLegacy:false): the legacy initialize handshake is disabled - connect with the 2026-07-28 protocol (per-request _meta)'
       : 'modern-only gateway (serveLegacy:false): legacy-era requests are refused - send the 2026-07-28 per-request _meta';
-    return makeError(id, -32020, text);
+    // -32601, not -32020: the allocation policy pins -32020 to HeaderMismatch and no
+    // header is involved here. A TRUE modern-only server has no legacy methods, so method-not-
+    // found is the recognised shape a probing legacy client already understands (the spec's own
+    // compatibility matrix row). The message keeps naming the policy + version (versioning
+    // SHOULD); data.policy is the machine marker the HTTP transport's NARROW 404 remap keys on -
+    // this refusal only, never ordinary -32601s. The mint stays transport-agnostic (stdio
+    // reaches this same site and simply has no status to remap).
+    return makeError(id, ERR.METHOD_NOT_FOUND, text, { policy: 'modern-only' });
   }
 
   // A message with no method but with an id is a response/garbage to us - acknowledge nothing.
@@ -1402,7 +1652,7 @@ async function handleMessage(build, msg, connKey) {
               if (!presented || presented.name !== wrapMirrorClientInfo.name ||
                   presented.version !== wrapMirrorClientInfo.version) {
                 // reconnect() settles any in-flight connect before discarding - never join a
-                // connect this path just poisoned.
+                // connect this path just corrupted.
                 await aggregator.reconnect(ptId);
               }
               // The (re)connect refreshed the upstream identity - recompute wrapId from it.
@@ -1412,7 +1662,13 @@ async function handleMessage(build, msg, connKey) {
             } catch (_e) { /* mirror is best-effort - wrapId (cached identity) still answers */ }
           }
         }
-        return makeResult(id, handleInitialize(msg.params, wrapId));
+        const initResult = handleInitialize(msg.params, wrapId);
+        // STORE what we answered (for the stdio batching gate: batching is legal
+        // only on a negotiated 2025-03-26 session). stdio = one client per process, so one slot
+        // is exact; HTTP is sessionless and must use header discipline instead - it never reads
+        // this. Stored under wrap too: the clamped answer is still what THIS session speaks.
+        if (build && typeof build === 'object') build.negotiatedLegacyVersion = initResult.protocolVersion;
+        return makeResult(id, initResult);
       }
 
       case 'initialized':
@@ -1421,6 +1677,17 @@ async function handleMessage(build, msg, connKey) {
         return null;
 
       case 'tools/list':
+        // 6.1, era-scoped: an unrecognised cursor answers -32602 on every cursor-AWARE revision
+        // (2025-03-26+; our list is single-page so ANY present cursor is unknown). ONLY the
+        // exempt 2024-11-05 keeps the frozen ignore. Scoped to STDIO sessions - the negotiated
+        // version is a true session fact there; HTTP is sessionless and keeps the frozen ignore
+        // for legacy bodies (documented approximation; modern bodies enforce on their own path).
+        if (connKey === 'stdio' && msg.params && msg.params.cursor !== undefined &&
+            build && typeof build.negotiatedLegacyVersion === 'string' &&
+            build.negotiatedLegacyVersion !== PROTOCOL_VERSION) {
+          return makeError(id, ERR.INVALID_PARAMS,
+            `Invalid params: unknown cursor "${String(msg.params.cursor)}" (this tools/list is single-page)`);
+        }
         return makeResult(id, handleToolsList(protocol, aggregator, { registry, toolStatePath }));
 
       case 'tools/call': {
@@ -1428,11 +1695,16 @@ async function handleMessage(build, msg, connKey) {
         // translation, same (connection, client id) contract as forwardWrapped.
         const cancelKey = (connKey !== undefined && hasId) ? `${connKey}:${id}` : null;
         const result = await handleToolsCall(protocol, aggregator,
-          { engine, ctx, registry, toolStatePath, cancelKey, modernCaller: false }, msg.params);
+          // clientCapabilities EXPLICITLY null (5.1): a legacy caller declares nothing
+          // per-request and can never receive a backwards request.
+          { engine, ctx, registry, toolStatePath, cancelKey, modernCaller: false, clientCapabilities: null }, msg.params);
         // Observability (in-memory counters; never throws). Count every tools/call by name + whether
         // it errored (an isError envelope = a tool failure OR a PreToolUse denial). Single chokepoint
         // -> covers stdio AND the HTTP transport, which both route through handleMessage.
-        metrics.record({ tool: (msg.params && msg.params.name) || 'unknown', ok: !(result && result.isError === true) });
+        metrics.record({ tool: (msg.params && msg.params.name) || 'unknown', ok: !(result && (result.isError === true || result.__tfRpcError)) });
+        // Relayed upstream error: a LEGACY caller gets the wrapped upstream's own
+        // JSON-RPC error VERBATIM - code, message, data.
+        if (result && result.__tfRpcError) return relayedRpcError(id, result, false);
         return makeResult(id, result);
       }
 
@@ -1532,14 +1804,14 @@ function clientInfoFor(upstreamId) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
-// BRIDGE B - legacy elicitation ↔ modern MRTR (the stateful adapter).
+// THE ELICITATION BRIDGE - legacy elicitation ↔ modern MRTR (the stateful adapter).
 //
 // A legacy upstream may send a SERVER-INITIATED `elicitation/create` mid-tool-call and hold the
 // call open until it is answered. A modern client cannot receive backwards requests (stateless
 // era): instead its tools/call RETURNS `resultType:"input_required"` with the question(s) and an
 // opaque `requestState` token, and the client RETRIES the call with `inputResponses` + the token.
 // ToolFunnel holds the suspended legacy call in the middle. Design + verified MRTR schema:
-// toolfunnel_060_design.md §BRIDGE B (spec draft/basic/patterns/mrtr).
+// the 0.6.0 design notes (spec draft/basic/patterns/mrtr).
 //
 // Correlation (the id-translation discipline from day one): a legacy
 // elicit carries NO originating-call marker, so it can only be bound to an in-flight wrapped call
@@ -1654,7 +1926,7 @@ async function raceElicit(upstreamId, promise) {
 /** Resume a suspended elicitation (the MRTR retry): answer the upstream's held question with the
  *  client's inputResponse, then await the held call - which may elicit AGAIN (multi-round) or
  *  finish. Token misses get a clean, neutral error. NEVER throws. */
-async function resumeElicit(params, modernCaller, currentPtId, cancelKey) {
+async function resumeElicit(params, modernCaller, currentPtId, cancelKey, clientCapabilities) {
   const p = params || {};
   const token = typeof p.requestState === 'string' ? p.requestState : null;
   const entry = token && modernCaller === true ? pendingElicits.get(token) : null;
@@ -1696,7 +1968,19 @@ async function resumeElicit(params, modernCaller, currentPtId, cancelKey) {
     if (cancelKey) inflightForwards.delete(cancelKey); // settled (or re-suspended) - retry cancel window over
   }
   if (winner.kind === 'elicit') {
-    return suspendForElicit(winner.value, entry.executePromise, entry.upstreamId, entry.calledName, entry.rpcId);
+    // The :1699 edge, DECIDED (5.2): each modern request stands alone - the RETRY completes the
+    // exchange it carries a token for regardless, but a FURTHER question requires the RETRY's
+    // own declared capability. Undeclared -> the same auto-decline as the first-call path.
+    if (callerAcceptsElicit(clientCapabilities, winner.value.params)) {
+      return suspendForElicit(winner.value, entry.executePromise, entry.upstreamId, entry.calledName, entry.rpcId);
+    }
+    logErr(`bridge-b: retry did not declare the elicitation capability - auto-declined the follow-up for "${entry.calledName}"`);
+    try { winner.value.client.respondToServer(winner.value.elicitId, { action: 'decline' }); } catch (_e) { /* ignore */ }
+    try {
+      const settled = await entry.executePromise;
+      if (settled && typeof settled === 'object' && Array.isArray(settled.content)) return settled;
+    } catch (_e) { /* falls through to the failure text */ }
+    return { content: [{ type: 'text', text: `tool "${entry.calledName}" failed` }], isError: true };
   }
   const out = winner.value;
   if (out && typeof out === 'object' && Array.isArray(out.content)) return out; // verbatim envelope
@@ -1706,6 +1990,28 @@ async function resumeElicit(params, modernCaller, currentPtId, cancelKey) {
 /** Suspend a wrapped call that hit an elicitation: mint the token, hold the still-running
  *  execute promise, extend the held request's timeout to the suspension window (a human answers
  *  at human speed), arm the TTL, and shape the modern InputRequiredResult. */
+/**
+ * callerAcceptsElicit - can THIS caller receive the given elicitation?
+ * The caller's declared clientCapabilities is threaded EXPLICITLY to every decision site - no
+ * silent default: an absent declaration is a caller that cannot receive backwards requests.
+ * FORM mode (mode:'form' or neither mode nor url): the bare presence of `elicitation` suffices
+ * (the schema's "form mode only (implicit)" example is `elicitation: {}`). URL mode
+ * (mode:'url', or a url with no mode - the url IS the mode signal): requires the explicit
+ * `elicitation.url` declaration. NEVER throws.
+ * @param {object|null} clientCapabilities  the caller's per-request declared capabilities
+ * @param {object}      elicitParams        the upstream's elicitation/create params
+ * @returns {boolean}
+ */
+function callerAcceptsElicit(clientCapabilities, elicitParams) {
+  const caps = clientCapabilities && typeof clientCapabilities === 'object' ? clientCapabilities : null;
+  const el = caps && caps.elicitation;
+  if (!el || typeof el !== 'object' || Array.isArray(el)) return false;
+  const p = elicitParams && typeof elicitParams === 'object' ? elicitParams : {};
+  const isUrlMode = p.mode === 'url' || (p.mode === undefined && typeof p.url === 'string');
+  if (isUrlMode) return !!(el.url && typeof el.url === 'object');
+  return true;
+}
+
 function suspendForElicit(elicit, executePromise, upstreamId, calledName, rpcId) {
   const token = require('node:crypto').randomBytes(16).toString('base64url');
   executePromise.catch(() => { /* held in the background - its rejection surfaces on resume */ });
@@ -1733,10 +2039,16 @@ function suspendForElicit(elicit, executePromise, upstreamId, calledName, rpcId)
   if (entry.timer && typeof entry.timer.unref === 'function') entry.timer.unref();
   pendingElicits.set(token, entry);
   // The MRTR result: the upstream's question under a minted key + the resume token. One
-  // translation applies: MRTR's ElicitRequest params REQUIRE `mode:"form"`, which pre-MRTR
-  // legacy upstreams never send - default-inject it when absent (the caller's own
-  // mode, if any, wins). Everything else passes verbatim.
-  const params = Object.assign({ mode: 'form' }, elicit.params);
+  // translation applies (5.3, and the OLD comment here was FALSE - form's `mode` is OPTIONAL,
+  // schema: `mode?: "form"`): a bare pre-MRTR question (no mode, no url) keeps the harmless
+  // explicit `mode:"form"` (pinned by wrap-wire W7); a `url`-carrying question with no mode is
+  // URL mode by shape - complete the REQUIRED `mode:"url"` instead of stamping `form` onto a
+  // contradiction; an explicit upstream mode always passes verbatim.
+  const params = (elicit.params && elicit.params.mode !== undefined)
+    ? Object.assign({}, elicit.params)
+    : (elicit.params && typeof elicit.params.url === 'string')
+      ? Object.assign({ mode: 'url' }, elicit.params)
+      : Object.assign({ mode: 'form' }, elicit.params);
   return {
     resultType: 'input_required',
     inputRequests: { r0: { method: 'elicitation/create', params } },
@@ -1748,7 +2060,7 @@ function suspendForElicit(elicit, executePromise, upstreamId, calledName, rpcId)
  * armWrapChatter - sync the aggregator's wrapChatterUpstream from the on-disk wrap state.
  * handleMessage re-arms per message, but three paths bypass it: startup (notifications before the
  * first client message), a reloadExpose swap, and a listen-first modern client (the listen branch
- * is transport-owned). Each of those calls this so the N3 cross-upstream filter is never unarmed.
+ * is transport-owned). Each of those calls this so the cross-upstream wrap-chatter filter is never unarmed.
  * NEVER throws.
  */
 function armWrapChatter(build) {
@@ -1783,10 +2095,10 @@ function armWrapChatter(build) {
  *  notifications/cancelled must be TRANSLATED before relay - relaying its requestId verbatim
  * would cancel the wrong upstream call. Entries live only for the duration
  *  of the forward (deleted in the finally). Gated tools/call is NOT tracked here - full
- *  id-translation for the tool path arrives with Bridge B's correlation machinery. */
+ *  id-translation for the tool path arrives with the elicitation bridge's correlation machinery. */
 const inflightForwards = new Map();
 
-/** In-flight RAW (non-tool) forwards per upstream id - part of Bridge B's binding invariant: a
+/** In-flight RAW (non-tool) forwards per upstream id - part of the elicitation bridge's binding invariant: a
  *  resources/read or prompts/get holds an open upstream call that may legally elicit, so while
  * one is in flight an elicit's origin is ambiguous and must be declined. */
 const inflightRawForwards = new Map();
@@ -1834,10 +2146,13 @@ async function forwardWrapped(aggregator, ptId, msg, hasId, id, wrapId, connKey)
     // Strip ONLY the modern protocol keys from _meta. The rest - progressToken, trace keys, app
     // keys - is legitimate in BOTH eras and a direct connection would deliver it verbatim.
     // (McpClient.request() re-injects the trio, merged, when the upstream itself is modern.)
+    // logLevel is EXEMPT (1.4): the McpClient era-keys it (modern: forwarded; legacy: translated
+    // to logging/setLevel, never leaked) - stripping it here starved wrapped upstreams of the
+    // one field that authorises notifications/message.
     const meta = Object.assign({}, params._meta);
     let changed = false;
     for (const k of Object.keys(meta)) {
-      if (k.startsWith('io.modelcontextprotocol/')) { delete meta[k]; changed = true; }
+      if (k.startsWith('io.modelcontextprotocol/') && k !== modern.META_KEYS.LOG_LEVEL) { delete meta[k]; changed = true; }
     }
     if (changed) {
       params = Object.assign({}, params);
@@ -1850,7 +2165,7 @@ async function forwardWrapped(aggregator, ptId, msg, hasId, id, wrapId, connKey)
   // (connection, client id) - raw client ids collide across connections (focused review).
   const mapKey = connKey !== undefined ? `${connKey}:${id}` : null;
   const track = mapKey === null ? undefined : { set rpcId(v) { inflightForwards.set(mapKey, v); } };
-  inflightRawForwards.set(ptId, (inflightRawForwards.get(ptId) || 0) + 1); // Bridge B binding invariant
+  inflightRawForwards.set(ptId, (inflightRawForwards.get(ptId) || 0) + 1); // elicitation-bridge binding invariant
   try {
     raw = await aggregator.forwardRaw(ptId, msg.method, params, track);
   } catch (err) {
@@ -1912,6 +2227,12 @@ async function handleModernMessage(build, msg, hasId, id, method, wrapId, connKe
     case 'tools/list':
       // A notification (no id) MUST NOT get a reply (JSON-RPC 2.0). Every case guards on hasId.
       if (!hasId) return null;
+      // 6.1: the funnel's own list is SINGLE-PAGE, so any present cursor is unrecognised ->
+      // -32602 (the modern era is cursor-aware; the transport's 4.1 map gives it HTTP 400).
+      if (msg.params && msg.params.cursor !== undefined) {
+        return makeError(id, ERR.INVALID_PARAMS,
+          `Invalid params: unknown cursor "${String(msg.params.cursor)}" (this tools/list is single-page)`);
+      }
       return makeResult(
         id,
         modern.decorateResult(
@@ -1925,14 +2246,20 @@ async function handleModernMessage(build, msg, hasId, id, method, wrapId, connKe
       const result = await handleToolsCall(
         protocol, aggregator,
         // cancelKey: same cancel-translation contract as the legacy path.
-        // modernCaller: a modern client can receive input_required + retry (Bridge B / MRTR).
+        // modernCaller: a modern client can receive input_required + retry (the elicitation bridge / MRTR).
+        // clientCapabilities (5.1, EXPLICIT - no silent default): whether THIS request may
+        // receive an elicitation is decided by what THIS request declared.
         { engine, ctx, registry, toolStatePath, modernCaller: true,
+          clientCapabilities: (modern.getMeta(msg) || {})[modern.META_KEYS.CLIENT_CAPABILITIES] || null,
           cancelKey: (connKey !== undefined && hasId) ? `${connKey}:${id}` : null },
         msg.params
       );
       // Same observability chokepoint as the legacy path - both eras count in one place.
-      metrics.record({ tool: (msg.params && msg.params.name) || 'unknown', ok: !(result && result.isError === true) });
+      metrics.record({ tool: (msg.params && msg.params.name) || 'unknown', ok: !(result && (result.isError === true || result.__tfRpcError)) });
       if (!hasId) return null; // notification-shaped call: executed (side effects), but never replied to
+      // Relayed upstream error: mint the era-shaped JSON-RPC error BEFORE decoration -
+      // an error is never dressed as a result.
+      if (result && result.__tfRpcError) return relayedRpcError(id, result, true);
       const decorated = modern.decorateResult(result, resultServerInfo);
       // Legacy-shim transparency for MODERN clients: when the call ACTUALLY forwarded to a PINNED
       // legacy upstream, say so in result _meta - metadata, never content. NOT under a wrap: a wrap
@@ -1966,8 +2293,8 @@ async function handleModernMessage(build, msg, hasId, id, method, wrapId, connKe
  * emitToolsListChanged(send) - write the MCP `notifications/tools/list_changed` JSON-RPC
  * notification (NO id - it is a notification, not a request) via the provided `send` fn. The
  * server emits this when the curated-direct expose set hot-updates so a CLI that honours
- * listChanged re-fetches tools/list (see the architecture notes §1 "no restart for register
- * changes"; §7 the host runs the server). `send` is injected so this is unit-testable with a spy
+ * listChanged re-fetches tools/list ("no restart for register
+ * changes"; the host owns the server). `send` is injected so this is unit-testable with a spy
  * and reused by both the stdio loop and (later) the host.
  *
  * @param {(obj: object) => void} send  the transport's writer (stdio loop's send, or a spy)
@@ -2013,7 +2340,7 @@ async function reloadExpose(build, send) {
     return;
   }
   const next = new Aggregator({
-    store, v3Root: ROOT,
+    store, gatewayRoot: ROOT,
     wrapTargetProvider: () => {
       try { return getPassthrough(loadToolStateResult(TOOL_STATE_PATH).state); } catch (_e) { return null; }
     },
@@ -2043,7 +2370,7 @@ async function reloadExpose(build, send) {
   if (prevAgg && typeof prevAgg.onUpstreamNotification === 'function') {
     next.onUpstreamNotification = prevAgg.onUpstreamNotification;
   }
-  // Bridge B carryover - same contract as the notification bridge above: the handler closes over
+  // Elicitation-bridge carryover - same contract as the notification bridge above: the handler closes over
   // the stable build object, so it transfers verbatim onto the swapped-in aggregator.
   if (prevAgg && typeof prevAgg.onUpstreamServerRequest === 'function') {
     next.onUpstreamServerRequest = prevAgg.onUpstreamServerRequest;
@@ -2058,6 +2385,7 @@ async function reloadExpose(build, send) {
   // to silently kill every agreed subscription channel).
   if (prevAgg && prevAgg._subscribedUris instanceof Set && prevAgg._subscribedUris.size) {
     next._subscribedUris = new Set(prevAgg._subscribedUris);
+    if (prevAgg._subscribedRefs instanceof Map) next._subscribedRefs = new Map(prevAgg._subscribedRefs); // 5.4
   }
   let res = null;
   try {
@@ -2074,7 +2402,7 @@ async function reloadExpose(build, send) {
   try {
     const prev = build.aggregator;
     build.aggregator = next; // swap BEFORE closing the old one (handleMessage reads build fresh)
-    armWrapChatter(build); // the fresh aggregator's N3 filter must not wait for a client message
+    armWrapChatter(build); // the fresh aggregator's wrap-chatter filter must not wait for a client message
     if (prev && typeof prev.closeAll === 'function') {
       try { await prev.closeAll(); } catch (_e) { /* closeAll never throws, but guard teardown */ }
     }
@@ -2322,12 +2650,20 @@ function startConfigWatchers(buildArg, send) {
 // stdin framing reader - accepts BOTH Content-Length framing and newline-delimited JSON.
 // We write newline-delimited JSON on stdout.
 //
-// `build` is the Phase-2 build object { protocol, aggregator, engine, ctx } (a bare protocol is
+// `build` is the full build object { protocol, aggregator, engine, ctx } (a bare protocol is
 // accepted too - see normaliseBuild). It is threaded straight into handleMessage so tools/list
 // advertises the curated-direct surface and tools/call gates curated-direct calls.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
+// Hard ceiling on one buffered stdin message (matches http-transport's MAX_BODY_BYTES and the
+// client-side cap in mcp-client.js). A declared Content-Length over the cap is refused with the
+// same clean -32700 the HTTP transport gives an over-cap body, and its bytes are discarded as
+// they arrive so the pipe stays in frame; a buffer past the cap with NO complete frame has no
+// resync point, so the session ends instead of buffering toward OOM.
+const MAX_MESSAGE_BYTES = 4 * 1024 * 1024;
+
 function createStdioLoop(build) {
   let buf = Buffer.alloc(0);
+  let skipRemaining = 0; // bytes of a refused over-cap message still to discard
   // Serialise message handling so responses are written in request order even though handlers
   // are async (avoids interleaving partial writes on stdout).
   let chain = Promise.resolve();
@@ -2402,6 +2738,18 @@ function createStdioLoop(build) {
       // never saw the request. `started` closes the mid-processing race: once the link runs,
       // the cancel falls through to handleMessage, whose in-flight map translates + relays.
       if (msg.params && msg.params.requestId !== undefined) {
+        // 5.4: HONOUR a cancel naming a LISTEN id - terminate that subscription: release its
+        // listen-owned resource URIs and drop the registration. Per the cancellation rules a
+        // cancelled request gets NO further messages, so no closing result is sent.
+        const li = modernSubs.findIndex((sub) => sub.id === msg.params.requestId);
+        if (li !== -1) {
+          const sub = modernSubs.splice(li, 1)[0];
+          if (sub && sub.agreed && Array.isArray(sub.agreed.resourceSubscriptions)) {
+            const agg = build && build.aggregator;
+            if (agg && typeof agg.releaseResources === 'function') agg.releaseResources(sub.agreed.resourceSubscriptions);
+          }
+          return; // the cancel is consumed - it named a listen, not an in-flight call
+        }
         const queued = queuedRequests.get(msg.params.requestId);
         if (queued) {
           // Started or not: a cancelled request receives NO response (spec). For a STARTED
@@ -2430,6 +2778,15 @@ function createStdioLoop(build) {
         if (reg.cancelled) { queuedRequests.delete(msg.id); return; } // pre-cancelled: no reply (spec)
       }
       try {
+        // JSON-RPC BATCH: admitted ONLY on a session that negotiated 2025-03-26 -
+        // the one revision that defines batching. Any other session lets the array fall through
+        // to handleMessage's frozen -32600 rejection below. Ordered on the same chain as every
+        // single message, so batch members can never overtake their neighbours.
+        if (Array.isArray(msg) && build && build.negotiatedLegacyVersion === '2025-03-26') {
+          const batched = await handleBatch(build, msg, 'stdio');
+          if (batched != null) send(batched);
+          return;
+        }
         // subscriptions/listen (modern) is TRANSPORT-owned: the ack and every later notification
         // ride this same stdout pipe, and the final result is written when stdin closes (see the
         // 'end' handler). Everything else routes through handleMessage unchanged.
@@ -2457,8 +2814,18 @@ function createStdioLoop(build) {
           // ack) must not accumulate a duplicate registration -> doubled notifications forever
           //Overwrite the existing entry; otherwise append.
           const existing = modernSubs.findIndex((s) => s.id === msg.id);
-          if (existing !== -1) modernSubs[existing] = { id: msg.id, agreed };
-          else modernSubs.push({ id: msg.id, agreed });
+          if (existing !== -1) {
+            // 5.4: the REPLACED registration's resource subscriptions were a leak site -
+            // release them before the overwrite (the new agreed set took its own refs above).
+            const old = modernSubs[existing];
+            if (old && old.agreed && Array.isArray(old.agreed.resourceSubscriptions)) {
+              const agg = build && build.aggregator;
+              if (agg && typeof agg.releaseResources === 'function') agg.releaseResources(old.agreed.resourceSubscriptions);
+            }
+            modernSubs[existing] = { id: msg.id, agreed };
+          } else {
+            modernSubs.push({ id: msg.id, agreed });
+          }
           send(modern.listenAck(msg.id, agreed));
           return;
         }
@@ -2475,17 +2842,37 @@ function createStdioLoop(build) {
     });
   }
 
+  // True when `buf` BEGINS with a framing header whose block terminator hasn't arrived yet.
+  function headerInFlight() {
+    return /^content-(length|type):/i.test(buf.slice(0, 16).toString('utf8'));
+  }
+
   // Try to pull one Content-Length-framed message off the front of `buf`. Returns true if it
-  // consumed one (and enqueued it), false if there isn't a complete header-framed message yet.
+  // consumed one (and enqueued it), false if this isn't header framing, or 'wait' if a header
+  // frame is only PARTLY here - the drain must hold rather than let line framing eat the header
+  // (the eaten header orphaned the body: the frame was lost and the client saw only a timeout).
   function tryHeaderFramed() {
     const headerEnd = buf.indexOf('\r\n\r\n');
-    if (headerEnd === -1) return false;
+    if (headerEnd === -1) {
+      // No complete header block - but a buffer that STARTS with a header line is a header
+      // frame whose terminator is still in flight, not line-framed junk.
+      return headerInFlight() ? 'wait' : false;
+    }
     const header = buf.slice(0, headerEnd).toString('utf8');
     const m = /Content-Length:\s*(\d+)/i.exec(header);
     if (!m) return false; // header block without a Content-Length -> not this framing
     const len = parseInt(m[1], 10);
     const bodyStart = headerEnd + 4;
-    if (buf.length < bodyStart + len) return false; // body not all here yet
+    if (len > MAX_MESSAGE_BYTES) {
+      // Refuse the message, keep the session: answer the same clean -32700 the HTTP transport
+      // gives an over-cap body, consume the header, and let drain() discard exactly the
+      // declared bytes as they arrive so the pipe stays in frame.
+      send(makeError(null, ERR.PARSE, 'Parse error: message too large'));
+      buf = buf.slice(bodyStart);
+      skipRemaining = len;
+      return true;
+    }
+    if (buf.length < bodyStart + len) return 'wait'; // body still in flight - hold the drain
     const body = buf.slice(bodyStart, bodyStart + len).toString('utf8');
     buf = buf.slice(bodyStart + len);
     let obj = null;
@@ -2507,9 +2894,9 @@ function createStdioLoop(build) {
     const line = buf.slice(0, nl).toString('utf8').trim();
     buf = buf.slice(nl + 1);
     if (line.length === 0) return true; // blank line (e.g. trailing from header framing): skip
-    // A leftover header line ("Content-Length: ...") that wasn't consumed by tryHeaderFramed means
-    // the body hasn't arrived; but since we always try header framing FIRST, a stray header line
-    // here is junk - ignore non-JSON lines rather than erroring on framing artifacts.
+    // A header line at the FRONT of the buffer never reaches this path (header framing holds the
+    // drain with 'wait'); any non-JSON line here is a framing artifact - ignore it rather than
+    // erroring.
     if (line[0] !== '{' && line[0] !== '[') return true;
     let obj = null;
     try {
@@ -2524,9 +2911,20 @@ function createStdioLoop(build) {
 
   function drain() {
     // Header framing first (it counts exact bytes and is unambiguous); fall back to line framing.
-    // Loop until neither can make progress.
+    // Loop until neither can make progress. 'wait' stops the drain outright: a header frame is
+    // mid-flight and line framing must not be allowed to eat its header.
     for (;;) {
-      if (tryHeaderFramed()) continue;
+      if (skipRemaining > 0) {
+        // A refused over-cap message: discard exactly its declared bytes as they arrive so the
+        // pipe stays in frame for everything after it.
+        const eat = Math.min(skipRemaining, buf.length);
+        buf = buf.slice(eat);
+        skipRemaining -= eat;
+        if (skipRemaining > 0) return; // the rest of the refused body is still in flight
+      }
+      const h = tryHeaderFramed();
+      if (h === true) continue;
+      if (h === 'wait') break; // an incomplete header frame - wait for more bytes
       if (tryLineFramed()) continue;
       break;
     }
@@ -2535,12 +2933,35 @@ function createStdioLoop(build) {
   process.stdin.on('data', (chunk) => {
     buf = Buffer.concat([buf, chunk]);
     drain();
+    if (buf.length > MAX_MESSAGE_BYTES) {
+      // Past the cap with no complete frame there is no resync point. Flush a clean parse
+      // error, then end the session (the stdio session IS the process) instead of buffering
+      // toward OOM. The exit waits for the error to flush - a hard exit can drop unflushed
+      // pipe bytes - with a timer backstop in case the pipe never drains.
+      logErr(`stdin buffered ${buf.length} bytes with no complete message (cap ${MAX_MESSAGE_BYTES}); ending session`);
+      buf = Buffer.alloc(0);
+      let line;
+      try {
+        line = JSON.stringify(makeError(null, ERR.PARSE, 'Parse error: message too large'));
+      } catch (_e) {
+        line = '{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"Parse error: message too large"}}';
+      }
+      try { process.stdin.destroy(); } catch (_e) { /* ignore */ }
+      setTimeout(() => process.exit(1), 500);
+      process.stdout.write(line + '\n', () => process.exit(1));
+    }
   });
   process.stdin.on('end', () => {
     // Flush any complete trailing message, then gracefully close each modern listen subscription
     // (the spec ends a subscription with a final RESULT to the listen id) before the process exits.
     drain();
     for (const sub of modernSubs.splice(0)) {
+      // 5.4: release the subscription's listen-owned resource URIs (the wholesale close was a
+      // leak site - the upstream kept emitting updates nobody could receive).
+      if (sub && sub.agreed && Array.isArray(sub.agreed.resourceSubscriptions)) {
+        const agg = build && build.aggregator;
+        if (agg && typeof agg.releaseResources === 'function') agg.releaseResources(sub.agreed.resourceSubscriptions);
+      }
       try { send(modern.listenClose(sub.id)); } catch (_e) { /* pipe may already be gone */ }
     }
   });
@@ -2561,7 +2982,7 @@ function createStdioLoop(build) {
 // Entry point.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 async function main() {
-  // The Phase-2 build object { protocol, aggregator, engine, ctx }.
+  // The full build object { protocol, aggregator, engine, ctx }.
   let build;
   try {
     build = buildProtocol();
@@ -2596,7 +3017,7 @@ async function main() {
       logErr('aggregator.connectAll threw (ignored):', (err && err.message) || String(err));
     }
   }
-  armWrapChatter(build); // N3 filter armed from boot - not only from the first client message
+  armWrapChatter(build); // wrap-chatter filter armed from boot - not only from the first client message
 
   // Keep the process alive on the stdio loop; never let an unhandled rejection kill it.
   process.on('uncaughtException', (err) => logErr('uncaughtException:', (err && err.stack) || String(err)));
@@ -2622,7 +3043,7 @@ async function main() {
     if (wrapOnly && uid !== wrapOnly) return;
     loop.notify(n);
   };
-  // Bridge B: server-initiated upstream requests (elicitation/create) route to the bridge; it
+  // Elicitation bridge: server-initiated upstream requests (elicitation/create) route to the bridge; it
   // binds them to the one in-flight wrapped call or declines. `build` is the stable stdio object.
   if (build.aggregator) build.aggregator.onUpstreamServerRequest =
     (uid, m, c) => handleUpstreamServerRequest(build, uid, m, c);
@@ -2650,24 +3071,27 @@ module.exports = {
   buildProtocol,
   makeRegistryAdapter,
   handleMessage,
+  // 2.3: the batch processor - the TRANSPORT owns the admission gate (stdio: negotiated
+  // 2025-03-26 session; HTTP: absent-or-2025-03-26 header).
+  handleBatch,
   handleInitialize,
   // The stdio entry point - an external bin/ can require this module and call main() to start the
   // server (build -> connect upstreams -> run the stdio loop). main() is async and takes no args.
   main,
-  // Phase-2 + MATRIX handlers: handleToolsList(protocol, aggregator, { registry?, toolStatePath? })
+  // Full-build + MATRIX handlers: handleToolsList(protocol, aggregator, { registry?, toolStatePath? })
   // and handleToolsCall(protocol, aggregator, { engine, ctx, registry?, toolStatePath? }, params).
   handleToolsList,
   handleToolsCall,
-  // N3 filter arming - the HTTP transport calls this at start/reload and in its listen branch.
+  // wrap-chatter filter arming - the HTTP transport calls this at start/reload and in its listen branch.
   armWrapChatter,
-  // Bridge B: the HTTP transport wires this as the aggregator's onUpstreamServerRequest handler.
+  // Elicitation bridge: the HTTP transport wires this as the aggregator's onUpstreamServerRequest handler.
   handleUpstreamServerRequest,
   // Matrix helpers (exported for unit tests / reuse).
   localHotDefinitions,
   localToolDefinition,
   isPromotedLocal,
   isPromotedUpstream,
-  // Phase-2: emit the hot-update notification (no-id notifications/tools/list_changed) via send.
+  // Emit the hot-update notification (no-id notifications/tools/list_changed) via send.
   emitToolsListChanged,
   // Hot-reload: re-read on-disk config live (no restart). Wired to fs.watch in main().
   reloadExpose,

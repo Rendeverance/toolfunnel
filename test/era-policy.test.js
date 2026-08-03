@@ -72,19 +72,22 @@ process.stdin.on('data', (d) => {
 (async () => {
   const build = s.buildProtocol();
 
-  // A1 - legacy request refused with the policy named.
+  // A1 - legacy request refused with the policy named. Shape since 0.7.0: -32601 + the
+  // data.policy marker (-32020 is HeaderMismatch per the allocation policy - no header here).
   const a1 = await s.handleMessage(build, { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} });
-  check('A1: legacy tools/list -> -32020 naming the policy',
-    a1 && a1.error && a1.error.code === -32020 && /serveLegacy:false/.test(a1.error.message),
+  check('A1: legacy tools/list -> marked -32601 naming the policy',
+    a1 && a1.error && a1.error.code === -32601 && /serveLegacy:false/.test(a1.error.message) &&
+      a1.error.data && a1.error.data.policy === 'modern-only',
     JSON.stringify(a1));
 
-  // A2 - legacy initialize gets the handshake-specific message.
+  // A2 - legacy initialize gets the handshake-specific message (same marked -32601 shape).
   const a2 = await s.handleMessage(build, {
     jsonrpc: '2.0', id: 2, method: 'initialize',
     params: { protocolVersion: '2024-11-05', clientInfo: { name: 'x', version: '0' }, capabilities: {} },
   });
-  check('A2: legacy initialize -> -32020 with the handshake message',
-    a2 && a2.error && a2.error.code === -32020 && /initialize handshake is disabled/.test(a2.error.message),
+  check('A2: legacy initialize -> marked -32601 with the handshake message',
+    a2 && a2.error && a2.error.code === -32601 && /initialize handshake is disabled/.test(a2.error.message) &&
+      a2.error.data && a2.error.data.policy === 'modern-only',
     JSON.stringify(a2));
 
   // A3 - modern requests are served normally.

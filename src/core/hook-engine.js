@@ -3,7 +3,7 @@
 /**
  * hook-engine.js - fire a lifecycle event through its matching, enabled hooks.
  *
- * Contract: HOOK_ENGINE.md §6.
+ * Contract: fire() never rejects - see the class doc below.
  *
  *   class HookEngine {
  *     constructor(loader)                       // loader provides enabled hook specs
@@ -12,7 +12,7 @@
  *       blocked:   boolean,       // any hook blocked
  *       reason:    string|null,   // first block reason (in manifest order)
  *       stopLoop:  boolean,       // any hook said continue:false
- *       results:   HookResult[]   // per §4, in stable (manifest) order
+ *       results:   HookResult[]   // runner-result shapes, in stable (manifest) order
  *     }
  *   }
  *
@@ -21,6 +21,11 @@
  *     Tool-less events (SessionStart, UserPromptSubmit, Stop, PreCompact) ignore the matcher -
  *     matcher.js handles that, but we also derive toolName only from the built payload so the
  *     matcher gets exactly what the contract says it should see.
+ *   - A matcher that does not COMPILE is an unreadable gate: on a tool-bearing event the hook
+ *     contributes a synthetic BLOCKING result (its command never runs) - an unreadable gate is
+ *     never permission, mirroring the runner's unreadable-decision rule. Authoring surfaces
+ *     refuse such a matcher up front (hook-loader.addEntry), so this only fires for a
+ *     hand-edited manifest. (0.7.0; matcher-compile.test.js is the acceptance.)
  *   - Build the stdin payload once via events.buildPayload(event, ctx, extra).
  *   - Run selected hooks CONCURRENTLY (they are independent) with a global concurrency cap
  *     (default 8) so a big event cannot fork-bomb, but return results in MANIFEST ORDER.
@@ -28,7 +33,7 @@
  *   - blocked/reason = the FIRST blocker in order.
  *   - stopLoop = true if ANY hook returned continue:false.
  *
- * The runner never throws (§4), and this engine defends against a misbehaving runner too:
+ * The runner never throws (its hard guarantee), and this engine defends against a misbehaving runner too:
  * any rejection is converted into a synthetic error result so fire() never rejects.
  *
  * CommonJS only. Zero host imports (must run headless under `node --test`).
@@ -53,6 +58,16 @@ function getMatchesFn() {
   if (matcher && typeof matcher.matches === 'function') return matcher.matches;
   // Defensive fallback: if matcher.js is unavailable, fire everything (never crash).
   return () => true;
+}
+
+/**
+ * Resolve matcherError from matcher.js (named export). Falls back to "no problem" so an older
+ * matcher module degrades to the previous behaviour rather than crashing the engine.
+ * @returns {(m: string|undefined) => (string|null)}
+ */
+function getMatcherErrorFn() {
+  if (matcher && typeof matcher.matcherError === 'function') return matcher.matcherError;
+  return () => null;
 }
 
 /**
@@ -85,7 +100,7 @@ function getRunHookFn() {
 }
 
 /**
- * Build a synthetic "failed" result matching the §4 shape, used when the runner rejects
+ * Build a synthetic "failed" result matching the runner's result shape, used when the runner rejects
  * unexpectedly (it is contractually not supposed to, but we never let the loop throw).
  * @param {object} spec
  * @param {string} event
@@ -166,6 +181,7 @@ class HookEngine {
 
     // Resolve contract functions once.
     this._matches = getMatchesFn();
+    this._matcherError = getMatcherErrorFn();
     this._buildPayload = getBuildPayloadFn();
     this._runHook = getRunHookFn();
   }
@@ -183,7 +199,7 @@ class HookEngine {
     const context = ctx || {};
     const extraFields = extra || {};
 
-    // Build the stdin payload once (frozen field names per §2).
+    // Build the stdin payload once (the contract's frozen field names).
     let payload;
     try {
       payload = this._buildPayload(event, context, extraFields);
@@ -204,43 +220,81 @@ class HookEngine {
     // For tool-less events this is undefined and matcher.js treats it as always-fire.
     const toolName = payload && payload.tool_name;
 
-    // Select enabled hooks for this event whose matcher matches, in MANIFEST ORDER.
-    const candidates = this.loader.enabledHooksFor(event) || [];
-    const selected = candidates.filter((spec) => {
-      try {
-        return this._matches(spec && spec.matcher, toolName);
-      } catch (_) {
-        // A broken matcher string should not crash the engine; skip that hook.
-        return false;
-      }
-    });
-
     // Resolve the child cwd/env once for the runner.
     const runCwd = (payload && payload.cwd) || this.cwd;
     const runOpts = { cwd: runCwd };
     if (this.env) runOpts.env = this.env;
 
-    // Build task factories (one per selected hook) - never reject.
-    const factories = selected.map((spec) => async () => {
-      const started = Date.now();
-      try {
-        const res = await this._runHook(spec, payload, runOpts);
-        // Defensive: ensure the result carries id/event even if the runner omitted them.
-        if (res && typeof res === 'object') {
-          if (res.id === undefined) res.id = spec.id;
-          if (res.event === undefined) res.event = event;
-          return res;
+    // Select enabled hooks for this event and build task factories, in MANIFEST ORDER.
+    //
+    // A matcher that does not COMPILE cannot be evaluated, and an unreadable gate is never
+    // permission - the same rule the runner applies to an unreadable decision (gate-semantics /
+    // matcher-compile tests). On a TOOL-BEARING event such a hook contributes a synthetic
+    // BLOCKING result in its manifest position (its command is never run); authoring surfaces
+    // refuse the pattern up front (hook-loader.addEntry), so this branch only fires for a
+    // hand-edited manifest. Tool-less events ignore the matcher entirely (existing contract).
+    const candidates = this.loader.enabledHooksFor(event) || [];
+    const factories = [];
+    for (const spec of candidates) {
+      if (toolName !== undefined && toolName !== null) {
+        let compileProblem = null;
+        try {
+          compileProblem = this._matcherError(spec && spec.matcher);
+        } catch (_) {
+          compileProblem = null; // discriminator itself failing must not take the engine down
         }
-        return syntheticFailure(spec, event, new Error('runner returned no result'), Date.now() - started);
-      } catch (err) {
-        return syntheticFailure(spec, event, err, Date.now() - started);
+        if (compileProblem) {
+          const unreadable = {
+            id: spec && spec.id,
+            event,
+            exitCode: -1,
+            timedOut: false,
+            stdout: '',
+            stderr: '',
+            blocked: true,
+            stopLoop: false,
+            reason:
+              `hook-engine: hook "${(spec && spec.id) || '(unnamed)'}" has a matcher that does ` +
+              `not compile (${compileProblem}); its gate could not be read, so the call is ` +
+              'denied (fail closed). Fix or disable the hook.',
+            inject: null,
+            durationMs: 0,
+          };
+          factories.push(async () => unreadable);
+          continue;
+        }
       }
-    });
+
+      let fires = false;
+      try {
+        fires = this._matches(spec && spec.matcher, toolName);
+      } catch (_) {
+        // A matcher evaluation crash should not crash the engine; skip that hook.
+        fires = false;
+      }
+      if (!fires) continue;
+
+      factories.push(async () => {
+        const started = Date.now();
+        try {
+          const res = await this._runHook(spec, payload, runOpts);
+          // Defensive: ensure the result carries id/event even if the runner omitted them.
+          if (res && typeof res === 'object') {
+            if (res.id === undefined) res.id = spec.id;
+            if (res.event === undefined) res.event = event;
+            return res;
+          }
+          return syntheticFailure(spec, event, new Error('runner returned no result'), Date.now() - started);
+        } catch (err) {
+          return syntheticFailure(spec, event, err, Date.now() - started);
+        }
+      });
+    }
 
     // Run concurrently with the cap; results come back in manifest order.
     const results = await runWithConcurrency(factories, this.concurrency);
 
-    // Aggregate per §6.
+    // Aggregate the per-hook results into the engine outcome.
     const injectFragments = [];
     let blocked = false;
     let reason = null;

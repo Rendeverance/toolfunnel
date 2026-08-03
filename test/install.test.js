@@ -66,7 +66,7 @@ async function checkAsync(name, fn) {
   check('SPEC_RE: REFUSES shell metacharacters AND comparator/whitespace ranges', () => {
     // Anything a shell could act on, plus comparator/OR/wildcard ranges (`> < = | *` and spaces are
     // shell-meaningful) - deliberately out, since the only real spec is a caret range.
-    for (const bad of ['jose; rm -rf /', 'jose && evil', 'jose | cat', '$(whoami)', '`id`', 'jose --no-save x', 'a b c', 'jose\nrm', 'jose@>=5.0.0', 'jose@>=5 <6', 'jose@1 || 2', 'jose@*']) {
+    for (const bad of ['jose; rm -rf /', 'jose && denied', 'jose | cat', '$(whoami)', '`id`', 'jose --no-save x', 'a b c', 'jose\nrm', 'jose@>=5.0.0', 'jose@>=5 <6', 'jose@1 || 2', 'jose@*']) {
       assert.ok(!SPEC_RE.test(bad), 'should refuse a shell-unsafe / non-exact spec: ' + JSON.stringify(bad));
     }
   });

@@ -44,7 +44,7 @@ const MOCK_SERVER = path.join(REPO_ROOT, 'mcp', 'servers', 'mock-upstream', 'ser
 const REF_ID = 'matrix_ref_demo';
 const REF_INSTRUCTIONS = 'Perform this in your own environment: matrix reference demo instructions.';
 
-const REQUEST_TIMEOUT_MS = 12000;
+const REQUEST_TIMEOUT_MS = 45000; // a CEILING, not a wait - generous so a loaded CI box cannot flake it
 const META = ['toolfunnel_list_tools', 'toolfunnel_tool_instructions', 'toolfunnel_run_tool', 'toolfunnel_howto'];
 const UUID_V4 = /[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/i;
 

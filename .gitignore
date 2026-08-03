@@ -3,16 +3,16 @@
 node_modules/
 package-lock.json
 
-# Optional OAuth config — created on demand when you enable auth (default OFF when absent),
+# Optional OAuth config - created on demand when you enable auth (default OFF when absent),
 # exactly like logs/ below. The committed repo ships no auth config; the manual documents the shape.
 # Root-anchored so it ignores ONLY the top-level config dir, NOT the engine code in src/auth/.
 /auth/
 
-# Optional gateway identity/port config (absent by default — the gateway IS "toolfunnel" without
+# Optional gateway identity/port config (absent by default - the gateway IS "toolfunnel" without
 # it). User-created; a wrapped MCP ships its OWN copy in its own package, never in this repo.
 /toolfunnel.json
 
-# tf_pack output — deployment artifacts built FROM the live setup, never part of it.
+# tf_pack output - deployment artifacts built FROM the live setup, never part of it.
 /dist/
 
 # Logs

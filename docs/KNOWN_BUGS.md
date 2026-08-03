@@ -1,99 +1,80 @@
-# Known issues & roadmap
+# Known bugs
 
-This file tracks the state of the 0.6.0 dual-era work, the deliberately-deferred items, and any
-limitations worth knowing about.
+The **Open** list is what remains open as of 0.7.0. **Fixed in 0.7.0** marks the items from
+0.6.0's file that this release closed - kept and marked rather than silently deleted, so a
+0.6.0 reader can see their fate. The full change list is in the
+[release notes](https://github.com/Rendeverance/toolfunnel/releases).
 
-## 0.6.0 - the 2026-07-28 MCP specification
+## Open
 
-The 2026-07-28 MCP revision is a **breaking** change to the protocol: it removes the `initialize`
-handshake, protocol-level sessions, and the standalone GET/SSE endpoint, and adds new required
-behaviours - per-request protocol metadata, `Mcp-Method` / `Mcp-Name` request headers, a
-`server/discover` endpoint, a `subscriptions/listen` change-notification stream, and
-`resultType` / `ttlMs` / `cacheScope` result fields.
-
-Implemented in 0.6.0 (built against the RC spec; a reconciliation pass against the finalised
-spec lands after 28 July):
-
-- **Dual-era transport** (2024-11-05 + 2026-07-28) - old and new clients both work.
-- `server/discover`, request-header validation, and the `subscriptions/listen` stream.
-- A **dual-era client**: ToolFunnel speaks modern to modern upstream servers (stdio).
-- An **opt-in, per-upstream legacy-protocol shim** (`legacyPin`) - off by default, names the exact
-  version it drops to, warns at startup and on every call, and is enforced (skips the era probe).
-- **Passthrough wrap** (`toolfunnel wrap <upstreamId>`): one command turns the gateway into a
-  transparent, both-era wrapper for one upstream MCP - verbatim identity, tool definitions,
-  results, errors, notifications, and per-URI resource subscriptions (forwarded, and replayed
-  across silent upstream reconnects), with every call still passing the PreToolUse gate.
-- **Elicitation bridging**: a wrapped legacy server's mid-call questions are translated into the
-  modern `input_required` + retry pattern and back - multi-round, single-use tokens, TTL'd -
-  tested end-to-end against real published elicitation servers.
-- **Cancel translation** (stdio): a client's cancel reaches the upstream in the upstream's own
-  request-id space, for forwarded methods and wrapped tool calls alike.
-- **Identity settings + wrap mirroring**: `toolfunnel.json` gains `clientName`/`clientVersion`
-  (the identity upstreams see); under a wrap on stdio the real downstream client's identity is
-  mirrored upstream automatically.
-- **UI**: a Settings tab (identity + ports), a per-upstream legacy-pin toggle, and the wrap
-  security notice surfaced on the UI wrap path (parity with the CLI).
-- **Agent-facing docs**: `toolfunnel_howto` gains `wrap` and `configure` topics, so a plain agent
-  can learn the wrap and the whole no-code config map from inside the protocol.
-- **Method-class timeouts**: tool calls (`tools/call`, `prompts/get`, `resources/read`) wait
-  120 s by default - configurable per upstream via `"timeoutMs"` - and a progress report from
-  the tool re-arms the window, so a slow-but-alive tool never dies to the clock. The 10 s
-  handshake/list window stays fixed as the dead-upstream detector.
-- **Async shell execution**: `shell`-invoke register tools no longer block the event loop
-  (was `spawnSync` since 0.5.0) - concurrent HTTP clients keep being served during a long
-  shell tool.
-- **Config-home visibility**: every start prints the resolved config home to stderr, with a
-  relocation hint when it defaulted to the package root - running from a git clone no longer
-  writes config into the repo silently.
-- **Bounded listen streams**: the HTTP transport caps concurrent `subscriptions/listen`
-  streams (64) and refuses new ones past the cap with a clear error; existing streams are
-  never evicted.
-
-## Deliberately deferred (documented dispositions, target: the 28-July reconciliation pass)
-
-- **Legacy version family**: ToolFunnel currently speaks the oldest legacy dialect (`2024-11-05`)
-  to legacy upstreams and clamps a wrapped handshake to what the upstream negotiated. A client and
-  upstream that both speak a newer legacy revision (e.g. `2025-06-18`) are negotiated down.
-  Fidelity of the *fields* is unaffected (verified against real servers - nothing version-gated is
-  dropped), but the advertised version string is older than either end requires. DECIDED
-  (2026-07-17): best-version negotiation in BOTH directions - newest each peer speaks, modern
-  first, legacy fallback. Lands with the reconciliation pass, sequenced after the elicitation
-  bridge (a newer legacy offer invites server-initiated requests the client must handle first).
-- **Modern-upstream subscriptions**: the client does not yet open a `subscriptions/listen` stream
-  to modern upstreams, so their change-notifications are not received; the listen ack honestly
-  refuses `resourceSubscriptions` when no legacy subscribe-capable upstream is in scope.
-- **Elicitation bridge scope**: a wrapped upstream's mid-call `elicitation/create` bridges to
-  modern clients as MRTR (`input_required` + retry - built and wire-tested). A LEGACY client
-  gets an automatic decline instead (relaying backwards requests to legacy clients is future
-  work), and `sampling/createMessage` / `roots/list` from upstreams are answered -32601 for now.
-  An elicitation can only be bound to a call when exactly ONE wrapped call is in flight for that
-  upstream (always true on stdio); ambiguous concurrent HTTP calls decline rather than guess.
-- Header validation reports `-32020` where `-32022` would be more specific in one path.
-- Two-store wrap state read (expose.json + tools.state.json) has a benign TOCTOU window.
-- A meta-less `server/discover` is answered rather than refused (permissive-by-design).
-- The wrap's identity-mirror reconnect re-runs the full era negotiation - worst case ~3 s extra
-  on the first handshake against an upstream that ignores `server/discover`. Reusing the
-  already-known era on reconnect is a deferred optimisation.
-- HTTP cancel translation: the sessionless modern era gives a POST no connection identity, so a
-  client `notifications/cancelled` over HTTP is dropped rather than risk cancelling another
-  client's call. stdio (one client per pipe) translates and forwards cancels for both forwarded
-  methods and wrapped tools/call; the remaining best-effort windows are sub-millisecond (a cancel
+- **OPEN - Modern-upstream subscriptions are not received.** The client does not yet open a
+  `subscriptions/listen` stream to modern upstreams, so their change-notifications never arrive;
+  the listen ack honestly refuses `resourceSubscriptions` when no legacy subscribe-capable
+  upstream is in scope.
+- **OPEN - The elicitation bridge does not cover legacy clients.** A wrapped upstream's mid-call
+  `elicitation/create` bridges to MODERN clients as MRTR (`input_required` + retry), form and url
+  mode, gated on the caller's declared capability (0.7.0). A LEGACY client gets an automatic
+  decline instead - relaying backwards requests to legacy clients is unbuilt - and
+  `sampling/createMessage` / `roots/list` from upstreams are answered `-32601`. An elicitation can
+  only be bound to a call when exactly ONE wrapped call is in flight for that upstream (always
+  true on stdio); ambiguous concurrent HTTP calls decline rather than guess.
+- **OPEN (deferred) - HTTP cancels are dropped rather than translated.** The sessionless modern
+  era gives a POST no connection identity, so a client `notifications/cancelled` arriving over
+  HTTP is dropped rather than risk cancelling another client's call. Fixing this needs design
+  thought - identifying the caller without reintroducing sessions - so it is deferred rather than
+  patched. stdio (one client per pipe) translates and forwards cancels for both forwarded methods
+  and wrapped tool calls; the remaining best-effort windows there are sub-millisecond (a cancel
   racing the instant a forward is issued) plus the PreToolUse gate-evaluation phase of a tool
   call (registered at upstream-issue time, post-gate).
-- `io.modelcontextprotocol/logLevel` (the modern per-request log level) is stripped with the rest
-  of the protocol `_meta` keys on wrapped forwards and not re-injected for modern upstreams -
-  part of the modern-upstream work above.
-- Discover on a DISABLED upstream works (inspect its tools before enabling - an explicit
-  allowance on the discover path only; the disabled upstream never reaches the tool surface).
 
-## Current limitations
+## Fixed in 0.7.0
 
-- The OAuth 2.1 resource-server and Streamable-HTTP support are recent and less battle-tested than
-  the core - test your setup before relying on them in a networked deployment.
-- No Prometheus / OpenTelemetry metrics - a toggleable JSONL audit log and in-memory `/health`
-  call counters only.
-- One gateway instance per process: the bridge/cancel state is process-global, so embedding two
-  gateway instances in one Node process is not a supported configuration (running two processes
-  is fine, and is the normal deployment).
+- ***FIXED*** - **Legacy version negotiation.** 0.6.0 answered every `initialize` with
+  2024-11-05 whatever the client asked for, and supported exactly one legacy revision. The
+  gateway now echoes the requested version when it supports it (else answers its latest legacy),
+  and the legacy set spans 2024-11-05 / 2025-03-26 / 2025-06-18 / 2025-11-25. Pinned by
+  `test/negotiation.test.js`. One direction remains conservative: the client still offers
+  2024-11-05 to legacy upstreams (field fidelity is unaffected; only the advertised version
+  string is older than either end requires).
+- ***FIXED*** - **Header validation used a generic error code for an unsupported version.** An
+  unsupported `MCP-Protocol-Version` header answered the generic `-32600`; it now answers
+  `-32022` with `data.supported` and `data.requested` - the same code and shape the `_meta`
+  path already used for the same condition, so a client can renegotiate without parsing prose.
+  Pinned by `test/header-enforcement.test.js`.
+- ***FIXED*** - **The wrap's identity-mirror reconnect re-ran the full era negotiation** (worst
+  case roughly 3 s per respawn against an upstream that ignores `server/discover`). The
+  negotiated era is now remembered per upstream, and a death-driven reconnect goes straight to
+  the era it knows. A failed hinted connect or an explicit reconnect re-negotiates in full, so
+  an upstream upgraded across a restart is never pinned down an era. Pinned by
+  `test/reconnect-era-memo.test.js`.
+- ***FIXED*** - **`io.modelcontextprotocol/logLevel` was stripped on wrapped forwards.** Now
+  era-keyed at the client boundary: a modern upstream gets the caller's level verbatim in
+  `_meta`; a legacy upstream that declared the `logging` capability gets `logging/setLevel`
+  issued before the call (and the key never leaks into legacy `_meta`). Pinned by
+  `test/loglevel.test.js`.
 
-Found a bug, or want to help with the 0.6.0 work? Issues and PRs are welcome.
+## By design (not bugs)
+
+These answer "why doesn't it do X". They are considered decisions, not defects.
+
+- **The config home defaults to the package root.** A git clone keeps working unchanged, and
+  seeding protects it from `npm update`, with an every-start relocation hint. Defaulting it to a
+  per-user directory instead needs a migration story for existing installs, so it ships as its own
+  release rather than as a rider. (`preuninstall` as a rescue mechanism is tested DEAD on npm
+  11.9.0 - it will not be built.)
+- **Funnel-mode curated descriptions carry an `[upstream]` title prefix** that lean passthrough
+  does not. A toggle to reconcile the two is cosmetic.
+- **The `command` slot is not path-guarded, and `PATH` is deliberately permitted.** The command
+  names the interpreter (`node`, a system binary), which by definition lives outside the config
+  home, and guarding `PATH` would break how commands resolve at all - so an upstream entry
+  combining `command: "node"` with a caller-supplied `env.PATH` runs whatever that PATH resolves.
+  This is a documented boundary, not an oversight: an upstream entry already specifies an
+  arbitrary command to execute, so the isolation guard is a **tripwire** for configs that quietly
+  reach outside an auditable config home - not a sandbox against an untrusted pack author.
+  Installing a pack is installing software (see [SECURITY.md](../SECURITY.md)).
+- **A meta-less `server/discover` is answered rather than refused** - permissive by design.
+- **Discover works on a DISABLED upstream**, so its tools can be inspected before enabling. An
+  explicit allowance on the discover path only; the disabled upstream never reaches the tool
+  surface.
+
+Found a bug, or want to help with the open work? Issues and PRs are welcome.

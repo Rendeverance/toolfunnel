@@ -1,4 +1,4 @@
-# demo-hero.tape — the README hero GIF (~20s): "your scripts → your own MCP server.
+# demo-hero.tape - the README hero GIF (~20s): "your scripts → your own MCP server.
 # Zero code, zero dependencies." Render with vhs (https://github.com/charmbracelet/vhs):
 #
 #   vhs demo/demo-hero.tape                     # local install
@@ -15,7 +15,7 @@ Set Height 640
 Set TypingSpeed 35ms
 Set Theme "Dracula"
 
-Type "# 3 ordinary scripts, 3 languages — no SDK, no framework:"
+Type "# 3 ordinary scripts, 3 languages - no SDK, no framework:"
 Enter
 Sleep 800ms
 Type "ls demo/home/tools/scripts/"

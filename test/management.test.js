@@ -357,6 +357,14 @@ const ids = (arr) => (Array.isArray(arr) ? arr.map((x) => x && x.id) : []);
         assert.ok(h && h.enabled === true, 'hook = ' + JSON.stringify(h));
       });
 
+      // A miss must be reported as one. setEnabled returns false for an id matching
+      // no manifest row and no detected script, and writes nothing - so an ok:true
+      // reply here claims a gate was toggled when nothing changed.
+      const miss = payloadOf(await runTool('tf_hook_set', { id: '__tf_no_such_hook', action: 'enable' }));
+      check('HOOKS: tf_hook_set enable of an unknown id reports ok:false', () => {
+        assert.ok(miss && miss.ok === false, 'miss = ' + JSON.stringify(miss));
+      });
+
       const rm = payloadOf(await runTool('tf_hook_set', { id: HOOK_ID, action: 'remove' }));
       check('HOOKS: tf_hook_set remove succeeded', () => {
         assert.ok(rm && rm.ok === true && rm.removed === true, 'remove = ' + JSON.stringify(rm));

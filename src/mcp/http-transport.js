@@ -1,12 +1,12 @@
 'use strict';
 
 /**
- * http-transport.js - the HTTP/SSE transport (the design doc §7).
+ * http-transport.js - the HTTP/SSE transport.
  *
  * The SAME hand-rolled MCP protocol as the stdio `server.js`, served over HTTP/SSE so a
  * LONG-LIVED host process can HOST the server and any CLI client connects to it over
- * `localhost:<port>` - instead of the CLI spawning a short-lived stdio child. This is the
- * north-star rung: the host owns the server, not a console.
+ * `localhost:<port>` - instead of the CLI spawning a short-lived stdio child. The point:
+ * the host owns the server, not a console.
  *
  * It is THIN. It reuses `server.js` for ALL JSON-RPC routing:
  *   - the 4 lean meta-tools (toolfunnel_list_tools / toolfunnel_tool_instructions / toolfunnel_run_tool / toolfunnel_howto),
@@ -15,7 +15,8 @@
  * shape the HTTP response. The protocol logic is identical to stdio precisely because
  * protocol.js + the server's handleMessage are transport-free.
  *
- * Endpoints (bind 127.0.0.1 only; non-loopback Host headers are rejected defensively):
+ * Endpoints (bind 127.0.0.1 only; with auth off, non-loopback Host headers AND present
+ * non-loopback Origin headers are rejected defensively - see isLoopbackOrigin for the policy):
  *   - POST /mcp       : one JSON-RPC request -> 200 application/json (a result) | 202 no body
  *                       (a notification, handleMessage returned null) | a -32700 parse-error
  *                       object at HTTP 200 for bad JSON. An oversized body is rejected with the
@@ -45,7 +46,7 @@
 const http = require('node:http');
 
 const serverModule = require('./server');
-const { handleMessage } = serverModule;
+const { handleMessage, handleBatch } = serverModule;
 // The 2026-07-28 ("modern") era shapes - era detection, header validation, subscriptions/listen.
 // This transport is DUAL-ERA: modern requests get strict header enforcement + the listen stream;
 // legacy requests (initialize-handshake clients, the GET /mcp SSE stream) are byte-for-byte 0.5.0.
@@ -71,6 +72,11 @@ const SSE_KEEPALIVE_MS = 25000;
 // Hard cap on a POSTed JSON-RPC body so a pathological/huge request can't exhaust memory. A
 // JSON-RPC tools/call payload is tiny; 4 MiB is generous headroom. Over the cap -> -32700.
 const MAX_BODY_BYTES = 4 * 1024 * 1024;
+// Hard cap on JSON-RPC batch members (0.7.0). MAX_BODY_BYTES alone is no bound on WORK: a
+// tools/call member is ~100 bytes, so 4 MiB buys tens of thousands of gated invocations - each
+// spawning hook children and a tool child - executed serially while the socket is held. 64 is well
+// past any real client's batching and far short of a denial of service.
+const MAX_BATCH_MEMBERS = 64;
 // RFC 9728 Protected Resource Metadata path - served UNAUTHENTICATED (it is the discovery document
 // that tells a client which authorization server to use), and ONLY when auth is enabled.
 const WELL_KNOWN_PRM = '/.well-known/oauth-protected-resource';
@@ -126,7 +132,7 @@ function makeLog(logger) {
   };
 }
 
-/** Default build factory - the real Phase-2 build over the on-disk (EMPTY by default) expose.json. */
+/** Default build factory - the real full build over the on-disk (EMPTY by default) expose.json. */
 function defaultBuildFactory() {
   return require('./server').buildProtocol();
 }
@@ -155,6 +161,40 @@ function isLoopbackHost(hostHeader) {
   }
   host = host.toLowerCase();
   return host === '127.0.0.1' || host === 'localhost' || host === '::1' || host === '0:0:0:0:0:0:0:1';
+}
+
+/**
+ * Is the Origin header acceptable? OUR validation policy (an engineering call for a loopback
+ * gateway, not a spec quote), era-independent - it gates the HTTP request before any JSON-RPC
+ * body is read, so legacy and modern callers are treated identically:
+ *
+ *   - ABSENT -> pass. Non-browser clients (stdio bridges, SDKs, curl) send no Origin; requiring
+ *     one would break every legitimate client we serve.
+ *   - PRESENT + loopback host part -> pass (a local web UI is a first-class client).
+ *   - PRESENT + anything else -> reject. This is the DNS-rebinding / cross-origin-CSRF guard: a
+ *     browser page on disallowed.example can script POSTs at 127.0.0.1 and the browser attaches its
+ *     Origin - the one header the page cannot forge. Includes the opaque `Origin: null`
+ *     (sandboxed iframes / file:// pages): present-and-not-loopback is the rejection rule.
+ *
+ * The caller applies this only when auth is DISABLED - with auth ON the bearer token is the
+ * boundary (same rationale as the Host guard) and remote browser clients legitimately present
+ * non-loopback Origins.
+ * @param {string|undefined} originHeader  the raw `Origin` request header
+ * @returns {boolean}
+ */
+function isLoopbackOrigin(originHeader) {
+  if (originHeader == null || originHeader === '') return true; // absent -> not a browser context
+  const raw = String(originHeader).trim();
+  // An Origin is scheme://host[:port] - no path. Anything without "://" (including the literal
+  // opaque token "null") is not a loopback web origin: reject.
+  const sep = raw.indexOf('://');
+  if (sep === -1) return false;
+  // An EMPTY host part ("http://") must reject HERE: isLoopbackHost passes '' because a request
+  // with no Host header at all is legitimate (HTTP/1.0), but this Origin IS present - a hostless
+  // origin is not a loopback web origin (origin.test.js 4b).
+  const hostPart = raw.slice(sep + 3);
+  if (hostPart === '') return false;
+  return isLoopbackHost(hostPart);
 }
 
 /**
@@ -301,7 +341,7 @@ function createHttpMcpServer(opts = {}) {
   const log = makeLog(o.logger);
 
   // ── Mutable runtime state ─────────────────────────────────────────────────────────────────
-  /** @type {object|null} the current Phase-2 build { protocol, aggregator, engine, ctx }. */
+  /** @type {object|null} the current full build { protocol, aggregator, engine, ctx }. */
   let build = null;
   /** @type {import('node:http').Server|null} */
   let httpServer = null;
@@ -323,6 +363,8 @@ function createHttpMcpServer(opts = {}) {
   /** @type {boolean} latch so stop() is idempotent and start() can't double-bind. */
   let started = false;
   let stopping = false;
+  // 4.4: modern tools/call sockets closed before the response was written (per host lifetime).
+  let disconnectCancels = 0;
   /** @type {(() => void)|null} teardown for the config hot-reload watchers (armed in start()). */
   let configWatchersStop = null;
   /**
@@ -438,9 +480,22 @@ function createHttpMcpServer(opts = {}) {
    */
   function openListenStream(req, res, msg) {
     const subId = msg.id;
-    // A listen-FIRST modern client bypasses handleMessage - arm the N3 filter here too.
+    // A listen-FIRST modern client bypasses handleMessage - arm the wrap-chatter filter here too.
     if (typeof serverModule.armWrapChatter === 'function') serverModule.armWrapChatter(build);
     const { agreed } = modern.normaliseListenFilter(msg.params);
+
+    // At capacity -> refuse the NEW stream with a clear error BEFORE any SSE bytes are written;
+    // existing streams are never evicted (they may carry subscriptions the client relies on).
+    //
+    // ORDER MATTERS (0.7.0): this check used to sit AFTER subscribeResources below, and the 503
+    // return path registers no cleanup - so a refused listen took refcounts it never released.
+    // Each leaked ref pinned its URI above zero (no resources/unsubscribe ever sent) and kept it
+    // in the replay set, re-subscribed on every future upstream reconnect, unboundedly.
+    if (modernListeners.size >= MODERN_LISTENERS_MAX) {
+      return sendJson(res, 503, makeErrorWithId(subId, ERR.INTERNAL,
+        'listen stream limit reached (' + MODERN_LISTENERS_MAX + ') - close an existing subscriptions/listen stream first'));
+    }
+
     // resourceSubscriptions is only agreed when some upstream can DELIVER per-URI updates (modern
     // era emits spontaneously; a subscribe-capable legacy upstream gets the subscribes forwarded).
     // An ack must never promise a dead channel.
@@ -451,13 +506,6 @@ function createHttpMcpServer(opts = {}) {
       } else {
         delete agreed.resourceSubscriptions;
       }
-    }
-
-    // At capacity -> refuse the NEW stream with a clear error BEFORE any SSE bytes are written;
-    // existing streams are never evicted (they may carry subscriptions the client relies on).
-    if (modernListeners.size >= MODERN_LISTENERS_MAX) {
-      return sendJson(res, 503, makeErrorWithId(subId, ERR.INTERNAL,
-        'listen stream limit reached (' + MODERN_LISTENERS_MAX + ') - close an existing subscriptions/listen stream first'));
     }
 
     res.writeHead(200, {
@@ -490,6 +538,14 @@ function createHttpMcpServer(opts = {}) {
     const cleanup = () => {
       clearInterval(keepAlive);
       modernListeners.delete(entry);
+      // 5.4: the stream WAS the subscription - closing it releases the listen-owned resource
+      // URIs (this cleanup previously released nothing: leak site #2). _released guards the
+      // up-to-four close/error events that all route here.
+      if (entry._released !== true && entry.agreed && Array.isArray(entry.agreed.resourceSubscriptions)) {
+        entry._released = true;
+        const agg = build && build.aggregator;
+        if (agg && typeof agg.releaseResources === 'function') agg.releaseResources(entry.agreed.resourceSubscriptions);
+      }
     };
     req.on('close', cleanup);
     req.on('error', cleanup);
@@ -548,7 +604,7 @@ function createHttpMcpServer(opts = {}) {
    */
   function wireAggregatorNotify() {
     if (build && build.aggregator) {
-      // Arm the N3 cross-upstream filter from wiring time - bridged notifications can arrive
+      // Arm the cross-upstream wrap-chatter filter from wiring time - bridged notifications can arrive
       // before the first client message computes the wrap state.
       if (typeof serverModule.armWrapChatter === 'function') serverModule.armWrapChatter(build);
       build.aggregator.onToolsChanged = () => broadcastToolsListChanged();
@@ -569,7 +625,7 @@ function createHttpMcpServer(opts = {}) {
         try { pushToSse(n); } catch (_e) { /* legacy SSE best-effort */ }
         try { pushToListeners(n); } catch (_e) { /* modern listeners best-effort */ }
       };
-      // Bridge B: elicitations from the wrapped upstream bind to the one in-flight wrapped call
+      // Elicitation bridge: elicitations from the wrapped upstream bind to the one in-flight wrapped call
       // (or decline). The handler reads `build` live via this closure, same as the bridge above.
       if (typeof serverModule.handleUpstreamServerRequest === 'function') {
         build.aggregator.onUpstreamServerRequest = (uid, m, c) =>
@@ -697,6 +753,48 @@ function createHttpMcpServer(opts = {}) {
       return sendJson(res, 200, makeError(ERR.PARSE, 'Parse error: invalid JSON body'));
     }
 
+    // ── JSON-RPC batch ─────────────────────────────────────────────────────────────
+    // HTTP is sessionless, so the header is the only era evidence. ABSENT passes - 2025-03-26
+    // (the one revision that defines batching) PREDATES the MCP-Protocol-Version header, which
+    // 2025-06-18 introduced; an explicit 2025-03-26 passes; any other value lets the array fall
+    // through to handleMessage's frozen -32600. Mechanics per the 2025-03-26 Transports spec:
+    // solely-notifications -> 202 no body; any requests -> one application/json array; an empty
+    // batch -> 400 + the id-less -32600 ("server cannot accept the input").
+    if (Array.isArray(msg)) {
+      const hv = req.headers && req.headers['mcp-protocol-version'];
+      if (hv === undefined || hv === '2025-03-26') {
+        // A MODERN-shaped member cannot legally travel in a batch: batching exists ONLY in
+        // 2025-03-26, which predates the modern era entirely. Refusing here closes an era-mixing
+        // hole (0.7.0): this branch runs BEFORE bodyIsModern below, so a modern body wrapped in a
+        // one-element array used to skip validateModernHeaders, the Mcp-Param cross-check and the
+        // disconnect-cancel accounting, and still be SERVED with full modern semantics because
+        // handleMessage re-detects the era from the body.
+        if (msg.some((m) => modern.isModernRequest(m))) {
+          return sendJson(res, 400, makeError(ERR.INVALID_REQUEST,
+            'modern-era messages cannot be batched - JSON-RPC batching is 2025-03-26 only; send each modern request as its own POST'));
+        }
+        // A batch is executed member-by-member with a gated tool call possible in every slot, so an
+        // uncapped array is one POST buying unbounded sequential execution (0.7.0).
+        if (msg.length > MAX_BATCH_MEMBERS) {
+          return sendJson(res, 400, makeError(ERR.INVALID_REQUEST,
+            `batch too large (${msg.length} members, max ${MAX_BATCH_MEMBERS}) - split it`));
+        }
+        let batched;
+        try {
+          batched = await handleBatch(build, msg);
+        } catch (err) {
+          log('handleBatch threw (should not):', (err && err.stack) || String(err));
+          return sendJson(res, 200, makeError(ERR.INTERNAL, 'Internal error'));
+        }
+        if (batched == null) {
+          res.writeHead(202, { 'Content-Length': 0, 'Cache-Control': 'no-store' });
+          return res.end();
+        }
+        if (!Array.isArray(batched)) return sendJson(res, 400, batched); // empty batch
+        return sendJson(res, 200, batched);
+      }
+    }
+
     // ── Modern era (2026-07-28): strict header enforcement + the listen stream ────────────────
     // Era detection is by BODY (per-request _meta - the spec's dual-era rule); initialize always
     // selects legacy. Legacy requests skip ALL of this and flow byte-for-byte as 0.5.0 (their
@@ -716,6 +814,16 @@ function createHttpMcpServer(opts = {}) {
       const vErr = modern.validateModernRequest(msg);
       if (vErr) {
         return sendJson(res, vErr.httpStatus, makeErrorWithId(msg.id, vErr.code, vErr.message, vErr.data));
+      }
+      // 4.3: x-mcp-header parameter mirroring - the 2026-07-28 Streamable HTTP spec's Server
+      // Validation MUST: a PRESENT Mcp-Param-{name} header must equal the body argument at the
+      // advertised annotation's path (split-source-of-truth guard: a proxy routing on the
+      // header while we execute on the body). Values ride the 4.2 sentinel. Absent headers
+      // pass (mirroring is the CLIENT's obligation); unknown Mcp-Param names are ignored.
+      // The numeric 42.0==42 note is a SHOULD - scoped out; primitives compare canonically.
+      if (msg.method === 'tools/call' && msg.params && typeof msg.params.name === 'string') {
+        const pErr = validateMcpParamHeaders(build, req.headers, msg.params);
+        if (pErr) return sendJson(res, 400, makeErrorWithId(msg.id, modern.ERR_MODERN.HEADER_MISMATCH, pErr));
       }
       // subscriptions/listen is transport-owned: the POST's response IS the SSE stream.
       if (msg.method === 'subscriptions/listen') {
@@ -738,6 +846,47 @@ function createHttpMcpServer(opts = {}) {
         : 'Header mismatch: MCP-Protocol-Version announces ' + modern.MODERN_PROTOCOL_VERSION +
           ' but the body carries no matching _meta protocolVersion';
       return sendJson(res, 400, makeErrorWithId(msg && msg.id, modern.ERR_MODERN.HEADER_MISMATCH, message));
+    } else if (headerVersion !== undefined && !modern.supportedVersions().includes(headerVersion)) {
+      // The 2025-06-18 MUST: "a request with an invalid or unsupported
+      // MCP-Protocol-Version" gets 400. Only PRESENT-and-unknown values land here: absent stays
+      // the frozen lenient pass (the spec's own default-assumption case + every pre-2025-06-18
+      // client), supported legacy values pass, and the modern value is owned by the
+      // HeaderMismatch arm above (it demands matching modern _meta). Composition with 2.3:
+      // an array with a SUPPORTED non-batching header keeps the frozen -32600 (the batch gate
+      // declined, this arm passes); an array with an UNKNOWN header lands here and 400s - it is
+      // still a request with an invalid header, exactly what the MUST covers.
+      // -32022 (UnsupportedProtocolVersion), NOT the generic -32600. Same condition, same code,
+      // wherever it is detected: the _meta path already answers -32022 with supported/requested,
+      // and a client should not have to know WHERE the server noticed to parse the reply. The
+      // data payload is the useful part - it names the versions to retry with, so a client can
+      // renegotiate without a human reading the message string. Unlike the _meta path (whose one
+      // lawful value is the modern version) the HEADER may carry any era we speak, so the full
+      // supported set is advertised here.
+      return sendJson(res, 400, makeErrorWithId(msg && msg.id, modern.ERR_MODERN.UNSUPPORTED_PROTOCOL_VERSION,
+        `Unsupported protocol version: MCP-Protocol-Version header '${headerVersion}' (supported: ` +
+        modern.supportedVersions().join(', ') + ')',
+        { supported: modern.supportedVersions(), requested: headerVersion }));
+    }
+
+    // 4.4 - disconnect-as-cancellation (DECIDED; the trade STATED): the modern spec's
+    // stream-close-MUST is written for per-request SSE streams; we answer plain JSON, so the
+    // only close signal is the bare POST socket - ambiguous (proxy timeout, keep-alive reset,
+    // real client abort). Decided: treat a premature close as cancellation anyway, gated on
+    // modern tools/call. ACCEPTED CONSEQUENCE, documented: a proxy-killed socket spuriously
+    // cancels the RESPONSE of a live gated call (the upstream work stops only where a cancel
+    // path exists - sessionless HTTP has no id translation to relay one). Riders honoured:
+    // the cancellation is audit-logged and counted on /health for a client that comes back.
+    let modernDisconnected = false;
+    if (bodyIsModern && msg.method === 'tools/call') {
+      res.once('close', () => {
+        if (res.writableEnded) return; // normal completion - not a cancellation
+        modernDisconnected = true;
+        disconnectCancels += 1;
+        logger.log({
+          type: 'client', event: 'disconnect-cancel', method: msg.method,
+          tool: msg.params && msg.params.name, id: msg.id,
+        });
+      });
     }
 
     let response;
@@ -750,6 +899,10 @@ function createHttpMcpServer(opts = {}) {
       return sendJson(res, 200, makeError(ERR.INTERNAL, 'Internal error', (err && err.message) || String(err)));
     }
 
+    // 4.4: a cancelled request gets NO further messages (MUST) - the socket is gone anyway;
+    // returning here keeps the contract explicit and the counter honest.
+    if (modernDisconnected) return;
+
     // A notification (no reply) -> 202 Accepted, no body. A request -> 200 with the JSON-RPC result.
     if (response == null) {
       res.writeHead(202, { 'Content-Length': 0, 'Cache-Control': 'no-store' });
@@ -761,7 +914,74 @@ function createHttpMcpServer(opts = {}) {
     if (modern.isModernRequest(msg) && response && response.error && response.error.code === -32601) {
       return sendJson(res, 404, response);
     }
+    // 4.1 - the modern-error status map: in-handler mints inherit their spec-mandated status by
+    // CODE. -32602 is a MUST-400 (2026-07-28 base protocol, Error Handling); the three modern codes
+    // (-32020/-32021/-32022) are 400 wherever they arise (the seam validators already 400 their
+    // own). Legacy bodies keep the JSON-RPC-over-HTTP 200-with-error convention untouched.
+    if (modern.isModernRequest(msg) && response && response.error &&
+        (response.error.code === -32602 || response.error.code === -32020 ||
+         response.error.code === -32021 || response.error.code === -32022)) {
+      return sendJson(res, 400, response);
+    }
+    // NARROW remap for the modern-only refusal ONLY: a legacy body refused under
+    // serveLegacy:false carries the mint's data.policy marker - give it the same 404 a real
+    // modern-only server presents a probing legacy client. Gated on the exact marker so every
+    // ORDINARY legacy -32601 keeps its frozen 200-with-error (the golden diff enforces that).
+    if (response && response.error && response.error.code === -32601 &&
+        response.error.data && response.error.data.policy === 'modern-only') {
+      return sendJson(res, 404, response);
+    }
     return sendJson(res, 200, response);
+  }
+
+  /**
+   * validateMcpParamHeaders - the 4.3 Server-Validation check. Resolves the ADVERTISED def for
+   * params.name off the live surface (handleToolsList - the same assembly the client saw, so
+   * the annotation map can never disagree with the advertisement; the ingest hygiene in the
+   * aggregator has already stripped invalid annotations). Walks the pure-`properties` chains
+   * collecting x-mcp-header names, then compares each PRESENT `mcp-param-<name>` header
+   * (sentinel-decoded) against the body argument at that path. Returns a mismatch message, or
+   * null when valid. NEVER throws - a lookup failure validates nothing (fail open here: the
+   * body is still the single execution source of truth downstream).
+   */
+  function validateMcpParamHeaders(build, headers, params) {
+    try {
+      const list = serverModule.handleToolsList(build.protocol, build.aggregator,
+        { registry: build.registry, toolStatePath: build.toolStatePath });
+      const def = ((list && list.tools) || []).find((t) => t && t.name === params.name);
+      const schema = def && def.inputSchema;
+      if (!schema || typeof schema !== 'object') return null;
+      const annotations = []; // { header: lowercased header name, path: [prop, ...] }
+      (function walk(node, pathSoFar) {
+        if (!node || typeof node !== 'object' || Array.isArray(node)) return;
+        const props = node.properties;
+        if (!props || typeof props !== 'object' || Array.isArray(props)) return;
+        for (const [key, sub] of Object.entries(props)) {
+          if (!sub || typeof sub !== 'object' || Array.isArray(sub)) continue;
+          const p = pathSoFar.concat(key);
+          if (typeof sub['x-mcp-header'] === 'string') {
+            annotations.push({ header: 'mcp-param-' + sub['x-mcp-header'].toLowerCase(), path: p });
+          }
+          walk(sub, p); // nested objects stay on the chain via their own `properties`
+        }
+      })(schema, []);
+      const args = params.arguments && typeof params.arguments === 'object' ? params.arguments : {};
+      for (const a of annotations) {
+        const raw = headers && headers[a.header];
+        if (raw === undefined) continue; // absent -> the client mirrored nothing; nothing to cross-check
+        const headerValue = modern.decodeHeaderSentinel(String(raw));
+        let bodyValue = args;
+        for (const k of a.path) {
+          bodyValue = bodyValue && typeof bodyValue === 'object' ? bodyValue[k] : undefined;
+        }
+        if (bodyValue === undefined || String(bodyValue) !== headerValue) {
+          return `Header mismatch: ${a.header} value '${String(raw)}' does not match the body argument at '${a.path.join('.')}'`;
+        }
+      }
+      return null;
+    } catch (_e) {
+      return null; // never let validation break the request path
+    }
   }
 
   /**
@@ -785,6 +1005,16 @@ function createHttpMcpServer(opts = {}) {
     // check and let the OAuth gate below authenticate every protected route.
     if (!authEnabled && !isLoopbackHost(req.headers && req.headers.host)) {
       return sendJson(res, 403, makeError(ERR.INVALID_REQUEST, 'forbidden: non-loopback Host'));
+    }
+
+    // Origin guard: with auth OFF, a PRESENT non-loopback Origin is refused - the
+    // browser-attached Origin is the one header a third-party page cannot forge, so this closes the
+    // DNS-rebinding / cross-origin-CSRF hole the bind address alone cannot (a browser on ANY site
+    // can reach 127.0.0.1). Absent Origin passes (non-browser clients). Policy + parsing rules
+    // live on isLoopbackOrigin(). With auth ON the token is the boundary, exactly like the Host
+    // guard above.
+    if (!authEnabled && !isLoopbackOrigin(req.headers && req.headers.origin)) {
+      return sendJson(res, 403, makeError(ERR.INVALID_REQUEST, 'forbidden: non-loopback Origin'));
     }
 
     // Parse the path only (ignore query) without pulling in node:url's WHATWG parser overhead.
@@ -828,14 +1058,25 @@ function createHttpMcpServer(opts = {}) {
       // alias (the older HTTP+SSE shape, deprecated but still supported). Both routes
       // hand off to the same openSse() - the loopback/auth guard above already gated the request.
       if (method === 'GET' && (pathName === '/mcp' || pathName === '/mcp/sse')) {
-        // MODERN-ONLY POLICY: the GET-SSE stream is a LEGACY-era channel (modern uses
-        // subscriptions/listen on POST) - refuse it with the policy named, like every other
-        // legacy-shaped request (era-policy switches, 2026-07-18).
+        // MODERN-ONLY POLICY (0.7.0): the GET-SSE stream is a LEGACY-era channel (modern uses
+        // subscriptions/listen on POST) - answer the spec's own compatibility shape, 405 Method
+        // Not Allowed + Allow: POST (the Streamable HTTP spec's rule; a MUST across three revisions).
+        // Replaces the old 400/-32020 - HeaderMismatch was an allocation-policy misuse here too.
         if (build && build.serveLegacy === false) {
-          return sendJson(res, 400, makeError(-32020,
-            'modern-only gateway (serveLegacy:false): the legacy SSE channel is disabled - use subscriptions/listen'));
+          res.writeHead(405, { Allow: 'POST', 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+          return res.end(JSON.stringify(makeError(ERR.INVALID_REQUEST,
+            'modern-only gateway (serveLegacy:false): the legacy SSE channel is disabled - POST subscriptions/listen instead')));
         }
         return openSse(req, res);
+      }
+
+      // 4.5: modern-only mode answers DELETE on the MCP endpoint with 405 too (older-transport
+      // session teardown - the spec's compatibility table). Dual-era keeps the frozen 404.
+      if (method === 'DELETE' && (pathName === '/mcp' || pathName === '/mcp/sse') &&
+          build && build.serveLegacy === false) {
+        res.writeHead(405, { Allow: 'POST', 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        return res.end(JSON.stringify(makeError(ERR.INVALID_REQUEST,
+          'modern-only gateway (serveLegacy:false): sessions are not a modern mechanism - POST requests instead')));
       }
 
       if (method === 'GET' && pathName === '/health') {
@@ -922,6 +1163,9 @@ function createHttpMcpServer(opts = {}) {
       protocolVersions: modern.supportedVersions(),
       // Open modern subscriptions/listen streams (legacy SSE clients are sseClientCount).
       listenStreams: modernListeners.size,
+      // 4.4 rider: modern POST tools/call sockets that closed before the response was written -
+      // treated as cancellation (audit-logged); a returning client discovers the count here.
+      disconnectCancels,
       // The MCP endpoint the CLI points at (includes the /mcp path) - matches the .mcp.json
       // target and what the status tooltip should show, not the bare origin.
       url: boundPort == null ? null : currentUrl() + '/mcp',
@@ -1252,6 +1496,13 @@ function createHttpMcpServer(opts = {}) {
     if (next && next.aggregator && prevAggForSubs &&
         prevAggForSubs._subscribedUris instanceof Set && prevAggForSubs._subscribedUris.size) {
       next.aggregator._subscribedUris = new Set(prevAggForSubs._subscribedUris);
+      // Carry the REFCOUNTS too, exactly as reloadExpose does (server.js). Without them the new
+      // aggregator held the URIs with an empty refs Map, and releaseResources treats refcount 0 as
+      // "last holder" - so the first listener to close unsubscribed upstream and killed the
+      // channel for every other listener still holding that URI (0.7.0).
+      if (prevAggForSubs._subscribedRefs instanceof Map) {
+        next.aggregator._subscribedRefs = new Map(prevAggForSubs._subscribedRefs);
+      }
     }
     if (next && next.aggregator && typeof next.aggregator.connectAll === 'function') {
       try {
@@ -1306,6 +1557,7 @@ module.exports = {
   createHttpMcpServer,
   // Exported for unit tests / reuse - the small pure seams.
   isLoopbackHost,
+  isLoopbackOrigin,
   PROTOCOL_VERSION,
   SERVER_INFO,
 };

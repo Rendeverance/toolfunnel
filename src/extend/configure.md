@@ -71,7 +71,8 @@ legacy MCP protocol permanently (opt-in, warns loudly); `"env"` passes environme
 the spawned server; `"cwd"` sets its working directory; `"timeoutMs"` raises the payload
 timeout for that upstream (default 120000 ms - applies to `tools/call`, `prompts/get` and
 `resources/read`; under a wrap, a tool that reports progress keeps its call alive regardless.
-The 10 s handshake/list window is fixed: it detects dead servers); `"modernOnly": true`
+the separate 10 s handshake/list window detects dead servers, and `"requestTimeoutMs"` raises
+it for a server that needs longer to boot); `"modernOnly": true`
 requires that upstream to speak the modern (2026-07-28) protocol - the connect fails with a
 clear error instead of falling back to legacy (the mirror of `legacyPin`; setting both on one
 upstream is refused). Server side, `"serveLegacy": false` in `toolfunnel.json` makes the

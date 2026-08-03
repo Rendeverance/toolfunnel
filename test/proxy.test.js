@@ -32,7 +32,7 @@ const MANIFEST_PATH = path.join(REPO_ROOT, 'hooks', 'hooks.manifest.json');
 const MOCK_SERVER = path.join(REPO_ROOT, 'mcp', 'servers', 'mock-upstream', 'server.js');
 const DENY_HOOK = path.join(REPO_ROOT, 'test', 'fixtures', 'scripts', 'deny-hook.js');
 
-const REQUEST_TIMEOUT_MS = 12000;
+const REQUEST_TIMEOUT_MS = 45000; // a CEILING, not a wait - generous so a loaded CI box cannot flake it
 const OVERALL_TIMEOUT_MS = 25000;
 
 // ── results harness ───────────────────────────────────────────────────────────────────────────

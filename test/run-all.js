@@ -43,13 +43,80 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
 // The suite, in run order. Resolved relative to this directory so cwd never matters.
-const TEST_FILES = ['smoke.js', 'stdio.test.js', 'http.test.js', 'http-concurrency.test.js', 'gate.test.js', 'management.test.js', 'mode.test.js', 'reference-gate.test.js', 'logging.test.js', 'proxy.test.js', 'reload.test.js', 'http-reload.test.js', 'dual-era.test.js', 'modern-edges.test.js', 'era-policy.test.js', 'dual-era-client.test.js', 'wrap.test.js', 'wrap-wire.test.js', 'lean-forward.test.js', 'reconnect.test.js', 'aggregator-races.test.js', 'timeouts.test.js', 'matrix.test.js', 'ui-matrix.test.js', 'hidden.test.js', 'auth.test.js', 'audit-log.test.js', 'tool-editor.test.js', 'install.test.js', 'spawn-shim.test.js', 'server-config.test.js', 'config-home.test.js', 'pack.test.js', 'integration-real-mcp.test.js', 'integration-http-client.test.js', 'release.test.js'];
+const TEST_FILES = ['smoke.js', 'stdio.test.js', 'framing-split.test.js', 'framing-limits.test.js', 'http.test.js', 'http-concurrency.test.js', 'origin.test.js', 'header-enforcement.test.js', 'header-sentinel.test.js', 'xmcp-header.test.js', 'http-status-map.test.js', 'disconnect-cancel.test.js', 'gate.test.js', 'gate-semantics.test.js', 'matcher-compile.test.js', 'matcher-cache.test.js', 'hook-runner-bounds.test.js', 'hook-loader-state.test.js', 'isolation-guard.test.js', 'ui-hook-toggle.test.js', 'management.test.js', 'mode.test.js', 'reference-gate.test.js', 'logging.test.js', 'log-rotation.test.js', 'proxy.test.js', 'rename-safety.test.js', 'rename-migration.test.js', 'reload.test.js', 'http-reload.test.js', 'dual-era.test.js', 'modern-edges.test.js', 'era-policy.test.js', 'modern-only-refusal.test.js', 'negotiation.test.js', 'batching.test.js', 'batch-bounds.test.js', 'dual-era-client.test.js', 'wrap.test.js', 'wrap-wire.test.js', 'wrap-error-relay.test.js', 'wrap-capabilities.test.js', 'elicit-caps.test.js', 'elicit-url-relay.test.js', 'listen-leak.test.js', 'lean-forward.test.js', 'pagination.test.js', 'loglevel.test.js', 'metadata-forwarding.test.js', 'reconnect.test.js', 'reconnect-era-memo.test.js', 'aggregator-races.test.js', 'reconnect-backoff.test.js', 'disabled-upstream-surface.test.js', 'timeouts.test.js', 'matrix.test.js', 'ui-matrix.test.js', 'hidden.test.js', 'hot-order.test.js', 'curated-collision.test.js', 'auth.test.js', 'audit-log.test.js', 'tool-editor.test.js', 'orphan-tmp.test.js', 'ui-partial-write.test.js', 'install.test.js', 'spawn-shim.test.js', 'server-config.test.js', 'config-home.test.js', 'pack.test.js', 'integration-real-mcp.test.js', 'integration-http-client.test.js', 'release.test.js'];
 
-// Per-test safety ceiling. Each test sets its own internal timeouts (the stdio test, e.g., caps the
-// whole exchange at ~24s); this is the outer guard so a stuck child can never hang the whole run.
-const PER_TEST_TIMEOUT_MS = 60000;
+// Per-test safety ceiling. Each test sets its own internal timeouts; this is the outer guard so a
+// stuck child can never hang the whole run. Generous on purpose: it exists to catch a WEDGE, not
+// to assert performance - a loaded CI box must never flake the suite on this number.
+const PER_TEST_TIMEOUT_MS = 180000;
 
 const REPO_ROOT = path.resolve(__dirname, '..');
+
+// The mutable config files the tests snapshot/mutate/restore. The runner backstops them: if any
+// test aborts hard enough to skip its own restore (an outer-timeout kill, a crash before the
+// finally), the leaked state would corrupt every later run - the failure would MOVE to an innocent
+// test on the next invocation. Snapshot before the first test, verify after the last, restore and
+// SAY SO. A leak is reported loudly but does not fail the suite by itself: the leaking test
+// already failed its own restore-check.
+const MUTABLE_CONFIG = [
+  'mcp/expose.json',
+  'hooks/hooks.manifest.json',
+  'hooks/hooks.state.json',
+  'tools/tools.state.json',
+  'tools/tools.register.json',
+  // The two mutated by auth.test.js / audit-log.test.js / logging.test.js. Absent from this
+  // list, an outer-timeout kill mid-test left auth ENABLED against fixture values - the next
+  // run then snapshotted the residue as "the original" and faithfully re-restored it forever.
+  'auth/auth.config.json',
+  'logs/log.config.json',
+].map((rel) => path.join(REPO_ROOT, rel));
+
+function snapshotConfig() {
+  const snap = new Map();
+  for (const p of MUTABLE_CONFIG) {
+    try { snap.set(p, fs.readFileSync(p, 'utf8')); } catch (_e) { snap.set(p, null); }
+  }
+  return snap;
+}
+
+/**
+ * Sweep test files stranded in logs/ by a KILLED run (a per-test `finally` that never got
+ * to fire). The test namespaces are unambiguous - `__tf_test_*` (the logging/audit rigs)
+ * and `test-*` (the reconnect/reload journals) - so anything matching them at suite start
+ * belongs to a dead process: never operator data, and never a live test (this runner is
+ * serial and concurrent execution is unsupported, see header). Without this, a stranding
+ * survives forever because no later run owns it - one sat in logs/ for a month.
+ * @returns {string[]} repo-relative paths swept
+ */
+function sweepTestArtifacts() {
+  const dir = path.join(REPO_ROOT, 'logs');
+  let names;
+  try { names = fs.readdirSync(dir); } catch (_e) { return []; }
+  const swept = [];
+  for (const name of names) {
+    if (!/^(__tf_test_|test-)/.test(name)) continue;
+    try {
+      fs.unlinkSync(path.join(dir, name));
+      swept.push('logs/' + name);
+    } catch (_e) { /* best-effort - a locked file just waits for the next run */ }
+  }
+  return swept;
+}
+
+function restoreConfig(snap) {
+  const leaked = [];
+  for (const [p, before] of snap) {
+    let after = null;
+    try { after = fs.readFileSync(p, 'utf8'); } catch (_e) { after = null; }
+    if (after === before) continue;
+    leaked.push(path.relative(REPO_ROOT, p));
+    try {
+      if (before === null) { if (fs.existsSync(p)) fs.unlinkSync(p); }
+      else { fs.writeFileSync(p, before); }
+    } catch (_e) { /* best-effort - the report below still names the file */ }
+  }
+  return leaked;
+}
 
 /**
  * Run one test file as `node <file>` and classify the outcome by exit code.
@@ -98,7 +165,18 @@ function runOne(file) {
 function main() {
   console.log('toolfunnel test suite - ' + TEST_FILES.length + ' tests, node ' + process.version);
 
+  const swept = sweepTestArtifacts();
+  if (swept.length > 0) {
+    console.log('ARTIFACT SWEEP: removed ' + swept.length + ' stranded test file(s) from a killed run: ' + swept.join(', '));
+  }
+
+  const configSnap = snapshotConfig();
   const results = TEST_FILES.map(runOne);
+  const leaked = restoreConfig(configSnap);
+  if (leaked.length > 0) {
+    console.log('\nCONFIG BACKSTOP: restored ' + leaked.length + ' leaked config file(s) a test failed to put back: '
+      + leaked.join(', ') + ' - the leaking test should have failed its own restore-check above.');
+  }
 
   // ── Summary ───────────────────────────────────────────────────────────────────────────────
   console.log('\n' + '='.repeat(70));

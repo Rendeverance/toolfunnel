@@ -158,17 +158,23 @@
     var modeLabel = el('span', { class: 'toggle-label mode-label', text: t.mode || 'reference' });
     var modeGroup = el('div', { class: 'toggle-group mode' }, [modeSwitch, modeLabel]);
 
-    // Pre / Post hook gates (POST /api/tools/hook).
+    // Pre / Post hook gates (POST /api/tools/hook). The switch reflects the tool's OWN literal
+    // entry (preOwn/postOwn), not "some broader hook fires" - a wildcard gate is not this
+    // switch's state, and rendering it as such made OFF toast a removal that never happened and
+    // then snap back on refresh. The server's stillGated/note is surfaced, and
+    // the panel re-fetches after every change instead of trusting the optimistic value.
     function hookSwitch(eventName, label, current) {
       return toggleGroup(label, 'hook', makeSwitch(current, true, function (input) {
         var want = input.checked;
         driveSwitch(input, '/api/tools/hook', { id: t.id, event: eventName, on: want },
           function (res) {
-            if (eventName === 'PreToolUse') t.pre = want; else t.post = want;
-            if (want && res.scriptPath) {
+            if (res && res.note && res.stillGated) {
+              toast(el('span', {}, [label + ' gate: ', res.note]), 'warn');
+            } else if (want && res.scriptPath) {
               toast(el('span', {}, [label + ' gate enabled for ', el('code', { text: t.id }), '. ', el('code', { text: res.scriptPath })]));
             } else if (want) { toast(label + ' gate enabled for ' + t.id, 'good'); }
             else { toast(label + ' gate removed for ' + t.id, 'good'); }
+            loadTools(); // re-render from the server's truth, never the optimistic flag
           },
           function () { input.checked = !want; });
       }));
@@ -217,7 +223,14 @@
 
     var controls = el('div', { class: 'row-controls' }, [
       modeGroup,
-      el('div', { class: 'hook-toggles' }, [hookSwitch('PreToolUse', 'Pre', t.pre), hookSwitch('PostToolUse', 'Post', t.post)]),
+      el('div', { class: 'hook-toggles' }, [
+        hookSwitch('PreToolUse', 'Pre', t.preOwn === undefined ? t.pre : t.preOwn),
+        hookSwitch('PostToolUse', 'Post', t.postOwn === undefined ? t.post : t.postOwn),
+        // Covered by a broader hook the switch does not own: say so instead of faking the switch.
+        (t.pre && !t.preOwn) || (t.post && !t.postOwn)
+          ? el('span', { class: 'chip', title: 'A broader hook (wildcard or regex) also gates this tool. Manage it on the Hooks tab.', text: 'gated by broader hook' })
+          : null,
+      ]),
       toggleGroup('Enabled', 'enable', enableSwitch),
       toggleGroup('Hot', 'hot', hotSwitch),
       toggleGroup('Hidden', 'hidden', hiddenSwitch),

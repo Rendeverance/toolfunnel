@@ -33,7 +33,6 @@
 const assert = require('node:assert');
 const http = require('node:http');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
 
@@ -48,9 +47,10 @@ const LOG_CONFIG_PATH = path.join(LOGS_DIR, 'log.config.json');
 const AUTH_CONFIG_PATH = authConfig.CONFIG_PATH;
 const STATE_PATH = path.join(ROOT, 'tools', 'tools.state.json');
 
-// An ABSOLUTE temp log the logger uses verbatim - keeps the repo's logs/ dir untouched except for the
-// config file we snapshot/restore. Guaranteed-absent at start.
-const TEMP_LOG = path.join(os.tmpdir(), `toolfunnel-audit-${process.pid}-${crypto.randomUUID()}.jsonl`);
+// A fresh, uniquely named temp log INSIDE the repo's logs/ dir - it has to live in-home, because
+// the log path is confined to <home>/logs (logging.test.js step 5). Deleted in the finally, so
+// logs/ is left holding only what it started with. Guaranteed-absent at start.
+const TEMP_LOG = path.join(ROOT, 'logs', `__tf_test_audit-${process.pid}-${crypto.randomUUID()}.jsonl`);
 
 const ISSUER = 'https://issuer.test';
 const AUDIENCE = 'https://gateway.test';

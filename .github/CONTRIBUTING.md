@@ -33,7 +33,7 @@ npm run test:integration # real-MCP + HTTP client integration tests
 ## Bugs and ideas
 
 Use the issue templates. For anything security-relevant, **don't open a public
-issue** - see [SECURITY.md](SECURITY.md).
+issue** - see [SECURITY.md](../SECURITY.md).
 
 ## Licence
 

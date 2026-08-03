@@ -1,13 +1,13 @@
 'use strict';
 
 /**
- * registry.js - the dynamic, persisted Tool Register (see the architecture doc §5).
+ * registry.js - the dynamic, persisted Tool Register.
  *
- * This is distinct from src/core/tool-registry.js: that one is the in-memory
+ * This is distinct from the in-memory
  * catalogue of tools handed to a backend at connect time. THIS one is the
  * structured, on-disk register the lean meta-tools (toolfunnel_list_tools /
  * toolfunnel_tool_instructions / toolfunnel_run_tool) read every call - so register edits
- * are visible with no reconnect (§1, "no restart for register changes").
+ * are visible with no reconnect ("no restart for register changes").
  *
  * Register entry shape (tools.register.json -> { version, description, tools:[] }):
  *   { id, name, summary, category, instructions, invoke, mode? }
@@ -28,7 +28,7 @@
  *   add(entry) / update(id,patch) / remove(id)  -> mutate + ATOMIC persist
  *   resolveExecution(id, args)  -> { type, run: () => Promise<result> }
  *                                  describes HOW to run the invoke. It does NOT
- *                                  gate - gating is gated-run.js's job (§9).
+ *                                  gate - gating is gated-run.js's job.
  *
  * Pure-ish: the registry only touches its own JSON file + (for script invokes)
  * spawns node on a path resolved under this src/tools dir. Dependencies that a
@@ -39,7 +39,42 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { spawn } = require('node:child_process');
+const { spawn, execFile } = require('node:child_process');
+const reaper = require('../core/child-reaper');
+const { migrateForStoreFile } = require('../core/rename-migration');
+
+// LOCAL tool execution bounds (0.7.0). The upstream path has had per-method timeouts since 0.6.0;
+// the local executor had none, and stdio serialises on one promise chain, so a hanging local tool
+// starved every later request (including `ping`, which clients use as a liveness probe). 120 s
+// matches the upstream PAYLOAD window so a slow-but-alive local tool behaves like a slow upstream.
+// Test seam: the suite proves the timeout/cap BEHAVIOUR (not just these names) by shrinking the
+// windows via env; production never sets them.
+const TOOL_TIMEOUT_MS = Number(process.env.TOOLFUNNEL_TOOL_TIMEOUT_MS) > 0
+  ? Number(process.env.TOOLFUNNEL_TOOL_TIMEOUT_MS) : 120000;
+const MAX_TOOL_OUTPUT_BYTES = Number(process.env.TOOLFUNNEL_TOOL_OUTPUT_CAP) > 0
+  ? Number(process.env.TOOLFUNNEL_TOOL_OUTPUT_CAP) : 4 * 1024 * 1024;
+
+/**
+ * Kill a spawned child AND its descendants, by each platform's own mechanism: taskkill /T on
+ * Windows, the process group on POSIX (the spawn sets `detached` there so the child leads one).
+ * Killing only the direct child orphans grandchildren, which then hold the stdio pipes open.
+ * Best-effort and never throws.
+ * @param {import('node:child_process').ChildProcess} child
+ */
+function killTree(child) {
+  if (!child) return;
+  try {
+    if (child.pid != null && process.platform === 'win32') {
+      execFile('taskkill', ['/pid', String(child.pid), '/T', '/F'], () => {});
+    } else if (child.pid != null) {
+      try { process.kill(-child.pid, 'SIGKILL'); } catch (_eg) { child.kill('SIGKILL'); }
+    } else {
+      child.kill('SIGKILL');
+    }
+  } catch (_e) {
+    try { child.kill(); } catch (_e2) { /* nothing more we can do */ }
+  }
+}
 
 const VALID_INVOKE_TYPES = new Set(['script', 'shell']);
 
@@ -72,24 +107,59 @@ function cloneEntry(entry) {
 }
 
 /**
+ * A sibling temp older than this is a STRANDING (a crashed/killed writer), not an
+ * in-flight write - a live writer's temp exists for milliseconds. Swept on the next
+ * successful write of the same target; the generous age keeps a concurrent writer safe.
+ */
+const STALE_TMP_MS = 60 * 60 * 1000;
+
+/**
+ * Remove STALE stranded temps for `base` in `dir` (the `.<base>.<pid>.<ts>.tmp` shape the
+ * atomic writers below produce). Scoped to the target's own temp shape - never another
+ * file's - and entirely best-effort: sweeping must never fail a write.
+ */
+function sweepStaleTmp(dir, base) {
+  let names;
+  try { names = fs.readdirSync(dir); } catch (_e) { return; }
+  const prefix = `.${base}.`;
+  const now = Date.now();
+  for (const name of names) {
+    if (!name.startsWith(prefix) || !name.endsWith('.tmp')) continue;
+    const p = path.join(dir, name);
+    try {
+      if (now - fs.statSync(p).mtimeMs > STALE_TMP_MS) fs.unlinkSync(p);
+    } catch (_e) { /* a concurrent writer renamed/removed it - fine */ }
+  }
+}
+
+/**
  * Atomic write: serialise to a temp file in the SAME directory as the target
  * (so rename is atomic on the same filesystem/drive), fsync, then rename over
  * the target. A crash leaves either the old file or the new file, never a
- * half-written register.
+ * half-written register. The temp NEVER outlives a failure: any throw (a refused
+ * rename - win32 scanners hold targets briefly - a full disk, a write error)
+ * unlinks it before rethrowing, and stale strandings from writers that died
+ * mid-flight are swept on the next successful write (sweepStaleTmp above).
  */
 function atomicWriteJson(targetPath, obj) {
   const dir = path.dirname(targetPath);
   const base = path.basename(targetPath);
+  sweepStaleTmp(dir, base);
   const tmp = path.join(dir, `.${base}.${process.pid}.${Date.now()}.tmp`);
   const data = JSON.stringify(obj, null, 2) + '\n';
-  const fd = fs.openSync(tmp, 'w');
   try {
-    fs.writeSync(fd, data, 0, 'utf8');
-    fs.fsyncSync(fd);
-  } finally {
-    fs.closeSync(fd);
+    const fd = fs.openSync(tmp, 'w');
+    try {
+      fs.writeSync(fd, data, 0, 'utf8');
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+    fs.renameSync(tmp, targetPath);
+  } catch (err) {
+    try { fs.unlinkSync(tmp); } catch (_e) { /* best-effort - the error below is the story */ }
+    throw err;
   }
-  fs.renameSync(tmp, targetPath);
 }
 
 /** Validate a register entry shape; throws with a clear message on a bad shape. */
@@ -167,14 +237,76 @@ function defaultRunScript(scriptsRoot, invoke, args) {
     const child = spawn(process.execPath, [resolved], {
       env: { ...process.env, TOOLFUNNEL_TOOL_ARGS: JSON.stringify(args ?? null) },
       stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+      // POSIX process group so the timeout below can kill a whole tree; Windows uses taskkill /T.
+      detached: process.platform !== 'win32',
     });
+    reaper.track(child); // last-resort sweep if the gateway dies without its kill path
     let stdout = '';
     let stderr = '';
-    child.stdout.on('data', (d) => { stdout += d.toString(); });
-    child.stderr.on('data', (d) => { stderr += d.toString(); });
-    child.on('error', reject);
+    let settled = false;
+    // BOUNDED + TIMED (0.7.0). The upstream call path has had per-method windows since 0.6.0
+    // (10 s control / 120 s payload) but the LOCAL executor had no clock and no output cap at all,
+    // and stdio serialises every message on one promise chain - so a single hanging local tool
+    // wedged the entire session: measured 2026-07-30, a 40 s tool left a following `ping` and
+    // `tools/list` unanswered for 12 s+, which a client using ping as its liveness probe reads as
+    // a dead gateway. Same shape as the fix in core/hook-runner.js.
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      // Release the pipes and unref the handle - the ChildProcess itself keeps the event loop
+      // referenced until the child exits, so a tree that survives killTree would otherwise pin
+      // the process after we have already answered (same fix as core/hook-runner.js).
+      for (const s of [child.stdout, child.stderr]) {
+        try { if (s && typeof s.destroy === 'function') s.destroy(); } catch (_e) { /* ignore */ }
+      }
+      try { if (typeof child.unref === 'function') child.unref(); } catch (_e) { /* ignore */ }
+      reaper.untrack(child);
+      resolve(result);
+    };
+    const timer = setTimeout(() => {
+      killTree(child);
+      finish({
+        ok: false,
+        code: null,
+        stdout,
+        stderr: (stderr ? stderr + '\n' : '')
+          + `Registry: tool script timed out after ${TOOL_TIMEOUT_MS}ms and was terminated`,
+        timedOut: true,
+      });
+    }, TOOL_TIMEOUT_MS);
+    if (typeof timer.unref === 'function') timer.unref();
+    // setEncoding so a multi-byte UTF-8 sequence split across chunks decodes correctly (a raw
+    // d.toString() per chunk yields U+FFFD at the boundary), and count REAL bytes - String.length
+    // is UTF-16 code units, letting non-ASCII output run ~3x past a "byte" cap.
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    let outBytes = 0;
+    let errBytes = 0;
+    child.stdout.on('data', (d) => {
+      if (outBytes >= MAX_TOOL_OUTPUT_BYTES) return;
+      stdout += d;
+      outBytes += Buffer.byteLength(d, 'utf8');
+      if (outBytes >= MAX_TOOL_OUTPUT_BYTES) {
+        killTree(child);
+        finish({ ok: false, code: null, stdout, stderr: stderr + '\nRegistry: tool output exceeded the cap and was terminated', outputCapped: true });
+      }
+    });
+    child.stderr.on('data', (d) => {
+      if (errBytes >= MAX_TOOL_OUTPUT_BYTES) return;
+      stderr += d;
+      errBytes += Buffer.byteLength(d, 'utf8');
+    });
+    child.on('error', (err) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reaper.untrack(child);
+      reject(err);
+    });
     child.on('close', (code) => {
-      resolve({ ok: code === 0, code, stdout, stderr });
+      finish({ ok: code === 0, code, stdout, stderr });
     });
   });
 }
@@ -236,7 +368,7 @@ class Registry {
     return out;
   }
 
-  /** Full instructions string for one tool. Throws on unknown id (per §5 contract). */
+  /** Full instructions string for one tool. Throws on unknown id. */
   instructions(id) {
     const t = this._byId.get(id);
     if (!t) throw new Error(`Registry.instructions: unknown tool id "${id}"`);
@@ -280,6 +412,16 @@ class Registry {
     }
     const merged = { ...existing, ...patch, id };
     validateEntry(merged);
+    // Rename-safety: the gate fires on `entry.name || id` for BOTH the direct and
+    // lean paths - a display-name edit renames that surface, so gate matchers must follow (or
+    // the rename refuses). The tools.state.json key must NOT: a LOCAL tool's overlay is keyed by
+    // its immutable register ID, not its display name (migrateState:false; see the namespace note
+    // in rename-migration.js). Runs BEFORE persist so a refusal leaves the register untouched.
+    const oldSurfaced = existing.name || id;
+    const newSurfaced = merged.name || id;
+    if (oldSurfaced !== newSurfaced) {
+      migrateForStoreFile(this._filePath, oldSurfaced, newSurfaced, { migrateState: false });
+    }
     this._byId.set(id, cloneEntry(merged));
     this._persist();
     return this.getEntry(id);
@@ -358,15 +500,21 @@ class Registry {
     fs.mkdirSync(scriptsRoot, { recursive: true });
     const dir = path.dirname(resolved);
     const base = path.basename(resolved);
+    sweepStaleTmp(dir, base);
     const tmp = path.join(dir, `.${base}.${process.pid}.${Date.now()}.tmp`);
-    const fd = fs.openSync(tmp, 'w');
     try {
-      fs.writeSync(fd, text, 0, 'utf8');
-      fs.fsyncSync(fd);
-    } finally {
-      fs.closeSync(fd);
+      const fd = fs.openSync(tmp, 'w');
+      try {
+        fs.writeSync(fd, text, 0, 'utf8');
+        fs.fsyncSync(fd);
+      } finally {
+        fs.closeSync(fd);
+      }
+      fs.renameSync(tmp, resolved);
+    } catch (err) {
+      try { fs.unlinkSync(tmp); } catch (_e) { /* best-effort - the error below is the story */ }
+      throw err;
     }
-    fs.renameSync(tmp, resolved);
     return resolved;
   }
 
@@ -376,7 +524,7 @@ class Registry {
    * Describe HOW to run a tool's invoke. Returns { type, run } where `run` is a
    * zero-arg function returning a Promise of the tool result. resolveExecution
    * performs NO gating - toolfunnel_run_tool / gated-run.js fires the PreToolUse hook
-   * and only then calls `run()` (the architecture doc §2/§9). Keeping the gate
+   * and only then calls `run()`. Keeping the gate
    * out of here keeps the safety case in one auditable place.
    *
    * - script invoke: run() spawns node on the host-local script (via the injected

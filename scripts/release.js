@@ -4,6 +4,7 @@
 //
 //   npm run release                      -> patch bump, full pipeline
 //   npm run release -- minor             -> minor bump
+//   npm run release -- current           -> release package.json's version as-is (no bump)
 //   npm run release -- --notes "..."     -> headline paragraph for the release body
 //   npm run release -- --no-npm          -> skip npm publish (GitHub-only release)
 //   npm run release -- --dry-run         -> print the plan, mutate nothing
@@ -33,7 +34,7 @@ const DRY = argv.includes('--dry-run');
 const NO_NPM = argv.includes('--no-npm');
 const notesIdx = argv.indexOf('--notes');
 const NOTES = notesIdx !== -1 ? (argv[notesIdx + 1] || '') : '';
-const LEVEL = argv.find((a) => ['patch', 'minor', 'major'].includes(a)) || 'patch';
+const LEVEL = argv.find((a) => ['patch', 'minor', 'major', 'current'].includes(a)) || 'patch';
 
 function log(msg) {
   process.stdout.write(msg + '\n');
@@ -50,6 +51,9 @@ function git(args, opts) {
 function bump(version, level) {
   const m = /^(\d+)\.(\d+)\.(\d+)$/.exec(version);
   if (!m) fail(`package.json version "${version}" is not plain semver`);
+  // `current` releases the version already in package.json - the case where the version
+  // was set during development, so bumping from it here would cut the wrong release.
+  if (level === 'current') return version;
   const [maj, min, pat] = m.slice(1).map(Number);
   if (level === 'major') return `${maj + 1}.0.0`;
   if (level === 'minor') return `${maj}.${min + 1}.0`;
@@ -115,6 +119,9 @@ function npmRun(args) {
   const pkg = JSON.parse(fs.readFileSync(PKG_PATH, 'utf8'));
   const next = bump(pkg.version, LEVEL);
   const tag = `v${next}`;
+  // Releases only ever ADD, so an existing target tag means this exact version is
+  // already cut - proceeding would need a force-move, which is off the table.
+  const tagExists = git(['tag', '-l', tag]) !== '';
 
   const repoUrl = (pkg.repository && pkg.repository.url) || '';
   const repoMatch = /github\.com[/:]([^/]+\/[^/.]+)/.exec(repoUrl);
@@ -148,8 +155,9 @@ function npmRun(args) {
   const body = (NOTES ? NOTES + '\n\n' : '') + '**Commits:**\n' + (commitList || '- (none)');
 
   log(`plan: ${pkg.version} -> ${next} (${LEVEL}) on ${branch}, repo ${repoPath}`);
-  log(`  tree clean: ${dirty ? 'NO' : 'yes'}   behind origin: ${behind === '0' ? 'no' : behind}`);
-  log(`  steps: test -> bump -> commit -> tag ${tag} -> push -> GitHub Release${NO_NPM ? '' : ' -> npm publish'}`);
+  log(`  tree clean: ${dirty ? 'NO' : 'yes'}   behind origin: ${behind === '0' ? 'no' : behind}   tag exists: ${tagExists ? 'YES' : 'no'}`);
+  const bumpSteps = next === pkg.version ? '' : 'bump -> commit -> ';
+  log(`  steps: test -> ${bumpSteps}tag ${tag} -> push -> GitHub Release${NO_NPM ? '' : ' -> npm publish'}`);
   log(`  release body:\n${body.split('\n').map((l) => '    ' + l).join('\n')}`);
 
   if (DRY) {
@@ -160,15 +168,19 @@ function npmRun(args) {
   if (dirty) fail('working tree is not clean - commit or stash first');
   if (branch !== 'main') fail(`on branch "${branch}" - releases cut from main only`);
   if (behind !== '0' && behind !== 'unknown') fail(`branch is ${behind} commit(s) behind origin - pull first`);
+  if (tagExists) fail(`tag ${tag} already exists - this version is already released`);
 
   log('running tests...');
   const test = npmRun(['test']);
   if (test.status !== 0) fail('test suite failed - release aborted');
 
-  pkg.version = next;
-  fs.writeFileSync(PKG_PATH, JSON.stringify(pkg, null, 2) + '\n');
-  git(['add', 'package.json']);
-  git(['commit', '-m', `${tag}: ${NOTES ? NOTES.split('\n')[0] : 'release'}`]);
+  // `current` leaves package.json untouched: nothing to commit, the tag lands on HEAD.
+  if (next !== pkg.version) {
+    pkg.version = next;
+    fs.writeFileSync(PKG_PATH, JSON.stringify(pkg, null, 2) + '\n');
+    git(['add', 'package.json']);
+    git(['commit', '-m', `${tag}: ${NOTES ? NOTES.split('\n')[0] : 'release'}`]);
+  }
   git(['tag', tag]);
   git(['push']);
   git(['push', 'origin', tag]);

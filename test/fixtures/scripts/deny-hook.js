@@ -7,7 +7,7 @@
  * Used by test/gate.test.js to prove the gate (src/mcp/gated-run.js) blocks: when this
  * hook fires for a tool, gatedRun must return { blocked:true } and NEVER call execute().
  *
- * Contract (HOOK_ENGINE.md §3-B / src/core/hook-runner.js): the runner pipes the
+ * Contract (src/core/hook-runner.js): the runner pipes the
  * PreToolUse event JSON to stdin, then reads the result. The JSON protocol is honoured
  * ONLY on exit 0, when stdout is a JSON object carrying a known key (here
  * `hookSpecificOutput`). `permissionDecision: "deny"` blocks; the reason is

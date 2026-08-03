@@ -38,8 +38,9 @@ all three yourself in anything you install.
 The per-UNIT packaging below remains the right shape for sharing a single tool/hook/MCP selection
 rather than a whole gateway.
 
-> Phase note: packages are Phase 2 (`packages/` directory). The structure below is what the importer
-> and exporter target; defining it now means the units authored today are already package-ready.
+The per-unit package is a CONVENTION, not machinery: export and import are the structured
+hand-steps below (each one maps onto a management function), so a package needs no importer
+binary - and the whole-setup `tf_pack` above covers the common case with one call.
 
 ---
 
@@ -59,8 +60,8 @@ A package gathers one or more of these, plus the files they reference.
 
 ## 2. Package layout
 
-A package is a folder under `packages/` containing a manifest and the units' files in a mirrored
-tree so import is a structured copy, not guesswork:
+A package is a folder (conventionally `packages/<name>/` inside the config home) containing a
+manifest and the units' files in a mirrored tree so import is a structured copy, not guesswork:
 
 ```
 packages/
@@ -124,7 +125,7 @@ entries):
           "id": "notify",
           "transport": "stdio",
           "command": "node",
-          "args": ["${PACKAGE_DIR}/mcp/vendor/notify-mcp/server.js"],
+          "args": ["mcp/vendor/notify-mcp/server.js"],
           "enabled": true,
           "description": "Messaging bridge MCP."
         },
@@ -146,8 +147,9 @@ entries):
 | `units.hooks[]` | Each has the full manifest `entry`, its seed `enabled` (for `hooks.state.json`), and `files`. |
 | `units.mcp[]` | Each has an `upstream` block, its `expose[]` selections, and any vendored `files`. |
 
-`${PACKAGE_DIR}` expands to the installed package's absolute path (mirrors `${HOOKS_DIR}` /
-`${TOOLS_DIR}`), so a package's MCP/tool commands resolve wherever it lands.
+Write vendored-server paths RELATIVE and set the upstream's `cwd` to the installed package
+folder (or write the absolute inside-home path at import time) - the isolation guard requires
+them inside the config home either way.
 
 ---
 
@@ -178,7 +180,8 @@ Import is the reverse: **drop a package folder in `packages/` + register its uni
 3. **Hooks:** copy each `units.hooks[].files` into `hooks/scripts/` and add each `entry` to
    `hooks.manifest.json`; write its `enabled` into `hooks.state.json`.
 4. **MCP:** copy vendored `files` into the package's `mcp/vendor/`, add each `upstream` to
-   `expose.json` `upstreams[]` and its `expose[]` selections (path-rewritten to `${PACKAGE_DIR}`).
+   `expose.json` `upstreams[]` and its `expose[]` selections, rewriting the vendored paths for
+   their installed location (inside the config home - the isolation rule).
 
 After import: tools are live immediately (the register is read fresh on every `toolfunnel_list_tools`).
 Hooks take effect once the loader re-scans (next startup, or a reload). Curated-direct MCP tools need

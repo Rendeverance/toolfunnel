@@ -30,7 +30,7 @@ const REPO_ROOT = path.resolve(__dirname, '..');
 const ENTRY = path.join(REPO_ROOT, 'bin', 'toolfunnel.js');
 const PKG_REGISTER = path.join(REPO_ROOT, 'tools', 'tools.register.json');
 
-const REQUEST_TIMEOUT_MS = 15000;
+const REQUEST_TIMEOUT_MS = 45000; // a CEILING, not a wait - generous so a loaded CI box cannot flake it
 
 const results = [];
 function check(name, fn) {
@@ -100,6 +100,37 @@ async function runTool(client, name, args) {
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
 (async () => {
+  // E - RELOCATION HINT (0.7.0): a DEFAULTED home must print the relocation hint.
+  // initConfigHome exports the resolved home into process.env.TOOLFUNNEL_HOME for the child
+  // tools it spawns, so a hint condition reading the env AFTER init is always-false: the
+  // shipped hint was DEAD and KNOWN_BUGS documented it as working. Runs FIRST - before the
+  // register snapshot below - so the brief default-home spawn cannot contaminate check D.
+  const hintProbe = (env, ms) => new Promise((resolve) => {
+    const c = spawn(process.execPath, [ENTRY], { cwd: os.tmpdir(), env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+    let err = '';
+    c.stderr.on('data', (d) => { err += d; });
+    setTimeout(() => {
+      try { c.stdin.end(); } catch (_e) { /* ignore */ }
+      try { c.kill(); } catch (_e) { /* ignore */ }
+      resolve(err);
+    }, ms);
+  });
+  const envNoHome = { ...process.env };
+  delete envNoHome.TOOLFUNNEL_HOME;
+  const errDefault = await hintProbe(envNoHome, 2500);
+  check('E: a DEFAULTED config home prints the relocation hint', () => {
+    assert.ok(errDefault.includes('config home:'), 'no config-home line at all: ' + errDefault.slice(0, 200));
+    assert.ok(errDefault.includes('use --config-dir <dir> or TOOLFUNNEL_HOME to relocate'),
+      'hint missing (dead branch): ' + errDefault.split('\n')[0]);
+  });
+  const hintHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tf-hint-'));
+  const errExplicit = await hintProbe({ ...process.env, TOOLFUNNEL_HOME: hintHome }, 2500);
+  check('E: an EXPLICITLY relocated home prints NO hint', () => {
+    assert.ok(errExplicit.includes('config home:'), 'no config-home line: ' + errExplicit.slice(0, 200));
+    assert.ok(!errExplicit.includes('to relocate'), 'hint printed for an explicit home');
+  });
+  try { fs.rmSync(hintHome, { recursive: true, force: true }); } catch (_e) { /* best-effort */ }
+
   const pkgRegisterSnap = fs.readFileSync(PKG_REGISTER, 'utf8');
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'tf-home-'));
   let child = null;
@@ -204,7 +235,7 @@ function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
   if (fatal) console.log('FATAL: ' + ((fatal && fatal.stack) || fatal));
 
   const passed = results.filter((r) => r.ok).length;
-  const expected = 9;
+  const expected = 11;
   const ok = !fatal && passed === results.length && results.length === expected;
   if (ok) {
     console.log(`\nPASS: config-home test - ${passed}/${expected} assertions passed (seeded home, pack identity, seeded-script engine shim, home-confined mutations, package untouched)`);

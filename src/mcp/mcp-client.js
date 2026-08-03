@@ -1,11 +1,11 @@
 'use strict';
 
 /**
- * mcp-client.js - the MCP CLIENT (architecture notes §1, §7; Phase 2 aggregator).
+ * mcp-client.js - the MCP CLIENT: the aggregator's per-upstream connection.
  *
  * This is the REVERSE of src/mcp/server.js. Where server.js is a JSON-RPC 2.0
  * server that the CLI connects TO, this is a JSON-RPC 2.0 client that spawns an
- * UPSTREAM MCP server as a child process and talks to it over stdio. The Phase 2
+ * UPSTREAM MCP server as a child process and talks to it over stdio. The
  * aggregator owns one McpClient per upstream MCP server, lists their tools, and
  * routes curated calls through them.
  *
@@ -90,6 +90,14 @@ function winLaunch(command, args) {
 // requestTimeoutMs - that is the dead-upstream detector.
 const PAYLOAD_METHODS = new Set(['tools/call', 'prompts/get', 'resources/read']);
 
+// Hard ceiling on one buffered stdout message (matches http-transport's MAX_BODY_BYTES). A
+// declared Content-Length over the cap is refused and its bytes discarded as they arrive, so
+// the pipe stays in frame; a buffer past the cap with NO complete frame has no resync point,
+// so the connection is dropped (the owner's reconnect machinery takes over). Without the cap
+// a single giant unframed line from a broken upstream grew this buffer until the whole gateway
+// process died.
+const MAX_MESSAGE_BYTES = 4 * 1024 * 1024;
+
 class McpClient {
   /**
    * @param {object} opts
@@ -107,8 +115,14 @@ class McpClient {
    * @param {Function} [opts.onClose]          called ONCE if the child dies UNEXPECTEDLY (exit/error
    *                                           while not deliberately close()d). Lets the owner
    *                                           (the aggregator) schedule a background reconnect.
+   * @param {'legacy'|'modern'} [opts.eraHint]  the owner's memo of the era negotiated LAST connect.
+   *                                           'legacy' skips the server/discover probe (a reconnect
+   *                                           goes straight to initialize); 'modern' is a no-op (the
+   *                                           probe IS the modern handshake). An observation, not a
+   *                                           policy: the owner clears its memo when a hinted
+   *                                           connect fails. modernOnly always wins over the hint.
    */
-  constructor({ id, command, args = [], env = {}, cwd, spawnImpl, requestTimeoutMs, toolTimeoutMs, onClose, forceLegacy = false, modernOnly = false, onNotification, clientInfo } = {}) {
+  constructor({ id, command, args = [], env = {}, cwd, spawnImpl, requestTimeoutMs, toolTimeoutMs, onClose, forceLegacy = false, modernOnly = false, eraHint, onNotification, clientInfo } = {}) {
     if (typeof command !== 'string' || command.length === 0) {
       throw new Error('McpClient: "command" (non-empty string) is required');
     }
@@ -149,6 +163,19 @@ class McpClient {
     // upstream that does not answer server/discover with the modern protocol FAILS the connect
     // with a clear error instead of silently negotiating down (era-policy switches, 2026-07-18).
     this._modernOnly = modernOnly === true;
+    // eraHint ('legacy' is the only meaningful value): the OWNER's memo of the era this upstream
+    // negotiated LAST time - an observation, not a policy. It skips the server/discover probe the
+    // way forceLegacy does, but the caller is expected to clear its memo when a hinted connect
+    // FAILS (the upstream may have changed underneath) - which forceLegacy, being policy, never
+    // does. 'modern' is accepted-and-ignored: for a modern upstream the probe IS the handshake,
+    // so there is nothing to skip. modernOnly always wins over the hint - a policy that demands
+    // the probe cannot be undone by a stale observation.
+    this._eraHint = eraHint === 'legacy' ? 'legacy' : null;
+    // Era-observation confidence (set per connect()): true only when the server/discover probe was
+    // ANSWERED - a valid modern DiscoverResult, a non-modern reply, or a JSON-RPC rejection like
+    // -32601. A probe that TIMED OUT (or a skipped probe) observed nothing about the upstream's
+    // eras, and the owner must not memoise the legacy fallback it forced.
+    this._eraDefinitive = false;
     // onNotification: called with each server-initiated NOTIFICATION (a message with a method and
     // NO id) - e.g. notifications/resources/updated, .../resources/list_changed, .../prompts/
     // list_changed, .../tools/list_changed. Lets the aggregator bridge upstream change-notifications
@@ -157,7 +184,7 @@ class McpClient {
     // onServerRequest: called with each SERVER-INITIATED REQUEST (a message with a method AND an
     // id - elicitation/create, sampling/createMessage, roots/list). The owner answers it via
     // respondToServer/respondToServerError. Unset -> every such request is answered -32601, so a
-    // conformant upstream is never left holding an unanswered request (Bridge B infrastructure).
+    // conformant upstream is never left holding an unanswered request (elicitation-bridge infrastructure).
     this.onServerRequest = null;
     this._onCloseFired = false; // onClose fires at most once, and never for a deliberate close()
     this._everConnected = false; // true once the handshake completed - onClose fires ONLY for the
@@ -168,6 +195,7 @@ class McpClient {
     this._connected = false;
     this._closed = false;
     this._buf = Buffer.alloc(0);
+    this._skipRemaining = 0; // bytes of a refused over-cap message still to discard
     this._stderr = '';
     this._nextId = 1;
     /** @type {Map<number|string, {resolve:Function, reject:Function, timer:any, method:string}>} */
@@ -203,6 +231,7 @@ class McpClient {
       throw new Error('McpClient.request: "method" (non-empty string) is required');
     }
     let p = params == null ? {} : params;
+    p = this._translateLogLevel(p); // era-keyed logLevel (1.4): modern keeps it, legacy gets setLevel
     // Modern upstream: ensure the per-request `_meta` protocol trio is present. MERGE with any
     // caller-supplied _meta (progressToken, trace keys survive a wrap forward) - the trio wins on
     // collision; a partial caller _meta must never reach a strict modern upstream trio-less.
@@ -231,7 +260,7 @@ class McpClient {
   }
 
   /**
-   * Answer a SERVER-INITIATED request (Bridge B): write a JSON-RPC RESPONSE carrying the
+   * Answer a SERVER-INITIATED request (the elicitation bridge): write a JSON-RPC RESPONSE carrying the
    * upstream's own request id. Fire-and-forget; NEVER throws.
    * @param {number|string} id  the id the UPSTREAM used on its request
    * @param {any} result        the result payload (e.g. an ElicitResult { action, content })
@@ -245,7 +274,7 @@ class McpClient {
   }
 
   /**
-   * Extend the timeout of an in-flight request (Bridge B): a mid-call elicitation proves the
+   * Extend the timeout of an in-flight request (the elicitation bridge): a mid-call elicitation proves the
    * upstream is alive and deliberately holding the call open while a HUMAN answers - the normal
    * dead-upstream timeout must not kill the suspension. Re-arms the waiter's timer; returns
    * false if the request already settled. NEVER throws.
@@ -338,7 +367,13 @@ class McpClient {
     //    Otherwise (or when legacyPin FORCES legacy) we fall back to the LEGACY initialize handshake
     //    (byte-for-byte the prior behaviour).
     let discovered = null;
-    if (!this._forceLegacy) {
+    // The probe is skipped by POLICY (legacyPin) or by the owner's era MEMO (eraHint 'legacy' -
+    // this upstream negotiated legacy last time, so a reconnect goes straight to initialize
+    // instead of re-paying the probe window). modernOnly overrides the hint: that policy's whole
+    // point is the probe, and a stale memo must never silently downgrade it.
+    const skipProbe = this._forceLegacy || (this._eraHint === 'legacy' && !this._modernOnly);
+    this._eraDefinitive = false; // no observation yet this connect (stays false when the probe is skipped)
+    if (!skipProbe) {
       let probe = null;
       // The probe gets a SHORT timeout of its own: a legacy server that silently DROPS unknown
       // methods (instead of answering -32601) would otherwise stall every connect by the full
@@ -350,8 +385,12 @@ class McpClient {
         ? fullTimeout : Math.min(3000, fullTimeout || 3000);
       try {
         probe = await this._request('server/discover', { _meta: this._modernMeta() });
-      } catch (_probeErr) {
+        this._eraDefinitive = true; // the probe was answered - whatever we conclude is observed
+      } catch (probeErr) {
         probe = null; // legacy upstream (method-not-found) - fall through to initialize
+        // An ANSWERED rejection (rpcError present, e.g. -32601) is a definitive legacy
+        // observation; a timeout/transport drop is SILENCE and proves nothing.
+        this._eraDefinitive = !!(probeErr && probeErr.rpcError);
         if (this._closed) throw new Error('McpClient: connect() aborted (closed during discover probe)');
         if (!this._child) this._spawnChild(); // a fragile legacy server may have died on the probe
       } finally {
@@ -390,9 +429,14 @@ class McpClient {
           clientInfo: this._clientInfo,
           // elicitation: real SDK-based servers GATE ctx.elicit() on the client declaring this
           // capability - without it they answer "Method not found" and never elicit at all
-          // (wild-scout finding, 2026-07-17). We honestly handle every elicitation now: the
-          // Bridge B MRTR path for modern callers, a clean decline otherwise.
-          capabilities: { elicitation: {} },
+          // (found testing against real published elicitation servers, 2026-07-17). We honestly handle every elicitation now: the
+          // elicitation bridge's MRTR path for modern callers, a clean decline otherwise.
+          // BOTH modes declared (0.7.0): the 2025-11-25 back-compat rule reads a bare
+          // `{}` as FORM ONLY, and "Servers MUST NOT send elicitation requests with modes that
+          // are not supported by the client" - so without `url` here a conformant upstream is
+          // FORBIDDEN from url mode and the relay is structurally dead. Every elicit of either
+          // mode gets an answer: relayed to a caller that declared it, declined otherwise.
+          capabilities: { elicitation: { form: {}, url: {} } },
         });
         this._initializeResult = result;
       } catch (err) {
@@ -414,6 +458,13 @@ class McpClient {
     return this._modern === true ? 'modern' : 'legacy';
   }
 
+  /** @returns {boolean} true when the LAST connect's era came from an ANSWERED probe; false when
+   *  the probe was skipped (policy/hint) or went unanswered (timeout/drop). The owner memoises
+   *  the era only on a definitive observation - silence must never pin an era. */
+  get eraDefinitive() {
+    return this._eraDefinitive === true;
+  }
+
   /** The per-request `_meta` a modern client MUST send on every request (stdio: no headers). */
   _modernMeta() {
     return {
@@ -426,6 +477,38 @@ class McpClient {
   /** @returns {{name:string, version:string}} the identity this client presents upstream. */
   get clientInfo() {
     return this._clientInfo;
+  }
+
+  /**
+   * Era-keyed logLevel handling (0.7.0). A caller's per-request
+   * `io.modelcontextprotocol/logLevel` must reach the upstream in the upstream's own vocabulary:
+   * MODERN upstream -> left in `_meta` (the trio merge in request()/callTool() preserves it - the
+   * trio does not define logLevel), because the modern severity clause obliges the upstream to
+   * WITHHOLD notifications/message when the field is absent. LEGACY upstream -> the key is
+   * REMOVED (no legacy schema defines it; leaking a modern reserved key is also a wrap tell)
+   * and, when the upstream declared the `logging` capability, translated to a `logging/setLevel`
+   * request ISSUED BEFORE the main request (stdio writes are ordered - the server sees the level
+   * first), deduped per distinct level. Best-effort: a setLevel failure never fails the main
+   * call. Deprecation-sized (SEP-2577): one key, one translation, no wider _meta policy.
+   * @param {any} params  the outgoing request params
+   * @returns {any} params, possibly cloned with the logLevel key removed
+   */
+  _translateLogLevel(params) {
+    const meta = params && typeof params === 'object' && !Array.isArray(params) ? params._meta : null;
+    if (!meta || typeof meta !== 'object' || Array.isArray(meta)) return params;
+    const level = meta['io.modelcontextprotocol/logLevel'];
+    if (level === undefined) return params;
+    if (this._modern) return params; // modern upstream: rides the forwarded _meta verbatim
+    const rest = { ...meta };
+    delete rest['io.modelcontextprotocol/logLevel'];
+    const out = { ...params };
+    if (Object.keys(rest).length) out._meta = rest; else delete out._meta;
+    const caps = this._initializeResult && this._initializeResult.capabilities;
+    if (typeof level === 'string' && caps && caps.logging && level !== this._lastSetLogLevel) {
+      this._lastSetLogLevel = level;
+      this._request('logging/setLevel', { level }).catch(() => {}); // fire-and-forget, ordered by the pipe
+    }
+    return out;
   }
 
   /**
@@ -509,16 +592,35 @@ class McpClient {
   }
 
   /**
-   * tools/list -> the upstream's tool definitions. Returns the raw array
-   * [{name, description, inputSchema}] from result.tools (empty array if the
-   * server returned no tools). Rejects on timeout / transport failure.
+   * tools/list -> the upstream's COMPLETE tool definitions, following `nextCursor` pagination
+   * (0.7.0 - the single-shot version silently truncated a paginating upstream to page 1,
+   * leaving its later tools undiscoverable AND unrunnable). Returns the raw concatenated array
+   * [{name, description, inputSchema, ...}] from every page (empty array if the server returned
+   * no tools). Rejects on timeout / transport failure of ANY page.
+   *
+   * Defensive bounds (a misbehaving upstream must not hang discovery):
+   *   - a cursor already seen ends the loop (a repeating cursor would spin forever);
+   *   - MAX_LIST_PAGES caps a pathological endless-unique-cursor upstream. Both end the loop
+   *     with the pages already fetched - partial truth beats a wedged aggregator.
    * @returns {Promise<Array<{name:string, description?:string, inputSchema?:object}>>}
    */
   async listTools() {
-    // Modern upstream: every request carries per-request `_meta` (stdio needs no headers).
-    const params = this._modern ? { _meta: this._modernMeta() } : {};
-    const result = await this._request('tools/list', params);
-    const tools = result && Array.isArray(result.tools) ? result.tools : [];
+    const MAX_LIST_PAGES = 64;
+    const tools = [];
+    const seen = new Set();
+    let cursor;
+    for (let page = 0; page < MAX_LIST_PAGES; page += 1) {
+      // Modern upstream: every request carries per-request `_meta` (stdio needs no headers).
+      const params = this._modern ? { _meta: this._modernMeta() } : {};
+      if (cursor !== undefined) params.cursor = cursor;
+      const result = await this._request('tools/list', params);
+      if (result && Array.isArray(result.tools)) tools.push(...result.tools);
+      const next = result && typeof result.nextCursor === 'string' && result.nextCursor.length
+        ? result.nextCursor : undefined;
+      if (next === undefined || seen.has(next)) return tools;
+      seen.add(next);
+      cursor = next;
+    }
     return tools;
   }
 
@@ -539,10 +641,11 @@ class McpClient {
     if (typeof name !== 'string' || name.length === 0) {
       throw new Error('McpClient.callTool: "name" (non-empty string) is required');
     }
-    const params = { name, arguments: args == null ? {} : args };
+    let params = { name, arguments: args == null ? {} : args };
     if (meta && typeof meta === 'object' && !Array.isArray(meta) && Object.keys(meta).length) {
       params._meta = { ...meta };
     }
+    params = this._translateLogLevel(params); // era-keyed logLevel (1.4)
     // modern upstream: the per-request protocol trio always wins over caller keys
     if (this._modern) params._meta = { ...(params._meta || {}), ...this._modernMeta() };
     const result = await this._request('tools/call', params);
@@ -554,6 +657,10 @@ class McpClient {
     // structuredContent rides along verbatim - dropping it silently stripped modern upstreams'
     // structured results on the curated-direct path while the raw wrap path kept them
     if (r.structuredContent !== undefined) out.structuredContent = r.structuredContent;
+    // result _meta rides along too (3.10, result side): the wrap relays it verbatim (the
+    // upstream's identity IS the presented identity there); the funnel shaping sites strip the
+    // protocol-identity keys before forwarding (they own their own identity).
+    if (r._meta !== undefined) out._meta = r._meta;
     return out;
   }
 
@@ -583,7 +690,20 @@ class McpClient {
     }
 
     // If still alive, tree-kill so no descendant is orphaned (zombie guard).
+    this._treeKill(child);
+
+    this._child = null;
+  }
+
+  /**
+   * Tree-kill a child so no descendant is orphaned (win32 taskkill /T /F reaps the whole
+   * process tree; else child.kill()). NEVER throws - called from close() and from the
+   * read-buffer overflow path, both of which must not raise out of an event handler.
+   * @param {import('node:child_process').ChildProcess|null} child
+   */
+  _treeKill(child) {
     try {
+      if (!child) return;
       const alive = child.exitCode === null && child.signalCode === null && child.killed !== true;
       if (alive && typeof child.pid === 'number') {
         if (process.platform === 'win32') {
@@ -604,10 +724,8 @@ class McpClient {
         try { child.kill(); } catch (_e) { /* ignore */ }
       }
     } catch (_e) {
-      /* never throw out of close */
+      /* never throws - see contract above */
     }
-
-    this._child = null;
   }
 
   // ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -635,7 +753,7 @@ class McpClient {
     // Either of these means the child is gone - fail every in-flight request so nothing hangs, and
     // NULL this._child so a later connect() on the same instance respawns instead of writing to a
     // dead stdin (connect() reuses `this._child` when set - a probeDiscover() against a legacy
-    // server that dies on the unknown method would otherwise poison a follow-up connect()). Only
+    // server that dies on the unknown method would otherwise corrupt a follow-up connect()). Only
     // null it if it is still THIS child (a fresh respawn may have replaced it).
     child.on('exit', (code, signal) => {
       this._connected = false;
@@ -775,31 +893,76 @@ class McpClient {
   _onData(chunk) {
     this._buf = Buffer.concat([this._buf, chunk]);
     this._drain();
+    if (this._buf.length > MAX_MESSAGE_BYTES) {
+      // Past the cap with no complete frame there is no resync point - drop the connection.
+      // The tree-kill surfaces as an unexpected exit: waiters reject and onClose lets the
+      // owner schedule a reconnect (a deliberate close() would suppress that signal and
+      // permanently retire this client).
+      this._logErr(`buffered ${this._buf.length} bytes with no complete message (cap ${MAX_MESSAGE_BYTES}); dropping the connection`);
+      this._buf = Buffer.alloc(0);
+      this._treeKill(this._child);
+    }
   }
 
   /**
    * Drain as many complete messages as are buffered. Header (Content-Length) framing
    * is tried FIRST (it counts exact bytes and is unambiguous), then newline-delimited
    * JSON. Mirrors server.js's dual-drain so the client reads either wire format.
+   * A header frame that is only PARTLY here ('wait') stops the drain - handing the
+   * half-arrived header to line framing would eat it and orphan the body (the frame
+   * was lost and the caller saw only a timeout; chunk boundaries are the transport's
+   * choice, so any CL-framing upstream could hit it under load).
    */
   _drain() {
     for (;;) {
-      if (this._tryHeaderFramed()) continue;
+      if (this._skipRemaining > 0) {
+        // A refused over-cap message: discard exactly its declared bytes as they arrive so the
+        // pipe stays in frame for everything after it.
+        const eat = Math.min(this._skipRemaining, this._buf.length);
+        this._buf = this._buf.slice(eat);
+        this._skipRemaining -= eat;
+        if (this._skipRemaining > 0) return; // the rest of the refused body is still in flight
+      }
+      const h = this._tryHeaderFramed();
+      if (h === true) continue;
+      if (h === 'wait') break; // an incomplete header frame - wait for more bytes
       if (this._tryLineFramed()) continue;
       break;
     }
   }
 
-  /** Pull one Content-Length-framed message off the front of the buffer. */
+  /** True when the buffer BEGINS with a framing header whose block terminator hasn't arrived. */
+  _headerInFlight() {
+    return /^content-(length|type):/i.test(this._buf.slice(0, 16).toString('utf8'));
+  }
+
+  /**
+   * Pull one Content-Length-framed message off the front of the buffer.
+   * Returns true (consumed one), false (not header framing - try line framing), or
+   * 'wait' (a header frame is mid-flight - stop draining until more bytes arrive).
+   */
   _tryHeaderFramed() {
     const headerEnd = this._buf.indexOf('\r\n\r\n');
-    if (headerEnd === -1) return false;
+    if (headerEnd === -1) {
+      // No complete header block - but a buffer that STARTS with a header line is a header
+      // frame whose terminator is still in flight, not line-framed junk.
+      return this._headerInFlight() ? 'wait' : false;
+    }
     const header = this._buf.slice(0, headerEnd).toString('utf8');
     const m = /Content-Length:\s*(\d+)/i.exec(header);
     if (!m) return false; // a \r\n\r\n that isn't a Content-Length header -> not this framing
     const len = parseInt(m[1], 10);
     const bodyStart = headerEnd + 4;
-    if (this._buf.length < bodyStart + len) return false; // body not all here yet
+    if (len > MAX_MESSAGE_BYTES) {
+      // Refuse the message, keep the connection: consume the header and let _drain discard
+      // exactly the declared bytes as they arrive. The reply's waiter times out with the
+      // standard window error; everything after the refused body still flows.
+      this._logErr(`upstream declared a ${len}-byte message (cap ${MAX_MESSAGE_BYTES}); skipping it`);
+      this._buf = this._buf.slice(bodyStart);
+      this._skipRemaining = len;
+      return true;
+    }
+    if (this._buf.length < bodyStart + len) return 'wait'; // body still in flight - hold the drain
     const body = this._buf.slice(bodyStart, bodyStart + len).toString('utf8');
     this._buf = this._buf.slice(bodyStart + len);
     this._parseAndDispatch(body);
@@ -813,9 +976,9 @@ class McpClient {
     const line = this._buf.slice(0, nl).toString('utf8').trim();
     this._buf = this._buf.slice(nl + 1);
     if (line.length === 0) return true; // blank line (e.g. trailing from header framing): skip
-    // A stray header line ("Content-Length: ...") on the line path means the body hasn't
-    // arrived yet - but header framing is always tried first, so anything non-JSON here is
-    // a framing artifact; ignore it rather than erroring.
+    // A header line at the FRONT of the buffer never reaches this path (header framing holds
+    // the drain with 'wait'); any non-JSON line here is a framing artifact - ignore it rather
+    // than erroring.
     if (line[0] !== '{' && line[0] !== '[') return true;
     this._parseAndDispatch(line);
     return true;
@@ -852,7 +1015,7 @@ class McpClient {
     if (typeof msg.method === 'string') {
       // SERVER->CLIENT REQUEST (id + method): the upstream is asking ITS client something -
       // elicitation/create, sampling/createMessage, roots/list. Previously dropped, which left
-      // a conformant upstream holding an open request forever (Bridge B). Surface to the owner;
+      // a conformant upstream holding an open request forever (the elicitation bridge). Surface to the owner;
       // unhandled -> answer -32601 (the honest "this client cannot do that").
       if (typeof this.onServerRequest === 'function') {
         try { this.onServerRequest(msg); return; } catch (_e) { this._logErr('onServerRequest threw (ignored)'); }

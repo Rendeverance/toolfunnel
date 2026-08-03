@@ -63,5 +63,30 @@ if (pkgAfter !== pkgBefore) fail('dry-run modified package.json');
 if (headAfter !== headBefore) fail('dry-run created a commit');
 if (tagsAfter !== tagsBefore) fail('dry-run created a tag');
 
+// ── "current" level: release package.json's version as-is, no bump ────────────
+// Guards the 0.7.0 failure class: the version gets set during development, so a
+// bump-from-package.json release cuts the WRONG version (0.7.1) and the intended
+// one is never tagged. `current` must plan pkg.version -> pkg.version.
+const r2 = spawnSync(process.execPath, [SCRIPT, 'current', '--dry-run', '--no-npm'], {
+  cwd: ROOT,
+  encoding: 'utf8',
+  timeout: 60000,
+});
+if (r2.status !== 0) fail(`current dry-run exited ${r2.status}\nstderr: ${r2.stderr}`);
+const out2 = r2.stdout || '';
+if (!out2.includes(`plan: ${cur} -> ${cur} (current)`)) fail(`current level must not bump (want ${cur} -> ${cur}):\n` + out2);
+if (!out2.includes(`tag v${cur}`)) fail(`current level must tag v${cur}:\n` + out2);
+// Double-release guard: the plan must report whether the target tag already exists.
+if (!/tag exists: /.test(out2)) fail('missing tag-exists preflight report:\n' + out2);
+
+// Current-level dry-run mutates nothing either.
+if (fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8') !== pkgBefore) fail('current dry-run modified package.json');
+if (spawnSync('git', ['tag'], { cwd: ROOT, encoding: 'utf8' }).stdout !== tagsBefore) fail('current dry-run created a tag');
+
+// A manual `npm publish` bypasses release.js entirely - prepublishOnly is the only
+// test gate on that path, so its absence is a shippable-without-tests hole.
+const scripts = JSON.parse(pkgBefore).scripts || {};
+if (!/run-all\.js/.test(scripts.prepublishOnly || '')) fail('package.json missing prepublishOnly test gate');
+
 console.log('release.test.js: all assertions passed');
 process.exit(0);

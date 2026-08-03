@@ -27,9 +27,14 @@ const authConfig = require(path.join(__dirname, '..', 'src', 'auth', 'config.js'
 
 // This test drives the HTTP transport WITHOUT a bearer token and asserts 200s. If a prior suite run
 // was hard-killed mid-test and left auth/auth.config.json ENABLED, every request here would 401.
-// Force auth OFF at startup (the committed default) so this test is robust to such a leak, however
-// it occurred - including the runner's uncatchable Windows timeout-kill.
-try { authConfig.setConfig({ enabled: false }); } catch (_e) { /* best-effort; default is off anyway */ }
+// Force auth OFF at startup so this test is robust to such a leak, however it occurred - including
+// the runner's uncatchable Windows timeout-kill. ONLY when there is something to heal: setConfig
+// always writes the file, so an unconditional call CREATED auth/auth.config.json on every clean
+// run of a virgin checkout - and run-all's config backstop (which now watches this file) would
+// report that create as a leak on every run. An absent or already-disabled config is left alone.
+try {
+  if (authConfig.getConfig().enabled === true) authConfig.setConfig({ enabled: false });
+} catch (_e) { /* best-effort; default is off anyway */ }
 
 // ── A tiny loopback HTTP client over node:http ────────────────────────────────────────────────
 /**

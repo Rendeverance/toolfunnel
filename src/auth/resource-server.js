@@ -11,9 +11,9 @@
  *
  * Why a library and not hand-rolled node:crypto: validating a JWT securely is not the signature
  * math (node:crypto has that) - it is the protocol discipline around it. The dangerous, CVE-prone
- * decisions are (1) PINNING the accepted algorithm so an attacker can't downgrade RS256->HS256 and
+ * decisions are (1) PINNING the accepted algorithm so an untrusted token can't downgrade RS256->HS256 and
  * forge a token by signing with the public key as an HMAC secret, (2) rejecting `alg:none`, (3)
- * ignoring attacker-controlled header params (jku/jwk/x5u), (4) validating iss/aud/exp/nbf, and (5)
+ * ignoring caller-controlled header params (jku/jwk/x5u), (4) validating iss/aud/exp/nbf, and (5)
  * JWKS caching + key rotation. `jose` encodes all of these into its API; we MUST drive that API
  * correctly - above all, ALWAYS pass the `algorithms` allowlist and the `audience` (the RFC 8707
  * confused-deputy defence). `jose` v5's `require` build uses Node's native crypto (Node ≥18, no
@@ -245,6 +245,13 @@ function createValidator(cfg, opts) {
       // refuses to start in this state, but a request must still never slip through.
       return unauthorized(500, 'server_error', 'authentication misconfigured', 'no audience configured');
     }
+    if (!cfg.issuer) {
+      // Symmetric with the audience guard: a blank issuer would make jwtVerify's `issuer` undefined,
+      // silently DISABLING issuer binding so a token from any authorization server would validate.
+      // configError refuses this at start-up, but the UI can persist an enabled+blank-issuer config
+      // that takes effect on the next request with no restart - so fail closed here too.
+      return unauthorized(500, 'server_error', 'authentication misconfigured', 'no issuer configured');
+    }
 
     const token = extractBearer(authorizationHeader);
     if (!token) {
@@ -266,7 +273,9 @@ function createValidator(cfg, opts) {
       // issuer + audience are ENFORCED by jose; clockTolerance bounds exp/nbf skew. We never read the
       // token header to choose the algorithm - the allowlist is fixed from config.
       result = await jose.jwtVerify(token, resolver, {
-        issuer: cfg.issuer || undefined,
+        // The guard above guarantees a non-empty issuer here; pass it straight through. The old
+        // `cfg.issuer || undefined` was the silent-skip footgun - undefined tells jose NOT to check.
+        issuer: cfg.issuer,
         audience: cfg.audience,
         algorithms: cfg.algorithms,
         clockTolerance: cfg.clockToleranceSec,

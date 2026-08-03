@@ -2,6 +2,8 @@
 
 ![ToolFunnel](assets/logo.png)
 
+[![CI](https://github.com/Rendeverance/toolfunnel/actions/workflows/ci.yml/badge.svg)](https://github.com/Rendeverance/toolfunnel/actions/workflows/ci.yml)
+
 > A zero-dependency MCP and Local tool gateway: host your own tools in any language, forward and curate tools from other MCP servers, expose them leanly to cut agent token cost, gate every call through your own policy hooks before it runs, create your own MCP servers easily with zero code - and **wrap any MCP server so it speaks both protocol eras, invisibly**.
 
 **Zero code, zero dependencies: your own MCP server in 60 seconds** - from three ordinary scripts to a named, packaged, policy-gated MCP server (everything on screen is real output; see [demo/](demo/)):
@@ -16,11 +18,11 @@ Toolfunnel is designed to solve multiple issues in one package :)
 
 The Model Context Protocol (MCP) lets an AI agent call tools from many servers. But every connected server dumps **all** of its tool schemas into the model's context on every turn. Connect a handful of rich MCP servers and you've spent thousands of tokens describing tools the agent won't use this turn - slower, costlier, noisier.
 
-Similarly, working with AI I found myself generating many many tools, some of which I wanted to use with different AI workflows, some I didnt, and I didnt want to keep setting them up, I also didnt wish to keep many different setups for different workflows. Therefore ToolFunnel was born so that all of my multi-use tools and common MCP servers can be in one place, with any workflow, and I can easily select which I want to use with whatever workflow and even change or add tools during a session with simple toggles in the UI. I also wanted to wire up and test MCPs *live*, in the running session, without resetting the CLI or restarting anything - and have their tools show up in the tools list straight away; ToolFunnel does exactly that.
+Similarly, working with AI I found myself generating many many tools, some of which I wanted to use with different AI workflows, some I didn't, and I didn't want to keep setting them up, I also didn't wish to keep many different setups for different workflows. Therefore ToolFunnel was born so that all of my multi-use tools and common MCP servers can be in one place, with any workflow, and I can easily select which I want to use with whatever workflow and even change or add tools during a session with simple toggles in the UI. I also wanted to wire up and test MCPs *live*, in the running session, without resetting the CLI or restarting anything - and have their tools show up in the tools list straight away; ToolFunnel does exactly that.
 
 Often also, there's also no consistent way to **govern** what an agent may run: hooks and policies live in the *host* (a specific CLI or otherwise), so they don't travel when you switch clients - with ToolFunnel, this is easy because your hooks travel with the tools - it can become your one swiss-army knife for many different workflows.
 
-Additionally, I wanted an easy and consistent way to package my own tools and create new MCP servers from other tools, whatever language they were written in. FastMCP could do that, but not everything is written in python. I also  didnt want to audit huge numbers of dependencies - a personal choice, yes - so I wanted something that could be audited quickly and easily.
+Additionally, I wanted an easy and consistent way to package my own tools and create new MCP servers from other tools, whatever language they were written in. FastMCP could do that, but not everything is written in python. I also didn't want to audit huge numbers of dependencies - a personal choice, yes - so I wanted something that could be audited quickly and easily.
 
 Finally, when the MCP changes were announced as breaking changes, it became apparent this would eventually break a lot of MCP servers and/or clients out there, many of which might not be actively maintained. Not only that but changing MCP protocol generations takes time and might take considerable effort depending on the complexity of the server - therefore I added a quick, simple single command tool that allows ToolFunnel to wrap an MCP and easily translate between new and legacy protocols - quick, low effort, maximum gain.
 
@@ -38,17 +40,19 @@ ToolFunnel is one small MCP server that sits between your agent and everything e
 6. **Audit when you want it** - a toggleable JSONL log (default off) records tool runs, every gate allow/deny decision, and every upstream connect / disconnect / reconnect.
 7. **Live & self-healing** - attach/curate/toggle on a running gateway with no restart; if an attached MCP's process dies, the gateway detects it and reconnects in the background with backoff.
 8. **Build your own MCP server, no code, no SDK** - assemble scripts and curated upstream tools, switch the meta-tools off, and ToolFunnel *is* your MCP server; `tf_pack` ships it as a `npx`-installable npm package.
-9. **Wrap any MCP server** - one command turns ToolFunnel into a transparent, dual-era wrapper for a single MCP server: modern clients can use legacy servers, legacy clients can use modern servers, and neither side can tell ToolFunnel is there. *(The headline of 0.6.0 - see below.)*
+9. **Wrap any MCP server** - one command turns ToolFunnel into a transparent, dual-era wrapper for a single MCP server: modern clients can use legacy servers, legacy clients can use modern servers, and neither side can tell ToolFunnel is there. *(The headline of the dual-era work - see below.)*
 
 ## Under the hood
 
 Three claims in this README carry the most weight, and each one has a proof you can run:
 
-- **The gate fails closed.** A PreToolUse deny means the tool's execute path is never entered. The test suite proves it directly: a tool plants a side-effect file, the gate denies the call, and the test asserts the file never appears.
+- **A deny is absolute - and an unreadable decision is a deny.** A PreToolUse deny means the tool's execute path is never entered. The test suite proves it directly: a tool plants a side-effect file, the gate denies the call, and the test asserts the file never appears. A hook whose decision cannot be *read* - output past the cap, unparseable JSON - is also denied, because an unreadable answer must never read as permission. The deliberate exception: a hook script that crashes, is missing, or hangs past its timeout is a non-blocking error and the call proceeds (Claude Code hook parity - one broken hook file must not take every tool offline). So write denies as `exit 2`, never as a bare non-zero. `test/gate-semantics.test.js` pins every case.
 - **The wrap is tested at the wire, against servers we didn't write.** Elicitation bridging, cancel translation into the upstream's own request ids, identity mirroring and subscription replay all run over real pipes in the suite, including integration tests against the official MCP SDK client and a real npx-launched third-party server.
-- **The suite runs on 3 operating systems.** CI covers Linux, macOS and Windows across Node 18, 20 and 22 (35 test files). `npm test` runs the same suite locally.
+- **The suite runs on 3 operating systems.** CI covers Linux, macOS and Windows across Node 18, 20 and 22 (63 test files). `npm test` runs the same suite locally.
 
 The reasoning behind the bigger design decisions (why no SDK, why fail-closed, why zero dependencies, where the isolation boundary sits) is in [docs/design.md](docs/design.md).
+
+**Current release: 0.7.0** - the reconciliation pass against the finalised 2026-07-28 specification plus a defect-hunt hardening pass: best-version protocol negotiation for connecting clients, stricter HTTP header enforcement, verbatim upstream error relay, hook-matcher migration on rename, both elicitation modes, and a refcounted subscription lifecycle. Every item landed with a failing test first and the wire surface byte-diffed before and after. The full list of what changed is in the [release notes](https://github.com/Rendeverance/toolfunnel/releases); what is still open is in [docs/KNOWN_BUGS.md](docs/KNOWN_BUGS.md); the security model is in [SECURITY.md](SECURITY.md).
 
 ## Wrap any MCP server - one command, both protocol eras, invisible
 
@@ -119,7 +123,7 @@ Hooks speak the Claude-Code hook protocol (event JSON on stdin, exit `2` to bloc
 
 Hosting tools and proxying other MCP servers is a crowded space - but for my own use case, which is why I rolled my own solution, I wanted something different.
 
-A quick feature comparison as of June 2026:
+A quick feature comparison as of Aug 2nd 2026:
 
 | Capability | ToolFunnel | FastMCP | mcpproxy-go | MetaMCP | mcp-anything |
 |---|:--:|:--:|:--:|:--:|:--:|
@@ -132,7 +136,7 @@ A quick feature comparison as of June 2026:
 | Zero runtime dependencies\* | ✓ (Node, no SDK) | ✗ (framework) | ✓ (Go) | ✗ (Docker) | ✓ (Go) |
 | Runtime dependencies (installed / bundled) | **0\*** | many | 40+ (bundled) | many | bundled (Go) |
 | Config web UI | ✓ | ✗ | ✓ | ✓ | ✗ |
-| Dual-era protocol (2026-07-28 + legacy), client & server side | ✓ | ✗ | ✗ | ✗ | ✗ |
+| Dual-era protocol (2026-07-28 + legacy), client & server side | ✓ | ✗<br>✓(beta) | ✗ | ✗ | ✗ |
 | Transparent single-server wrap (invisible, era-bridging) | ✓ | ✗ | ✗ | ✗ | ✗ |
 
 Beyond the dependency count, four capability choices set ToolFunnel apart from a pure proxy like mcpproxy-go:

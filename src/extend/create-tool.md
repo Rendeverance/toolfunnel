@@ -129,7 +129,7 @@ toolfunnel_run_tool(name, args)
 - **The PreToolUse gate is the whole safety case.** A hook denies a call by returning, on exit 0,
   `{ "hookSpecificOutput": { "hookEventName": "PreToolUse", "permissionDecision": "deny",
   "permissionDecisionReason": "..." } }` - OR by `exit 2` with the reason on stderr. (PreToolUse uses
-  `permissionDecision`, NOT a top-level `decision` - see HOOK_ENGINE.md §3.) When that fires,
+  `permissionDecision`, NOT a top-level `decision` . When that fires,
   `run` returns an error result and the script is never spawned.
 - `permissionDecision: "allow"` passes; `"ask"` is non-blocking in the autonomous host (no
   interactive prompt) - the reason is captured but the tool proceeds.

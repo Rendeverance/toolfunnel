@@ -39,7 +39,7 @@ const { loadRegistry, atomicWriteJson, resolveMode } = require('../tools/registr
 const { loadToolState, isToolEnabled, isToolHidden, isToolHot, setToolEnabled, setToolHidden, setToolHot, clearToolState, getPassthrough, setPassthrough } = require('../tools/tool-state');
 const { loadExposeStore } = require('../mcp/expose-store');
 const { Aggregator } = require('../mcp/aggregator');
-const { loadManifest } = require('../core/hook-loader');
+const { loadManifest, normalizeState } = require('../core/hook-loader');
 const { matches } = require('../core/matcher');
 const { META_TOOLS } = require('../mcp/protocol');
 const logger = require('../core/logger');
@@ -220,6 +220,7 @@ function createUiServer(opts = {}) {
   const TOOL_STATE_PATH = path.join(root, 'tools', 'tools.state.json');
   const EXPOSE_PATH = path.join(root, 'mcp', 'expose.json');
   const MANIFEST_PATH = path.join(root, 'hooks', 'hooks.manifest.json');
+  const HOOK_STATE_PATH = path.join(root, 'hooks', 'hooks.state.json');
   const SCRIPTS_ROOT = path.join(root, 'tools', 'scripts');
   // Where a Pre/Post hook script for a tool must be authored. The manifest command carries the
   // PORTABLE ${HOOKS_DIR} token (expanded by the hook-loader at load); this is its real on-disk dir.
@@ -245,7 +246,11 @@ function createUiServer(opts = {}) {
     try {
       const d = JSON.parse(fs.readFileSync(MANIFEST_PATH, 'utf8'));
       if (d && typeof d === 'object' && !Array.isArray(d)) {
+        // Carry the RAW object and normalise the two known keys onto it: the toggle
+        // write-sites persist this very object, so rebuilding {version, hooks} from
+        // scratch silently dropped every other top-level key on the first toggle.
         return {
+          ...d,
           version: typeof d.version === 'number' ? d.version : 1,
           hooks: Array.isArray(d.hooks) ? d.hooks : [],
         };
@@ -254,6 +259,38 @@ function createUiServer(opts = {}) {
       /* missing/malformed -> empty manifest */
     }
     return { version: 1, hooks: [] };
+  }
+
+  /**
+   * Read the hooks.state.json enabled OVERLAY (hook id -> boolean) defensively. Never throws.
+   * Coerced through the SAME normalizeState the gateway's hook-loader applies (flat map, or the
+   * wrapped { enabled: {...} } form it tolerates) - reading the raw parse here let the two split:
+   * a wrapped file read as "no overlay" on this side while the gateway obeyed it, and a
+   * merge-write appended a flat key beside a wrapper that kept winning at load. Writing the
+   * normalised map back (reconcileOverlay) converges any wrapped file to flat on first toggle.
+   */
+  function readHookOverlay() {
+    try {
+      return normalizeState(JSON.parse(fs.readFileSync(HOOK_STATE_PATH, 'utf8')));
+    } catch (_e) { /* missing/malformed -> no overlay */ }
+    return {};
+  }
+
+  /**
+   * The manifest rows with the overlay APPLIED - the enabled-state the GATEWAY actually loads.
+   * hook-loader applyStateOverlay(): for any row with a string id the overlay has a key for, the
+   * overlay WINS (documented precedence). There are two stores and two writers; every STATE read
+   * in this file must go through this view, because reading the raw manifest is how the Tools-tab
+   * switch showed a gate ON while the gateway ran nothing. Commands stay RAW (${HOOKS_DIR}
+   * unexpanded) - this is a state view, not an execution view, so identity comparisons against
+   * authored command strings keep working.
+   */
+  function effectiveHooks() {
+    const overlay = readHookOverlay();
+    return readManifest().hooks.map((h) => {
+      if (!h || typeof h.id !== 'string' || !Object.prototype.hasOwnProperty.call(overlay, h.id)) return h;
+      return { ...h, enabled: overlay[h.id] === true };
+    });
   }
 
   /** Does any ENABLED manifest hook for `event` fire for `gateName`? (matcher.matches semantics) */
@@ -274,7 +311,7 @@ function createUiServer(opts = {}) {
   function apiTools() {
     const registry = loadRegistry(REGISTER_PATH, { scriptsRoot: SCRIPTS_ROOT });
     const state = loadToolState(TOOL_STATE_PATH);
-    const hooks = readManifest().hooks;
+    const hooks = effectiveHooks();
     return registry.list().map((b) => {
       const gateName = b.name || b.id;
       return {
@@ -295,6 +332,18 @@ function createUiServer(opts = {}) {
         hot: isToolHot(state, b.id, false),
         pre: hookFires(hooks, 'PreToolUse', gateName),
         post: hookFires(hooks, 'PostToolUse', gateName),
+        // The per-tool switch's OWN entry as distinct from "some broader hook fires". Without the
+        // split the client cannot tell "this tool has its own gate" from "a wildcard covers it",
+        // which is how the OFF toast lied and the switch snapped back on refresh. Identity is
+        // (event, escaped literal, COMMAND) - the same triple apiSetHook owns. Matching on the
+        // matcher alone read TRUE for a FOREIGN entry sitting on this tool's name, which is what
+        // made the switch appear correct after arming somebody else's hook.
+        preOwn: hooks.some((h) => h && h.event === 'PreToolUse' && h.enabled === true
+          && h.matcher === escapeRegex(gateName)
+          && h.command === 'node "${HOOKS_DIR}/scripts/' + b.id + '-pretooluse.js"'),
+        postOwn: hooks.some((h) => h && h.event === 'PostToolUse' && h.enabled === true
+          && h.matcher === escapeRegex(gateName)
+          && h.command === 'node "${HOOKS_DIR}/scripts/' + b.id + '-posttooluse.js"'),
       };
     });
   }
@@ -405,21 +454,156 @@ function createUiServer(opts = {}) {
     }
     const gateName = gateNameFor(registry.getEntry(id));
 
+    // The id becomes a FILENAME and is interpolated into a manifest command that hook-runner
+    // spawns with shell:true, so it must be filename-safe (0.7.0). The register only requires a
+    // non-empty string, and an id carrying a quote produced a command that either could not run -
+    // while the UI still reported "Pre gate enabled", i.e. a dead gate presented as a live one -
+    // or carried arbitrary shell text into a file the operator reads as policy. Same character
+    // class deriveHookScriptRel already accepts.
+    if (!/^[A-Za-z0-9._-]+$/.test(id)) {
+      return {
+        status: 400,
+        json: {
+          ok: false,
+          error: `tool id "${id}" cannot carry a per-tool gate: an id used as a hook script name must match [A-Za-z0-9._-]+. Rename the tool, or add the hook by hand on the Hooks tab.`,
+        },
+      };
+    }
+
     const manifest = readManifest();
     const hooks = manifest.hooks;
+    // EFFECTIVE enabled for a row: the hooks.state.json overlay (keyed by id) WINS wherever it
+    // has a key - that is what the gateway loads (hook-loader applyStateOverlay). Deciding from
+    // the raw manifest flag let the two stores disagree: manifest ON + overlay OFF read as
+    // "already on" here while the gateway ran no gate at all.
+    const overlay = readHookOverlay();
+    const effectiveEnabled = (h) => (h && typeof h.id === 'string' && h.id.length > 0
+      && Object.prototype.hasOwnProperty.call(overlay, h.id))
+      ? overlay[h.id] === true : !!(h && h.enabled === true);
+    // Mirror setEnabled's contract whenever this API changes the state of a row that HAS an id:
+    // the overlay is the precedence-winning store, so it must move with the manifest write (or,
+    // for a removed row, lose its key - a stray key pre-arms a future hook adopting the id).
+    const reconcileOverlay = (h, desired) => {
+      if (!h || typeof h.id !== 'string' || h.id.length === 0) return;
+      if (desired === null) delete overlay[h.id];
+      else overlay[h.id] = desired;
+      atomicWriteJson(HOOK_STATE_PATH, overlay);
+    };
     const eventLower = event.toLowerCase();
     const scriptName = `${id}-${eventLower}.js`;
     const scriptPath = path.join(HOOK_SCRIPTS_DIR, scriptName);
 
+    // BOTH branches own exactly one shape: matcher === escapeRegex(gateName), this tool's
+    // escaped literal. Never the RAW name: the register only requires `name` to be a non-empty
+    // string, so a tool NAMED '*' (or string-equal to any broader matcher) would make a raw-name
+    // comparison a deletion primitive against the operator's global gate - the 0.7.0 hole
+    // reopened through the name field. When the name has no regex specials the
+    // escaped literal IS the raw name, so nothing legitimate is lost.
+    const literal = escapeRegex(gateName);
+    // The per-tool entry is identified by (event, matcher, COMMAND) - all three. Matching on
+    // (event, matcher) alone let this branch ADOPT an entry whose command runs a different
+    // script (hand-authored on the Hooks tab, or left by a tool that previously held this name)
+    // and then answer with THIS tool's invented `<id>-<event>.js` path plus "create it here".
+    // The operator writes their policy into a file no manifest command references: a dead gate
+    // presented as a live one. The command is what the gateway actually runs, so it is what
+    // identity has to be built on.
+    const ourCommand = 'node "${HOOKS_DIR}/scripts/' + scriptName + '"';
+    const isOwnLiteral = (h) => h && h.event === event && h.matcher === literal
+      && h.command === ourCommand;
+    // Same gate, DIFFERENT command - somebody else's entry sitting on this tool's matcher.
+    const isForeignAtLiteral = (h) => h && h.event === event && h.matcher === literal
+      && h.command !== ourCommand;
+
     if (on) {
-      // Append a literal-full-match hook iff one is not already enabled for (event, gateName).
-      if (!hookFires(hooks, event, gateName)) {
+      // GATE IDENTITY MUST BE UNAMBIGUOUS (0.7.0). gateNameFor is `name || id` and the register
+      // never constrains `name`, so two DIFFERENT tools can resolve to ONE matcher, and ON would
+      // hand the second tool a gate it does not own. Ownership resolves by ID, which the register
+      // guarantees unique: the tool whose *id* IS the gate name is the canonical owner and keeps
+      // its switch; any OTHER tool reaching the same name through its `name` field is refused
+      // rather than silently sharing. When no tool owns the name by id, every claimant is
+      // refused - genuinely ambiguous, so nothing is guessed.
+      //
+      // ON-ONLY, deliberately. OFF removes this tool's own (event, matcher, COMMAND) entry, which
+      // is unambiguous whatever the register says today - an own literal can predate a rival's
+      // arrival in the register, and refusing OFF then leaves the operator a live gate with no
+      // control that can disarm it. Ambiguity gates authoring, never removal.
+      const rivals = registry.list()
+        .filter((e) => e && e.id !== id && gateNameFor(e) === gateName)
+        .map((e) => e.id);
+      if (rivals.length > 0 && id !== gateName) {
+        return {
+          status: 409,
+          json: {
+            ok: false,
+            error: `tool "${id}" cannot own a per-tool gate: its gate name "${gateName}" is also `
+              + `used by ${rivals.map((r) => `"${r}"`).join(', ')}, so one switch would silently own `
+              + 'another tool\'s gate. Give this tool a distinct register `name`, or add the hook by '
+              + 'hand on the Hooks tab with a matcher that targets exactly what you mean.',
+            gateName,
+            conflictsWith: rivals,
+          },
+        };
+      }
+
+      // Author (or re-enable) this tool's OWN literal entry. "Some enabled hook fires for this
+      // tool" is NOT "this tool's gate exists": with a global '*' gate present the old check
+      // wrote nothing, reported ok, and told the operator to create a script that no manifest
+      // command would ever reference - a dead gate presented as a live one.
+      const own = hooks.find(isOwnLiteral);
+      if (own) {
+        if (effectiveEnabled(own) !== true) {
+          own.enabled = true;
+          manifest.hooks = hooks;
+          atomicWriteJson(MANIFEST_PATH, manifest);
+          reconcileOverlay(own, true);
+        }
+      } else {
+        // Before authoring: is another command already wired to this exact gate? If so, that
+        // command is what runs. Enable it if the operator asked for the gate ON, but report ITS
+        // script - answering with our per-id path here is what turned a live gate into a lie.
+        const foreign = hooks.find(isForeignAtLiteral);
+        if (foreign) {
+          const rel = deriveHookScriptRel(foreign.command);
+          if (effectiveEnabled(foreign) !== true) {
+            // A DISABLED entry records an operator's decision, made where they made it. Arming it
+            // from here ran somebody else's policy under this switch's name - and OFF (own-literal
+            // only, by design) could never turn it back off: a one-way arming device for a hook
+            // the operator deliberately switched off. Refuse and point at the real entry instead;
+            // nothing is mutated.
+            return {
+              status: 409,
+              json: {
+                ok: false,
+                error: `A ${event} hook for "${gateName}" already exists but is DISABLED: its `
+                  + `command runs ${rel || foreign.command}, not a per-tool script authored here. `
+                  + 'This switch will not arm a hook that was deliberately switched off. '
+                  + 'Re-enable or remove that entry on the Hooks tab, then use this switch.',
+                command: foreign.command,
+              },
+            };
+          }
+          return {
+            status: 200,
+            json: {
+              ok: true,
+              authored: false,
+              command: foreign.command,
+              // The path the WIRED command actually runs (null when it names no scripts/ file -
+              // then the command itself is the only honest answer).
+              scriptPath: rel ? path.join(HOOK_SCRIPTS_DIR, '..', rel) : null,
+              note:
+                `A ${event} hook for "${gateName}" already existed and was left as-is: its command `
+                + `runs ${rel || foreign.command}, not a per-tool script authored here. Edit that `
+                + 'script to change the behaviour, or manage the entry on the Hooks tab.',
+            },
+          };
+        }
         hooks.push({
           event,
-          matcher: escapeRegex(gateName),
+          matcher: literal,
           // The command carries the PORTABLE ${HOOKS_DIR} token (NOT interpolated here) - the
           // hook-loader expands it to the absolute hooks dir at load time.
-          command: 'node "${HOOKS_DIR}/scripts/' + scriptName + '"',
+          command: ourCommand,
           enabled: true,
         });
         manifest.hooks = hooks;
@@ -432,18 +616,39 @@ function createUiServer(opts = {}) {
           scriptPath,
           note:
             `Create ${scriptName} at this path to define the ${event} behaviour. ` +
-            'Until the script exists the gate is configured but has no script to run.',
+            'Until the script exists the gate is configured but has no script to run - a missing ' +
+            'hook script is a non-blocking error, so calls PASS UNGATED until you write it. ' +
+            'Deny with exit 2 (a bare non-zero allows).',
         },
       };
     }
 
-    // OFF: drop every entry for this event whose matcher fires for this tool's gate name.
-    const next = hooks.filter((h) => !(h && h.event === event && matches(h.matcher, gateName)));
-    if (next.length !== hooks.length) {
+    // OFF: drop ONLY the per-tool LITERAL entry the ON branch authors - never a hook that
+    // merely ALSO fires for this tool (0.7.0 deleted the global wildcard gate here).
+    const next = hooks.filter((h) => !isOwnLiteral(h));
+    const removed = hooks.length - next.length;
+    if (removed > 0) {
       manifest.hooks = next;
       atomicWriteJson(MANIFEST_PATH, manifest);
+      // Removed rows lose their overlay key too - strays are not inert (applyState lays the
+      // overlay over the manifest at every load, so a future hook adopting the id would boot in
+      // the stale recorded state).
+      for (const h of hooks) if (isOwnLiteral(h)) reconcileOverlay(h, null);
     }
-    return { status: 200, json: { ok: true } };
+    // A broader hook (wildcard or regex) may STILL gate this tool. Say so: a bare {ok:true} reads
+    // as "this tool is now ungated" when the call changed nothing about that. Judged on EFFECTIVE
+    // state - a manifest-enabled row the overlay disables does not gate anything.
+    const stillGating = next
+      .filter((h) => h && h.event === event && effectiveEnabled(h) === true && matches(h.matcher, gateName))
+      .map((h) => String(h.matcher));
+    const json = { ok: true, removed };
+    if (stillGating.length > 0) {
+      json.stillGated = stillGating;
+      json.note = `Removed this tool's own ${event} entry, but ${stillGating.length} broader `
+        + `hook(s) still gate "${gateName}" (matcher(s): ${stillGating.join(', ')}). `
+        + 'Disable or edit those on the Hooks tab to ungate this tool.';
+    }
+    return { status: 200, json };
   }
 
   // GET /api/upstreams -> { upstreams:[...], expose:[...] } (READ-ONLY for v1).
@@ -615,7 +820,9 @@ function createUiServer(opts = {}) {
   }
 
   // POST /api/logs/config { enabled?, path? } -> logger.setConfig (atomic merge). Validates field
-  // types so a bad shape is a clean 400 rather than reaching the writer; a write failure -> 500.
+  // types so a bad shape is a clean 400 rather than reaching the writer. setConfig's own refusal
+  // of an out-of-home path (TF_LOG_PATH_REFUSED) is client input too -> 400; only a genuine
+  // write failure (disk, perms) -> 500.
   function apiSetLogsConfig(body) {
     const b = body && typeof body === 'object' && !Array.isArray(body) ? body : {};
     const patch = {};
@@ -635,7 +842,8 @@ function createUiServer(opts = {}) {
       const config = logger.setConfig(patch);
       return { status: 200, json: { ok: true, config } };
     } catch (err) {
-      return { status: 500, json: { ok: false, error: (err && err.message) || 'log config write failed' } };
+      const status = err && err.code === 'TF_LOG_PATH_REFUSED' ? 400 : 500;
+      return { status, json: { ok: false, error: (err && err.message) || 'log config write failed' } };
     }
   }
 
@@ -708,7 +916,26 @@ function createUiServer(opts = {}) {
 
   // POST /api/oauth/install -> install the single optional dependency (jose@PIN) on demand. Async +
   // potentially slow (it shells out to npm); installJose() owns a hard timeout and never throws.
+  //
+  // NOT on the POST mutation chain (0.7.0): this writes node_modules/, not the config files that
+  // chain exists to serialise, so queueing it there put a multi-minute npm run in front of every
+  // other POST - one click and the whole panel stops answering. It still must not overlap ITSELF,
+  // so it keeps a single-flight latch of its own: concurrent callers COALESCE onto the running
+  // install and get its result rather than starting a second npm.
+  let installInFlight = null;
   async function apiOauthInstall() {
+    if (installInFlight) return installInFlight;
+    installInFlight = (async () => {
+      try {
+        return await runOauthInstall();
+      } finally {
+        installInFlight = null;
+      }
+    })();
+    return installInFlight;
+  }
+
+  async function runOauthInstall() {
     let res;
     try {
       res = await installJose();
@@ -741,7 +968,24 @@ function createUiServer(opts = {}) {
       delete clean.scriptText; // scriptText is a UI affordance, not a register field
       // Author the script body before registering, so a script invoke points at a real file.
       if (typeof scriptText === 'string' && clean.invoke && clean.invoke.type === 'script') {
+        // Snapshot the slot the write lands on (same basename rule as writeScript), so a
+        // refused register entry can put it back exactly - absent stays absent, an
+        // overwritten body returns. Without this the 400 reply left the authored script
+        // behind as an orphan no entry references.
+        const slot = typeof clean.invoke.path === 'string' && clean.invoke.path.length > 0
+          ? path.resolve(SCRIPTS_ROOT, path.basename(clean.invoke.path)) : null;
+        const priorBody = slot && fs.existsSync(slot) ? fs.readFileSync(slot) : null;
         registry.writeScript(clean.invoke.path, scriptText);
+        try {
+          const added = registry.add(clean);
+          return { status: 200, json: { ok: true, entry: added } };
+        } catch (err) {
+          try {
+            if (priorBody != null) fs.writeFileSync(slot, priorBody);
+            else if (slot) fs.unlinkSync(slot);
+          } catch (_e) { /* best-effort - the 400 below still reports the add failure */ }
+          throw err;
+        }
       }
       const added = registry.add(clean);
       return { status: 200, json: { ok: true, entry: added } };
@@ -898,7 +1142,15 @@ function createUiServer(opts = {}) {
       }
       loader.addEntry(spec); // validates id/event/command; throws on duplicate id
       if (typeof scriptText === 'string' && scriptText.length > 0) {
-        loader.writeScript(spec.id, scriptText); // path-guarded to hooks/scripts
+        try {
+          loader.writeScript(spec.id, scriptText); // path-guarded to hooks/scripts
+        } catch (err) {
+          // The entry persisted before the script slot was refused. A reply that
+          // reports failure must not keep half the add - without the unwind, the
+          // natural retry died on its own first attempt as a duplicate id.
+          try { loader.removeEntry(spec.id); } catch (_e) { /* best-effort */ }
+          throw err;
+        }
       }
       return { status: 200, json: { ok: true, id: spec.id } };
     } catch (err) {
@@ -1026,7 +1278,7 @@ function createUiServer(opts = {}) {
     // hard-refused exactly the upstreams the wrap security notice tells operators to curate
     // HERE - per-tool enabled:false via this discover.
     const agg = new Aggregator({
-      store, v3Root: root,
+      store, gatewayRoot: root,
       wrapTargetProvider: () => {
         try { return getPassthrough(loadToolState(TOOL_STATE_PATH)); } catch (_e) { return null; }
       },
@@ -1060,22 +1312,38 @@ function createUiServer(opts = {}) {
   // The POST routing table - path -> handler. Each handler takes the parsed body and returns
   // { status, json } (or a Promise of it - the dispatcher awaits); none throws (every store call is
   // wrapped). Built once per server instance.
+  //
+  // Every POST handler read-modify-writes a config file. atomicWriteJson makes each individual
+  // write atomic, but two CONCURRENT posts (two tabs, a double-click) both read the pre-state and
+  // the second write silently discards the first - and on /api/tools/hook a lost write is a lost
+  // GATE. Serialise all mutators behind one promise chain: loopback + single operator means the
+  // queue is depth 0 or 1 in practice, so the latency cost is nil.
+  let postChain = Promise.resolve();
+  const serialise = (fn) => (body) => {
+    const run = postChain.then(() => fn(body));
+    // The chain must survive a rejected handler (the dispatcher maps rejections to 500 itself).
+    postChain = run.catch(() => {});
+    return run;
+  };
   const POST_HANDLERS = {
-    '/api/tools/state': apiSetState,
-    '/api/tools/hook': apiSetHook,
-    '/api/tools/add': apiToolAdd,
-    '/api/tools/remove': apiToolRemove,
-    '/api/tools/mode': apiToolMode,
-    '/api/tools/update': apiToolUpdate,
-    '/api/hooks/add': apiHookAdd,
-    '/api/hooks/state': apiHookState,
-    '/api/mcp/add': apiMcpAdd,
-    '/api/mcp/state': apiMcpState,
+    '/api/tools/state': serialise(apiSetState),
+    '/api/tools/hook': serialise(apiSetHook),
+    '/api/tools/add': serialise(apiToolAdd),
+    '/api/tools/remove': serialise(apiToolRemove),
+    '/api/tools/mode': serialise(apiToolMode),
+    '/api/tools/update': serialise(apiToolUpdate),
+    '/api/hooks/add': serialise(apiHookAdd),
+    '/api/hooks/state': serialise(apiHookState),
+    '/api/mcp/add': serialise(apiMcpAdd),
+    '/api/mcp/state': serialise(apiMcpState),
+    // discover is a read-only probe - no config write, no need to queue it behind mutations.
     '/api/mcp/discover': apiMcpDiscover,
-    '/api/wrap': apiWrap,
-    '/api/identity': apiSetIdentity,
-    '/api/logs/config': apiSetLogsConfig,
-    '/api/auth/config': apiSetAuthConfig,
+    '/api/wrap': serialise(apiWrap),
+    '/api/identity': serialise(apiSetIdentity),
+    '/api/logs/config': serialise(apiSetLogsConfig),
+    '/api/auth/config': serialise(apiSetAuthConfig),
+    // The optional-dependency install writes node_modules/, not the config files the chain
+    // protects, and takes minutes - it carries its own single-flight latch instead (see above).
     '/api/oauth/install': apiOauthInstall,
   };
 

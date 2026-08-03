@@ -13,7 +13,7 @@
  *      Manager UI's 'discover' button calls.
  *   3. Computes the CURATED-DIRECT tool definitions to advertise downstream
  *      (exposedToolDefinitions) - only for ENABLED expose[] entries whose upstream
- *      is connected AND actually advertises the named tool. Each definition is
+ *      is connected, enabled, AND actually advertises the named tool. Each definition is
  *      renamed to its downstream `as` name (what the CLI / PreToolUse matchers see).
  *   4. RESOLVES a downstream call back to its upstream client + real tool name
  *      (resolveExposedExecution) - the seam the MCP server's curated-direct call
@@ -31,7 +31,7 @@
  *     may only reference CODE/FILES inside the gateway root. The
  *     guard is applied to the ARGS (the script path, db files, ... that the interpreter
  *     is pointed at): any arg that is an absolute path, or that looks like a file path
- *     (contains a path separator), MUST resolve inside v3Root - otherwise the factory
+ *     (contains a path separator), MUST resolve inside gatewayRoot - otherwise the factory
  *     throws and connectAll records the upstream in failed[]. The COMMAND slot is the
  *     interpreter/executable (node, npx, or an absolute path to a node binary that by
  *     definition lives OUTSIDE the project, e.g. process.execPath / a system node.exe)
@@ -52,7 +52,7 @@ const logger = require('../core/logger');
 // The sandbox root = the CONFIG HOME (TOOLFUNNEL_HOME / --config-dir; defaults to the package
 // root - see src/core/config-home.js). Used as the isolation boundary the default clientFactory
 // enforces: a pack's path-shaped upstream args live under the home, so the home is the boundary.
-// A caller may override via opts.v3Root for tests.
+// A caller may override via opts.gatewayRoot for tests.
 const { resolveConfigHome } = require('../core/config-home');
 const DEFAULT_ROOT = resolveConfigHome();
 
@@ -64,7 +64,7 @@ function isNonEmptyString(v) {
 /**
  * Does this argv token LOOK like a file path? An absolute path (path.isAbsolute) or
  * any token containing a path separator ('/' or '\\') is treated as a path reference
- * and must be confined to v3Root. A bare token like 'node', 'npx', 'server' or a flag
+ * and must be confined to gatewayRoot. A bare token like 'node', 'npx', 'server' or a flag
  * like '--port' is NOT a path and is always allowed.
  * @param {string} arg
  * @returns {boolean}
@@ -72,8 +72,90 @@ function isNonEmptyString(v) {
 function looksLikePath(arg) {
   if (!isNonEmptyString(arg)) return false;
   if (path.isAbsolute(arg)) return true;
+  // win32 DRIVE-RELATIVE form ('C:foo.js') - path.win32.isAbsolute() is false for it and it holds
+  // no separator, so without this it looked like a bare token and skipped the guard entirely.
+  if (/^[A-Za-z]:/.test(arg)) return true;
   return arg.indexOf('/') !== -1 || arg.indexOf('\\') !== -1;
 }
+
+/**
+ * The path-shaped candidates inside a single argv token. A runtime option in `--flag=value` form
+ * (node's --require=, --import=, --experimental-loader=, and their Deno/Bun kin) interprets only
+ * the part AFTER the first '=' as a path. The whole token '--require=../x.js' carries no '..'
+ * segment of its own, so a check of the token alone judges it inside the root while the child
+ * resolves the value and leaves it. So the value after the first '=' is returned as its own
+ * candidate, checked alongside the whole token. A non-path value ('--port=8080') simply fails
+ * looksLikePath() and is ignored; an inside value still resolves inside and passes.
+ * @param {string} arg
+ * @returns {string[]}
+ */
+function argPathCandidates(arg) {
+  if (!isNonEmptyString(arg)) return [];
+  const out = [arg];
+  const eq = arg.indexOf('=');
+  if (eq !== -1 && eq < arg.length - 1) out.push(arg.slice(eq + 1));
+  return out;
+}
+
+/**
+ * Is this a win32 DRIVE-RELATIVE reference ('C:foo', drive letter + colon + no separator)?
+ * It resolves against the CHILD's per-drive current directory - a base the guard cannot pin -
+ * so it can never be PROVEN inside the root: path.resolve(root, 'C:x') judges it optimistically
+ * when root shares the drive. There is no legitimate in-sandbox use (an inside path can always
+ * be written absolutely or plainly relative), so it is refused outright wherever paths are
+ * guarded. Checked on every platform: a config is portable and gets run somewhere else.
+ * @param {string} t
+ * @returns {boolean}
+ */
+function isDriveRelative(t) {
+  return /^[A-Za-z]:(?![\\/])/.test(t);
+}
+
+// Environment variables that make a child load code, whatever its args say (0.7.0). Two classes with two rules. All platforms' vars are checked on all platforms because
+// a config is portable and gets run somewhere else, and keys are compared CASE-INSENSITIVELY
+// everywhere because Windows env lookup is case-insensitive - `node_options` reaches the child
+// exactly as `NODE_OPTIONS` does, so an exact-case allowlist was a one-character bypass there.
+//
+// OPTION-STRING vars are a mini command line in the runtime's OWN grammar: quoting, `=` forms,
+// `file:`/`data:` URLs, inspector flags. A path-shaped guard cannot verify them (quoted
+// values, URL specifiers and a bare `--inspect` all defeat any tokeniser written here),
+// and a guard that cannot verify must refuse, not guess. Refused outright in funnel mode; the
+// operator's deliberate opt-out is `allowCodeLoadingEnv: true` on the upstream entry (the
+// legacyPin pattern - off by default, visible in config, warned when it excuses something).
+const CODE_OPT_ENV = [
+  'NODE_OPTIONS',
+  'JAVA_TOOL_OPTIONS',
+  '_JAVA_OPTIONS',
+  'PERL5OPT',
+  'RUBYOPT',
+];
+// PATH / PATH-LIST vars name locations directly and ARE checkable: extract pieces, judge each
+// against the root. This list is a FLOOR, not a boundary - runtimes keep minting code-loading
+// vars, and the `command` slot is arbitrary by design (see SECURITY.md: the guard is a tripwire
+// for out-of-root references in an auditable config home, not a sandbox against an untrusted
+// pack author).
+const CODE_PATH_ENV = [
+  'NODE_PATH',
+  'NODE_REPL_EXTERNAL_MODULE',
+  'LD_PRELOAD',
+  'LD_LIBRARY_PATH',
+  'LD_AUDIT',
+  'DYLD_INSERT_LIBRARIES',
+  'DYLD_LIBRARY_PATH',
+  'DYLD_FRAMEWORK_PATH',
+  'PYTHONPATH',
+  'PYTHONSTARTUP',
+  'PYTHONHOME',
+  'PYTHONEXECUTABLE',
+  'PERL5LIB',
+  'RUBYLIB',
+  'GEM_PATH',
+  'CLASSPATH',
+  'BASH_ENV',
+  'ENV',
+  'DOTNET_STARTUP_HOOKS',
+  'CORECLR_PROFILER_PATH',
+];
 
 /**
  * Is `target` inside `root` (or equal to it)? Compares fully-resolved, normalised
@@ -101,7 +183,7 @@ function isInside(root, target) {
  * The DEFAULT clientFactory. Constructs a McpClient for an upstream entry AFTER
  * enforcing the isolation guard on the ARGS: every arg that looks like a file path
  * (an absolute path, or any token containing a path separator) must resolve inside
- * `v3Root`. Throws a clear 'isolation: ...' error otherwise - connectAll catches that
+ * `gatewayRoot`. Throws a clear 'isolation: ...' error otherwise - connectAll catches that
  * into failed[].
  *
  * The COMMAND slot is intentionally NOT guarded: it names the interpreter/executable
@@ -112,27 +194,166 @@ function isInside(root, target) {
  * would wrongly reject every vendored upstream the moment it is run by the system node.
  *
  * @param {object} upstream  a normalised ExposeStore upstream { id, command, args, env, ... }
- * @param {string} v3Root    the sandbox root the upstream's path-shaped ARGS must stay inside
+ * @param {string} gatewayRoot    the sandbox root the upstream's path-shaped ARGS must stay inside
  * @returns {McpClient}
  */
-function defaultClientFactory(upstream, v3Root, onClose, allowOutsidePaths, clientInfo) {
+function defaultClientFactory(upstream, gatewayRoot, onClose, allowOutsidePaths, clientInfo, eraHint) {
   const id = isNonEmptyString(upstream && upstream.id) ? upstream.id : '(unknown)';
   const args = Array.isArray(upstream && upstream.args) ? upstream.args : [];
+  // The caller passes TRUE for the wrapped upstream; the upstream may also claim the exemption for
+  // itself in config. Either way it is decided HERE, per upstream, from THIS upstream's own entry -
+  // there is no shared or latched state, so one server's opt-out can never relax another's guard.
+  const outsideAllowed = allowOutsidePaths === true || (upstream && upstream.allowOutsidePaths === true);
+  const byConfig = allowOutsidePaths !== true && outsideAllowed;
 
-  // Guard every path-shaped arg (server scripts, db files, ...). The command (interpreter)
-  // is NOT guarded - see the function doc: it is the executable, not the code being run.
+  // Guard every field that decides WHAT CODE the spawned process runs: path-shaped args, the cwd
+  // they resolve against, and the env vars that load code irrespective of args. The command
+  // (interpreter) is NOT guarded - see the function doc: it is the executable, not the code.
   // allowOutsidePaths: TRUE only for the currently-WRAPPED upstream (transparent-wrapper mode -
   // the operator explicitly made this server the entire surface, e.g. server-filesystem serving
   // a documents folder). Warn instead of refuse; funnel-mode upstreams keep the hard guard.
-  for (const arg of args) {
-    if (looksLikePath(arg) && !isInside(v3Root, arg)) {
-      if (allowOutsidePaths === true) {
-        process.stderr.write(`[toolfunnel] isolation: WRAPPED upstream "${id}" uses a path outside the gateway root ` +
-          `("${arg}") - permitted in transparent-wrapper mode. To restrict what it can do post-wrap, see the ` +
-          `manual's "Wrapping & security" section (PreToolUse gate, per-tool enabled:false).\n`);
-        break; // one warning covers the upstream; every arg is permitted under the wrap
+  // ONE notice per CLASS, not per upstream: `warnedPath` covers the path class (args + cwd); the
+  // env section below keeps its OWN flag. A single shared flag let the first path finding consume
+  // the only slot, so an env finding - the class that loads code - was excused in total silence,
+  // precisely for the operator who opted out and most needs the audit trail.
+  let warnedPath = false;
+  const refuse = (what) => {
+    if (outsideAllowed === true) {
+      if (!warnedPath) {
+        warnedPath = true;
+        // Name the REAL reason. Reporting a config opt-out as transparent-wrapper mode would put a
+        // false explanation in the operator's log for the one event they most need to trace.
+        process.stderr.write(byConfig
+          ? `[toolfunnel] isolation: upstream "${id}" reaches outside the gateway root (${what}) - ` +
+            `permitted because its config sets allowOutsidePaths:true. This upstream is NOT isolated ` +
+            `to the config home; every tool it serves runs with that exemption. Remove the flag to ` +
+            `restore the guard, or gate the tools with a PreToolUse hook.\n`
+          : `[toolfunnel] isolation: WRAPPED upstream "${id}" reaches outside the gateway root ` +
+            `(${what}) - permitted in transparent-wrapper mode. To restrict what it can do post-wrap, see the ` +
+            `manual's "Wrapping & security" section (PreToolUse gate, per-tool enabled:false).\n`);
       }
-      throw new Error(`isolation: upstream ${id} references a path outside the gateway root`);
+      return false; // permitted under the wrap, or by this upstream's own opt-out
+    }
+    throw new Error(`isolation: upstream ${id} references a path outside the gateway root`);
+  };
+
+  for (const arg of args) {
+    // Check the whole token AND the value after a '=' (the --flag=value form the child splits) -
+    // either escaping the root refuses the arg. The notice still names the whole token.
+    const escapes = argPathCandidates(arg).some(
+      (cand) => looksLikePath(cand) && (isDriveRelative(cand) || !isInside(gatewayRoot, cand))
+    );
+    if (escapes) {
+      if (refuse(`arg "${arg}"`) === false) break; // one notice covers the path class
+    }
+  }
+
+  // cwd - the SPAWN BASE (0.7.0). Guarded because it decides where a bare, separator-free arg like
+  // 'server.js' actually resolves: looksLikePath() is false for such a token so the loop above
+  // never sees it, while the child resolves it against cwd. Until 0.7.0 the comment below claimed
+  // guard-base and spawn-base "agree by construction" - true only while cwd was unset.
+  // Drive-relative gets the same outright refusal as everywhere else: 'C:denied' resolves
+  // against the child's per-drive current directory, and isInside() judging it against the root
+  // is optimistic-and-wrong whenever the root shares the drive.
+  if (isNonEmptyString(upstream && upstream.cwd)
+    && (isDriveRelative(upstream.cwd) || !isInside(gatewayRoot, upstream.cwd))) {
+    refuse(`cwd "${upstream.cwd}"`);
+  }
+
+  // env - CODE-LOADING variables (0.7.0). A value in any of these loads code
+  // into the child however clean the args are (reachable in-band: tf_mcp_add forwards env
+  // verbatim). Keys are matched CASE-INSENSITIVELY on every platform - Windows env lookup is
+  // case-insensitive, so `node_options` is `NODE_OPTIONS` to the child - and every platform's
+  // variable is checked on every platform: a pack authored on Linux gets run on Windows and back.
+  //
+  // `allowCodeLoadingEnv: true` on the upstream entry is the operator's explicit opt-out for the
+  // whole class: the finding downgrades to a once-per-upstream stderr warning naming the flag.
+  const envObj = upstream && typeof upstream.env === 'object' && upstream.env ? upstream.env : null;
+  if (envObj) {
+    const envAllowed = (upstream && upstream.allowCodeLoadingEnv === true);
+    // The env class's OWN notice flag - deliberately independent of `warnedPath` (see above).
+    let warnedEnv = false;
+    const envNotice = (why) => {
+      if (warnedEnv) return;
+      warnedEnv = true;
+      process.stderr.write(`[toolfunnel] isolation: upstream "${id}" sets code-loading env ${why}`);
+    };
+    // Which flag excuses an env finding depends on its KIND:
+    //   'opt'  - option-string vars (NODE_OPTIONS et al.): not path-checkable, so ONLY the class's
+    //            own flag (allowCodeLoadingEnv) or the WRAP excuses them. allowOutsidePaths does
+    //            NOT: it is documented (expose-store) as args/cwd/path-list scope, and letting the
+    //            path flag silently disarm this separately-audited class was a cross-flag grant
+    //            the operator never made.
+    //   'path' - path-list vars (NODE_PATH et al.): inside the path flag's documented scope, so
+    //            wrap, allowCodeLoadingEnv or allowOutsidePaths excuses - each loudly, by name.
+    const refuseEnv = (what, kind) => {
+      if (envAllowed) {
+        envNotice(`(${what}) - permitted by allowCodeLoadingEnv:true on this upstream. Remove the ` +
+          'flag to restore the refusal.\n');
+        return false;
+      }
+      if (allowOutsidePaths === true) {
+        envNotice(`(${what}) - permitted in transparent-wrapper mode (this upstream IS the ` +
+          'surface). To restrict it post-wrap, see the manual\'s "Wrapping & security" section.\n');
+        return false;
+      }
+      if (kind === 'path' && outsideAllowed === true) {
+        envNotice(`(${what}) - permitted because its config sets allowOutsidePaths:true ` +
+          '(path-list env is within that flag\'s scope). Remove the flag to restore the guard.\n');
+        return false;
+      }
+      throw new Error(`isolation: upstream ${id} sets code-loading env (${what})`);
+    };
+    // Enumerate EXACTLY as child_process does: `for...in`, which walks own AND INHERITED keys
+    // (node's normalizeSpawnArguments: "Prototype values are intentionally included"). An
+    // Object.keys() walk was blind to a `__proto__` carrier - JSON.parse makes `__proto__` an OWN
+    // data property, spread preserves it, and the client's Object.assign merge then uses [[Set]],
+    // firing the Object.prototype.__proto__ setter and installing the payload as the merged env's
+    // PROTOTYPE: invisible to Object.keys, delivered to the child.
+    for (const key in envObj) {
+      const upper = String(key).toUpperCase();
+      // A `__proto__` key is refused OUTRIGHT, whatever it carries. It is not an env var: it is
+      // the carrier that turns into the merged env's PROTOTYPE at the client's Object.assign, and
+      // from there into real variables for the child (for..in). Nothing legitimate needs it.
+      if (key === '__proto__') {
+        refuseEnv('env "__proto__" (a prototype carrier, not an environment variable)', 'opt');
+        continue;
+      }
+      // Judge the value as the spawn will USE it, not as it was authored. node builds each pair as
+      // `${key}=${value}`, so a one-element array becomes its element verbatim and a number becomes
+      // its digits. Testing isNonEmptyString FIRST let every non-string value skip both lists -
+      // again the guard reading a different representation than the consumer. A value that cannot
+      // even be coerced is unverifiable in a code-loading slot, so it is refused rather than
+      // skipped (the same rule the option-string class already follows).
+      const rawValue = envObj[key];
+      if (rawValue === undefined || rawValue === null) continue;
+      let raw;
+      try {
+        raw = typeof rawValue === 'string' ? rawValue : String(rawValue);
+      } catch (_e) {
+        if (CODE_OPT_ENV.includes(upper) || CODE_PATH_ENV.includes(upper)) {
+          refuseEnv(`env ${key} (value cannot be read as a string, so it cannot be verified)`,
+            CODE_OPT_ENV.includes(upper) ? 'opt' : 'path');
+        }
+        continue;
+      }
+      if (raw.length === 0) continue;
+      if (CODE_OPT_ENV.includes(upper)) {
+        // Not path-checkable (see the class doc above the lists) - the VALUE is irrelevant.
+        if (refuseEnv(`env ${key} (option-string vars are not path-checkable)`, 'opt') === false) continue;
+        continue;
+      }
+      if (!CODE_PATH_ENV.includes(upper)) continue;
+      // Path / path-list value: pieces are EXTRACTED (not split) so a drive-lettered piece
+      // ('C:\x', 'C:x') survives whole on every platform - splitting 'C:relative\denied' on ':'
+      // yields fragments that resolve inside the root while the child resolves the real path
+      // outside it. Both ';' and ':' end a piece everywhere (a POSIX filename containing ';'
+      // may be shredded and falsely refused - conservative, never a false allow).
+      const parts = (raw.match(/[A-Za-z]:[^;:]*|[^;:]+/g) || []).filter((t) => t.length > 0);
+      if (parts.length === 0) continue;
+      if (parts.some((t) => isDriveRelative(t) || !isInside(gatewayRoot, t))) {
+        refuseEnv(`env ${key}="${raw}"`, 'path');
+      }
     }
   }
 
@@ -142,12 +363,12 @@ function defaultClientFactory(upstream, v3Root, onClose, allowOutsidePaths, clie
     args: upstream.args,
     env: upstream.env,
     // Child cwd from config - the wrap era-probe reads it too; it never survived the store
-    // before. Default = the CONFIG HOME (v3Root), NOT the gateway's process cwd:
+    // before. Default = the CONFIG HOME (gatewayRoot), NOT the gateway's process cwd:
     // the isolation guard above resolves relative args against the home, so the spawn must
     // resolve them against the SAME base or a guard-passing relative path fails to spawn
     // whenever --config-dir differs from the launch directory (guard-base and spawn-base agree
     // by construction).
-    cwd: isNonEmptyString(upstream && upstream.cwd) ? upstream.cwd : v3Root,
+    cwd: isNonEmptyString(upstream && upstream.cwd) ? upstream.cwd : gatewayRoot,
     // Per-upstream `timeoutMs` config -> the client's PAYLOAD window (tools/call | prompts/get |
     // resources/read; default 120 s).
     toolTimeoutMs: Number.isFinite(upstream && upstream.timeoutMs) && upstream.timeoutMs > 0
@@ -165,6 +386,10 @@ function defaultClientFactory(upstream, v3Root, onClose, allowOutsidePaths, clie
     // the connect with a clear error instead of negotiating down. Store validation refuses the
     // legacyPin+modernOnly contradiction before it ever reaches here.
     modernOnly: !!(upstream && upstream.modernOnly === true),
+    // The aggregator's era memo (last successful connect): 'legacy' lets a reconnect skip the
+    // server/discover probe. The client ignores it under modernOnly; the aggregator clears it on
+    // a failed connect and on an explicit reconnect().
+    eraHint: eraHint === 'legacy' ? 'legacy' : undefined,
     // clientInfo: the identity presented to this upstream (identity mirroring / configured
     // identity). null/undefined -> McpClient's built-in default, wire behaviour unchanged.
     clientInfo: clientInfo || undefined,
@@ -175,7 +400,7 @@ function defaultClientFactory(upstream, v3Root, onClose, allowOutsidePaths, clie
 /**
  * Aggregator - owns the live upstream connections and the curated-expose computation.
  *
- * Lifecycle: `new Aggregator({ store, v3Root, clientFactory })`
+ * Lifecycle: `new Aggregator({ store, gatewayRoot, clientFactory })`
  *            -> `await connectAll()` (or `await discover(id)` lazily)
  *            -> `exposedToolDefinitions()` / `resolveExposedExecution(name, args)`
  *            -> `await closeAll()` (idempotent).
@@ -184,8 +409,8 @@ class Aggregator {
   /**
    * @param {object} opts
    * @param {object} opts.store            an ExposeStore (the on-disk MCP config).
-   * @param {string} [opts.v3Root]         sandbox root for the isolation guard (default: the gateway root).
-   * @param {Function} [opts.clientFactory] (upstreamEntry, v3Root) -> McpClient. Default enforces isolation.
+   * @param {string} [opts.gatewayRoot]         sandbox root for the isolation guard (default: the gateway root).
+   * @param {Function} [opts.clientFactory] (upstreamEntry, gatewayRoot) -> McpClient. Default enforces isolation.
    * @param {Function} [opts.wrapTargetProvider] () -> the currently-WRAPPED upstream id (or null).
    *        Read fresh at each connect: the wrapped upstream is EXEMPT from the path-isolation
    *        guard (by design - a wrap is an explicit "this server IS my whole
@@ -197,12 +422,12 @@ class Aggregator {
    *        provider) so a mirror captured after boot is honoured by the next (re)connect. null ->
    *        McpClient's built-in default.
    */
-  constructor({ store, v3Root, clientFactory, onToolsChanged, wrapTargetProvider, clientInfoProvider } = {}) {
+  constructor({ store, gatewayRoot, clientFactory, onToolsChanged, wrapTargetProvider, clientInfoProvider } = {}) {
     if (!store || typeof store !== 'object') {
       throw new Error('Aggregator: a `store` (ExposeStore) is required');
     }
     this._store = store;
-    this._v3Root = isNonEmptyString(v3Root) ? v3Root : DEFAULT_ROOT;
+    this._gatewayRoot = isNonEmptyString(gatewayRoot) ? gatewayRoot : DEFAULT_ROOT;
     // Called when the LIVE tool set changes OUT OF BAND (a background reconnect recovers or finally
     // loses an upstream) so the transport can emit notifications/tools/list_changed. Default no-op;
     // the server wires it to emitToolsListChanged(send). Settable so reloadExpose can re-wire the
@@ -214,7 +439,7 @@ class Aggregator {
     // the server/http host wires it. Settable so reloadExpose can re-wire the new instance.
     this.onUpstreamNotification = () => {};
     // Called with (upstreamId, requestMsg, client) for each SERVER-INITIATED REQUEST from an
-    // upstream (elicitation/create, sampling/createMessage, roots/list - Bridge B). The handler
+    // upstream (elicitation/create, sampling/createMessage, roots/list - the elicitation bridge). The handler
     // owns answering via client.respondToServer(Error). Default: -32601, so an unwired build
     // never leaves an upstream holding an open request. Settable; reloadExpose carries it over.
     this.onUpstreamServerRequest = (uid, msg, client) => {
@@ -226,16 +451,17 @@ class Aggregator {
     this.wrapChatterUpstream = null;
     this._wrapTargetProvider = typeof wrapTargetProvider === 'function' ? wrapTargetProvider : null;
     this._clientInfoProvider = typeof clientInfoProvider === 'function' ? clientInfoProvider : null;
-    // The factory receives (upstream, v3Root, onClose). A caller-supplied factory may ignore the
-    // extra args; the default uses v3Root for isolation and onClose for death-driven reconnect.
+    // The factory receives (upstream, gatewayRoot, onClose). A caller-supplied factory may ignore the
+    // extra args; the default uses gatewayRoot for isolation and onClose for death-driven reconnect.
     // The wrap-target check runs PER CONNECT (fresh provider read), so a wrap set after boot is
     // honoured by the next connect attempt.
     this._clientFactory =
       typeof clientFactory === 'function'
-        ? (upstream, onClose) => clientFactory(upstream, this._v3Root, onClose)
-        : (upstream, onClose) => defaultClientFactory(upstream, this._v3Root, onClose,
+        ? (upstream, onClose) => clientFactory(upstream, this._gatewayRoot, onClose)
+        : (upstream, onClose) => defaultClientFactory(upstream, this._gatewayRoot, onClose,
             this._isWrapTarget(upstream && upstream.id),
-            this._readClientInfo(upstream && upstream.id));
+            this._readClientInfo(upstream && upstream.id),
+            this._eraMemo.get(upstream && upstream.id));
 
     /** @type {Map<string, object>} upstreamId -> connected McpClient */
     this._clients = new Map();
@@ -246,8 +472,28 @@ class Aggregator {
     /** @type {Set<string>} agreed resource-subscription URIs - replayed onto every (re)connect
      * of a subscribe-capable legacy upstream so the channel survives reconnects */
     this._subscribedUris = new Set();
+    /** @type {Map<string, number>} uri -> LISTEN-owned refcount. subscribeResources
+     * increments; releaseResources decrements and unsubscribes upstream at zero. The wrap-forward
+     * recording (a client's own resources/subscribe) writes the Set directly and is NOT counted
+     * here - the client manages that lifetime itself. */
+    this._subscribedRefs = new Map();
     /** @type {Map<string, any>} upstreamId -> pending background-reconnect timer (one per upstream) */
     this._reconnectTimers = new Map();
+    /** @type {Set<string>} upstreams whose reconnect ATTEMPT is currently executing (between the timer
+     * firing - which deletes its own entry from _reconnectTimers - and the attempt settling). While an
+     * id is in here, _handleUpstreamDown must NOT seed a fresh attempt-0: the in-flight attempt's own
+     * catch owns the next backoff step. Without this, a death DURING an attempt's tools/list re-seeds
+     * the 1s floor and the one-timer guard then swallows the escalation - a permanent 1s respawn loop. */
+    this._reconnecting = new Set();
+    /** @type {Map<string, 'modern'|'legacy'>} upstreamId -> era negotiated at the LAST successful
+     * connect. A death-driven reconnect passes it to the client as eraHint so a legacy upstream
+     * skips the server/discover probe (worst case ~3s against a server that silently drops unknown
+     * methods) instead of re-paying it on every respawn. Lifecycle: SET on a successful connect,
+     * CLEARED when a connect fails (the hinted attempt may be why - the next retry re-negotiates
+     * in full, so an upstream upgraded across a restart self-heals) and by an explicit reconnect()
+     * (a manual kick deliberately re-negotiates). A config reload swaps in a fresh Aggregator, so
+     * a changed entry never inherits a stale memo. */
+    this._eraMemo = new Map();
     /** Set true by closeAll(). A torn-down aggregator (e.g. swapped out by reloadExpose) must NEVER
      *  (re)connect - a captured execute thunk holding this instance would otherwise spawn an orphan
      *  upstream child on it that nothing ever closes. ensureConnected/connectAll check this. */
@@ -346,13 +592,14 @@ class Aggregator {
 
   /**
    * The CURATED-DIRECT tool definitions to advertise downstream. For each ENABLED
-   * expose[] entry whose upstream is CONNECTED and ACTUALLY advertises the named tool:
+   * expose[] entry whose upstream is CONNECTED, ENABLED and ACTUALLY advertises the named tool:
    *   - name        = store.exposedName(entry)  (the downstream `as` name)
    *   - description = '[' + upstream + '] ' + (upstream tool description || 'tool')
    *   - inputSchema = the upstream tool's inputSchema || { type:'object' }
    *
-   * Entries whose upstream isn't connected, or whose named tool the upstream doesn't
-   * advertise, are silently skipped (you can't expose a tool that isn't there).
+   * Entries whose upstream isn't connected, is explicitly disabled (the row's own flag
+   * cannot override the upstream's - a discover-cached client doesn't re-admit it), or
+   * whose named tool the upstream doesn't advertise, are silently skipped.
    *
    * @returns {Array<{name:string, description:string, inputSchema:object}>}
    */
@@ -367,6 +614,8 @@ class Aggregator {
 
     for (const e of exposed) {
       if (!e || !this._clients.has(e.upstream)) continue; // upstream not connected
+      const upstream = this._store.getUpstream(e.upstream);
+      if (upstream && upstream.enabled === false) continue; // skip an explicitly-disabled upstream
       const upstreamTools = this._tools.get(e.upstream) || [];
       const upstreamTool = upstreamTools.find((t) => t && t.name === e.tool);
       if (!upstreamTool) continue; // upstream doesn't actually advertise this tool
@@ -379,13 +628,27 @@ class Aggregator {
           ? upstreamTool.inputSchema
           : { type: 'object' };
 
-      defs.push({
+      defs.push(withForwardedToolMeta({
         name,
         description: `[${e.upstream}] ${desc}`,
-        inputSchema: cloneJson(inputSchema),
-      });
+        inputSchema: sanitiseXMcpHeaders(cloneJson(inputSchema)),
+      }, upstreamTool));
     }
     return defs;
+  }
+
+  /**
+   * The upstream ids in STORE order (expose.json's own sequence) - the stable advertisement
+   * order handleToolsList's hot-upstream block iterates by. Connection-map order
+   * shifts on death/recovery re-insertion; the store's order never does. NEVER throws.
+   * @returns {string[]}
+   */
+  upstreamOrder() {
+    try {
+      return this._store.listUpstreams().map((u) => u && u.id).filter(Boolean);
+    } catch (_e) {
+      return [];
+    }
   }
 
   /**
@@ -425,7 +688,7 @@ class Aggregator {
     };
   }
 
-  // ── lean register forwarding (slice 2) ──────────────────────────────────────
+  // ── lean register forwarding ──────────────────────────────────────
   // The LEAN path surfaces an attached upstream's tools through the 4 meta-tools (toolfunnel_list_tools
   // / _tool_instructions / _run_tool) instead of injecting them top-level every turn. The full
   // discovered set of every CONNECTED + enabled upstream is surfaced (attaching an MCP makes its
@@ -513,7 +776,7 @@ class Aggregator {
       // serverInfo passes VERBATIM minus the two fields some servers wrongly nest inside it
       // (capabilities/instructions - extracted separately below). A whitelist here ate the spec's
       // own serverInfo.title (2025-06-18) through the wrap - proven against the real
-      // server-everything (wrap-lab, 2026-07-17). Blocklist, so future identity fields survive.
+      // server-everything (found wire-testing the wrap, 2026-07-17). Blocklist, so future identity fields survive.
       const serverInfo = {};
       for (const k of Object.keys(si)) {
         if (k === 'capabilities' || k === 'instructions') continue;
@@ -583,6 +846,7 @@ class Aggregator {
     const next = v == null ? null : v;
     if (next !== this.wrapChatterUpstream && this._subscribedUris instanceof Set) {
       this._subscribedUris.clear();
+      if (this._subscribedRefs instanceof Map) this._subscribedRefs.clear(); // 5.4: refs go with the context
     }
     this.wrapChatterUpstream = next;
   }
@@ -623,13 +887,56 @@ class Aggregator {
     try {
       const list = Array.isArray(uris) ? uris.filter((u) => typeof u === 'string' && u.length) : [];
       if (!list.length) return;
-      for (const uri of list) this._subscribedUris.add(uri);
+      // 5.4: refcount per LISTEN-owned uri; the upstream subscribe is sent on the 0->1 crossing
+      // only (a re-listen agreeing the same uri must not spam idempotent subscribes).
+      const fresh = [];
+      for (const uri of list) {
+        const n = this._subscribedRefs.get(uri) || 0;
+        this._subscribedRefs.set(uri, n + 1);
+        if (!this._subscribedUris.has(uri)) { this._subscribedUris.add(uri); fresh.push(uri); }
+      }
+      if (!fresh.length) return;
       for (const [id, client] of this._clients) {
         if (this.wrapChatterUpstream && id !== this.wrapChatterUpstream) continue;
         if (!client || client.era !== 'legacy' || typeof client.request !== 'function') continue;
         const caps = client.initializeResult && client.initializeResult.capabilities;
         if (!(caps && caps.resources && caps.resources.subscribe)) continue;
-        for (const uri of list) client.request('resources/subscribe', { uri }).catch(() => {});
+        for (const uri of fresh) client.request('resources/subscribe', { uri }).catch(() => {});
+      }
+    } catch (_e) { /* never throw */ }
+  }
+
+  /**
+   * Release LISTEN-owned resource subscriptions (the refcount leak's fix). Decrements each
+   * uri's refcount; on the 1->0 crossing the uri leaves the replay set and the upstream is told
+   * resources/unsubscribe (same scope rules as subscribeResources). ACCEPTED EDGE, documented:
+   * a uri subscribed BOTH by a listen agreement and a client's own wrap-forwarded
+   * resources/subscribe shares one upstream channel - when the last listen releases, the
+   * upstream unsubscribe fires and the recorded Set entry goes with it (the exotic overlap is
+   * not disambiguated). NEVER throws.
+   * @param {string[]} uris
+   */
+  releaseResources(uris) {
+    try {
+      const list = Array.isArray(uris) ? uris.filter((u) => typeof u === 'string' && u.length) : [];
+      if (!list.length) return;
+      const gone = [];
+      for (const uri of list) {
+        const n = this._subscribedRefs.get(uri) || 0;
+        if (n <= 1) {
+          if (n === 1) this._subscribedRefs.delete(uri);
+          if (this._subscribedUris.has(uri)) { this._subscribedUris.delete(uri); gone.push(uri); }
+        } else {
+          this._subscribedRefs.set(uri, n - 1);
+        }
+      }
+      if (!gone.length) return;
+      for (const [id, client] of this._clients) {
+        if (this.wrapChatterUpstream && id !== this.wrapChatterUpstream) continue;
+        if (!client || client.era !== 'legacy' || typeof client.request !== 'function') continue;
+        const caps = client.initializeResult && client.initializeResult.capabilities;
+        if (!(caps && caps.resources && caps.resources.subscribe)) continue;
+        for (const uri of gone) client.request('resources/unsubscribe', { uri }).catch(() => {});
       }
     } catch (_e) { /* never throw */ }
   }
@@ -672,8 +979,13 @@ class Aggregator {
     try {
       if (this._closed) return; // a swapped-out/torn-down aggregator must never fan out (F9)
       if (!notification || typeof notification.method !== 'string') return;
+      // tasks/status rides the wrap-chatter lane too: the wrap advertises the
+      // upstream's `tasks` capability verbatim, so a task started through the wrap owes its
+      // status notifications exactly as a direct connection would deliver them (2025-11-25
+      // schema TaskStatusNotification). Wrapped upstream only - same scope as message/progress.
       const isWrapChatter = this.wrapChatterUpstream === upstreamId &&
-        (notification.method === 'notifications/message' || notification.method === 'notifications/progress');
+        (notification.method === 'notifications/message' || notification.method === 'notifications/progress' ||
+         notification.method === 'notifications/tasks/status');
       if (!Aggregator.BRIDGED_NOTIFICATIONS.has(notification.method) && !isWrapChatter) return;
       // Forward a CLEAN notification only - a misbehaving upstream's stray `id: null` field would
       // read as a response to downstream parsers (F7).
@@ -815,6 +1127,9 @@ class Aggregator {
       try { await this._connecting.get(upstreamId); } catch (_e) { /* settled is all we need */ }
     }
     this._discard(upstreamId);
+    // A MANUAL kick deliberately re-runs the full era negotiation - the operator may have just
+    // upgraded the server, and "reconnect" should observe reality, not replay a memo of it.
+    this._eraMemo.delete(upstreamId);
     try {
       return await this.ensureConnected(upstreamId);
     } catch (err) {
@@ -844,6 +1159,11 @@ class Aggregator {
     logger.log({ type: 'mcp', event: 'disconnect', upstream: upstreamId, reason: 'died' });
     this._discard(upstreamId); // remove the dead client + its tools -> drops from the lean list
     this._signalToolsChanged(upstreamId); // list_changed only if the upstream is on the top-level surface
+    // If a reconnect ATTEMPT is already executing, it owns the next backoff step (its catch escalates
+    // attempt+1). Seeding attempt-0 here would reset the delay to 1s on every mid-attempt death, and
+    // the one-timer guard would then swallow the attempt's escalation - a permanent 1s respawn loop.
+    // Only start a fresh cycle when no attempt is in flight (the ordinary first death of a live upstream).
+    if (this._reconnecting.has(upstreamId)) return;
     this._scheduleReconnect(upstreamId, 0);
   }
 
@@ -900,6 +1220,9 @@ class Aggregator {
       if (this._closed) return;
       const u = this._store.getUpstream(upstreamId);
       if (!u || u.enabled !== true) return;
+      // Mark the attempt in flight so a death DURING ensureConnected's connect/list (onClose ->
+      // _handleUpstreamDown) does not re-seed attempt-0: THIS attempt's catch owns the escalation.
+      this._reconnecting.add(upstreamId);
       try {
         await this.ensureConnected(upstreamId); // allowConnect default - connects + re-lists, off-chain
         logger.log({ type: 'mcp', event: 'reconnect', upstream: upstreamId, attempt });
@@ -913,8 +1236,12 @@ class Aggregator {
           logger.log({ type: 'mcp', event: 'reconnect_slow', upstream: upstreamId, attempts: MAX_FAST_ATTEMPTS });
         }
         // Keep escalating to the cap, then keep retrying slowly (cap the counter so the delay stays
-        // at 30s) - never permanently give up while the upstream stays enabled.
+        // at 30s) - never permanently give up while the upstream stays enabled. The escalation is
+        // scheduled while still in flight (the guard below checks _reconnectTimers, which is empty
+        // because a mid-attempt death was skipped) - the finally then releases the marker.
         this._scheduleReconnect(upstreamId, Math.min(attempt + 1, MAX_FAST_ATTEMPTS));
+      } finally {
+        this._reconnecting.delete(upstreamId);
       }
     }, delay);
     if (timer && typeof timer.unref === 'function') timer.unref();
@@ -951,13 +1278,13 @@ class Aggregator {
           }
           seen.add(name);
           const schema = t.inputSchema && typeof t.inputSchema === 'object' ? t.inputSchema : { type: 'object' };
-          defs.push({
+          defs.push(withForwardedToolMeta({
             name,
             description: isNonEmptyString(t.description) ? t.description : '',
-            inputSchema: cloneJson(schema),
+            inputSchema: sanitiseXMcpHeaders(cloneJson(schema)),
             upstream: upstreamId,
             tool: t.name,
-          });
+          }, t));
         }
       }
     } catch (_e) {
@@ -972,8 +1299,9 @@ class Aggregator {
    * name (underscore-ambiguous). The execute thunk lazy-(re)connects via ensureConnected and UNWRAPS
    * the upstream MCP envelope to a clean payload, so run_tool returns the upstream's content (e.g.
    * "pong"), not a stringified envelope. The connect is INSIDE the thunk -> a PreToolUse deny spawns
-   * nothing. The gate matches `toolName` (the surfaced name). Returns null if no connected upstream
-   * advertises a tool with this surfaced name (-> protocol's clean "not runnable" error).
+   * nothing. The gate matches `toolName` (the surfaced name). Returns null if no connected + enabled
+   * upstream advertises a tool with this surfaced name (-> protocol's clean "not runnable" error) -
+   * the same connected/enabled predicate leanToolDefinitions lists by, so hidden means not runnable.
    * @param {string} name surfaced downstream name
    * @param {any}    args
    * @returns {{ execute: () => Promise<any>, toolName: string, upstream: string } | null}
@@ -982,6 +1310,8 @@ class Aggregator {
     if (!isNonEmptyString(name)) return null;
     for (const [upstreamId, tools] of this._tools) {
       if (!this._clients.has(upstreamId)) continue;
+      const upstream = this._store.getUpstream(upstreamId);
+      if (upstream && upstream.enabled === false) continue; // skip an explicitly-disabled upstream
       if (!Array.isArray(tools)) continue;
       for (const t of tools) {
         if (!t || !isNonEmptyString(t.name)) continue;
@@ -1029,6 +1359,8 @@ class Aggregator {
     if (!isNonEmptyString(name)) return null;
     for (const [upstreamId, tools] of this._tools) {
       if (!this._clients.has(upstreamId)) continue;
+      const upstream = this._store.getUpstream(upstreamId);
+      if (upstream && upstream.enabled === false) continue; // skip an explicitly-disabled upstream
       if (!Array.isArray(tools)) continue;
       for (const t of tools) {
         if (!t || !isNonEmptyString(t.name)) continue;
@@ -1065,6 +1397,7 @@ class Aggregator {
       try { clearTimeout(timer); } catch (_e) { /* ignore */ }
     }
     this._reconnectTimers.clear();
+    this._reconnecting.clear(); // no in-flight attempt survives teardown (its finally is a no-op then)
     for (const [id, client] of this._clients) {
       try {
         if (client && typeof client.close === 'function') client.close();
@@ -1100,7 +1433,7 @@ class Aggregator {
     // out to modern subscriptions/listen streams). Filtered to the known change methods so arbitrary
     // upstream chatter never reaches a client. NEVER throws.
     client.onNotification = (n) => this._forwardUpstreamNotification(upstream.id, n);
-    // Bridge B: surface server-initiated requests with the upstream id + the live client (the
+    // Elicitation bridge: surface server-initiated requests with the upstream id + the live client (the
     // handler answers on it). Guarded so a handler bug can never break the client's read loop.
     client.onServerRequest = (m) => {
       try {
@@ -1113,8 +1446,26 @@ class Aggregator {
     // Cache the client BEFORE connect so a connect-failure path can still _discard() and
     // close any half-spawned child.
     this._clients.set(upstream.id, client);
-    await client.connect();
-    await this._listAndCache(upstream.id);
+    try {
+      await client.connect();
+      // The LIST is part of the connect contract: a handshake that cannot list its tools is a
+      // FAILED connect to every caller, and the era observation must not outlive it either.
+      await this._listAndCache(upstream.id);
+    } catch (err) {
+      // The failed attempt may have been era-HINTED (probe skipped on the memo). Whatever the
+      // cause - handshake or the post-handshake list - a failure invalidates the observation:
+      // clear it so the NEXT attempt re-runs the full negotiation. An upstream upgraded to
+      // modern-only across a restart recovers on the following backoff retry instead of failing
+      // hinted forever.
+      this._eraMemo.delete(upstream.id);
+      throw err;
+    }
+    // Remember the negotiated era so a death-driven reconnect can skip the probe (eraHint) - but
+    // only a DEFINITIVE observation (the probe was ANSWERED). A probe that timed out proves
+    // nothing about the upstream's eras, and memoising that fallback would pin a merely-SLOW
+    // dual-era upstream to legacy on every future reconnect. A hinted connect (probe skipped)
+    // leaves the existing memo in place.
+    if (client.eraDefinitive !== false) this._eraMemo.set(upstream.id, client.era);
     // Re-arm any agreed resource subscriptions on the fresh process - every connect
     // path funnels through here, so reconnects and reloads replay uniformly.
     this._replaySubscriptions(upstream.id);
@@ -1163,8 +1514,8 @@ class Aggregator {
 
   /**
    * Shared lookup behind isExposed / resolveExposedExecution: find the ENABLED expose
-   * entry whose downstream name === `name`, whose upstream is connected, and whose real
-   * tool the upstream advertises. Returns the resolution context or null.
+   * entry whose downstream name === `name`, whose upstream is connected AND enabled, and
+   * whose real tool the upstream advertises. Returns the resolution context or null.
    * @param {string} name
    * @returns {{ client:object, realTool:string, upstream:string, exposedName:string } | null}
    */
@@ -1181,6 +1532,8 @@ class Aggregator {
       if (this._store.exposedName(e) !== name) continue;
       const client = this._clients.get(e.upstream);
       if (!client) continue; // upstream not connected
+      const upstream = this._store.getUpstream(e.upstream);
+      if (upstream && upstream.enabled === false) continue; // skip an explicitly-disabled upstream
       const upstreamTools = this._tools.get(e.upstream) || [];
       if (!upstreamTools.some((t) => t && t.name === e.tool)) continue; // tool not advertised
       return { client, realTool: e.tool, upstream: e.upstream, exposedName: name };
@@ -1208,7 +1561,7 @@ function safeStringify(value) {
  * value as-is when it isn't an envelope. This is what avoids double-wrapping the envelope as JSON
  * inside wrapProtocolResult (the curated-direct path passes the envelope through transparently
  * instead; the lean path goes through protocol.runTool -> wrapProtocolResult, so it unwraps here).
- * NOTE (slice 2): an upstream isError:true is surfaced as its text content with ok:true (homogeneous
+ * NOTE: an upstream isError:true is surfaced as its text content with ok:true (homogeneous
  * with how local tools surface error text) - mapping isError -> ok:false is a later concern.
  * @param {*} envelope
  * @returns {*}
@@ -1230,6 +1583,70 @@ function cloneJson(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
+/** The upstream tool-def metadata the funnel FORWARDS onto advertised defs.
+ *  ICONS ARE WITHHELD by policy: 2025-11-25 and 2026-07-28 both require icon consumers to
+ *  verify icon URIs are SAME-ORIGIN with the server, so gateway-forwarded icons are third-party
+ *  URLs a conforming client must reject - or worse, trust as ours. Reversible (adding a field
+ *  later is non-breaking); the decision is open - forwarding them later flips it here. */
+const FORWARDED_TOOL_META = Object.freeze(['title', 'annotations', 'outputSchema', '_meta', 'execution']);
+
+/** Selectively copy the forwardable metadata from a RAW discovered def onto an advertised def.
+ *  NEVER a spread: lean defs carry internal routing ids (upstream/tool), and a spread would
+ *  also inherit unknown future fields sight-unseen (the explicit selective-add rule). Mutates + returns def. */
+function withForwardedToolMeta(def, raw) {
+  if (!raw || typeof raw !== 'object') return def;
+  for (const k of FORWARDED_TOOL_META) {
+    if (raw[k] !== undefined && def[k] === undefined) def[k] = cloneJson(raw[k]);
+  }
+  return def;
+}
+
+/** HTTP field-name token syntax (RFC 9110 §5.1) - the constraint on x-mcp-header values. */
+const XMCP_TCHAR = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+
+/**
+ * Strip INVALID `x-mcp-header` annotations from an advertised inputSchema, in place (0.7.0
+ * ingest hygiene). The spec makes a single malformed annotation invalidate the WHOLE tool -
+ * conforming Streamable-HTTP clients MUST drop it from tools/list - so forwarding a broken
+ * upstream annotation verbatim makes the tool vanish client-side. Valid = on a pure
+ * `properties` chain from the root, a non-empty tchar token, on a string/integer/boolean
+ * param, case-insensitively unique among the valid set. Everything else is deleted (the TOOL
+ * survives; the annotation was the contaminant). The WRAP path stays raw-verbatim - a wrapped
+ * server's brokenness is presented faithfully, exactly as a direct connection would.
+ * @param {object} schema  the advertised (already-cloned) inputSchema - mutated
+ * @returns {object} schema
+ */
+function sanitiseXMcpHeaders(schema) {
+  if (!schema || typeof schema !== 'object') return schema;
+  const valid = [];  // { node, name } - candidates that pass every per-node rule
+  const strip = [];  // nodes whose annotation is deleted
+  (function walk(node, onChain) {
+    if (!node || typeof node !== 'object' || Array.isArray(node)) return;
+    if (Object.prototype.hasOwnProperty.call(node, 'x-mcp-header')) {
+      const v = node['x-mcp-header'];
+      const okType = node.type === 'string' || node.type === 'integer' || node.type === 'boolean';
+      if (onChain && typeof v === 'string' && XMCP_TCHAR.test(v) && okType) valid.push({ node, name: v.toLowerCase() });
+      else strip.push(node);
+    }
+    for (const k of Object.keys(node)) {
+      const child = node[k];
+      if (!child || typeof child !== 'object') continue;
+      if (k === 'properties' && !Array.isArray(child)) {
+        for (const sub of Object.values(child)) walk(sub, onChain); // the chain continues
+      } else if (Array.isArray(child)) {
+        for (const el of child) walk(el, false); // items/oneOf/... break the chain
+      } else {
+        walk(child, false);
+      }
+    }
+  })(schema, true);
+  const seen = new Map();
+  for (const e of valid) seen.set(e.name, (seen.get(e.name) || 0) + 1);
+  for (const e of valid) if (seen.get(e.name) > 1) strip.push(e.node); // ambiguous duplicates: all go
+  for (const n of strip) delete n['x-mcp-header'];
+  return schema;
+}
+
 /** Clone an array of tool defs so callers can't mutate the aggregator's cache. */
 function cloneTools(tools) {
   return Array.isArray(tools) ? tools.map((t) => cloneJson(t)) : [];
@@ -1243,4 +1660,15 @@ module.exports = {
   isInside,
   unwrapEnvelope,
   DEFAULT_ROOT,
+  // 3.7: the forwardable def metadata + the selective-add - server.js's hot-promotion
+  // projection uses the same list so the two advertised paths can never drift apart again.
+  FORWARDED_TOOL_META,
+  withForwardedToolMeta,
+  // 4.3: ingest hygiene for x-mcp-header annotations (exported for tests).
+  sanitiseXMcpHeaders,
+  // A3: the wrap-time SECURITY NOTICE (bin/toolfunnel.js) enumerates the same classes the guard
+  // judges - shared lists, so the two surfaces can never classify differently.
+  isDriveRelative,
+  CODE_OPT_ENV,
+  CODE_PATH_ENV,
 };

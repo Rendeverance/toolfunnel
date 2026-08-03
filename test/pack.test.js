@@ -74,7 +74,7 @@ function payloadOf(res) {
         { command: 'definitely-not-a-real-command-xyz', why: 'testing' }, // not found
         { command: 'node', min: '999' },                                  // impossible min
         { command: 'x&calc' },                                            // shell-shaped: must be REJECTED, never probed
-        { command: 'C:\\evil\\tool.exe' },                                // a path: same
+        { command: 'C:\\denied\\tool.exe' },                                // a path: same
       ],
     }, null, 2) + '\n');
     const problems = checkRequires(scratch);

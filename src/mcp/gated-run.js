@@ -3,8 +3,9 @@
 /**
  * gated-run.js - the SAFETY CRUX of the gateway.
  *
- * Contract: the architecture contract §2 (the `toolfunnel_run_tool` path) and §9 (the tested invariant).
- * Hook contract: HOOK_ENGINE.md §1 (PreToolUse can block, PostToolUse cannot un-run) and §6
+ * Contract: the gated tool-run path. The tested invariant (test/gate.test.js; docs/MANUAL.pdf
+ * section 10): a PreToolUse deny prevents execute() from ever being called.
+ * Hook contract: PreToolUse can block, PostToolUse cannot un-run, and
  * (HookEngine.fire returns { injected, blocked, reason, stopLoop, results }; the engine has
  * ALREADY normalised exit-2 / hookSpecificOutput.permissionDecision:"deny" into { blocked, reason }).
  *
@@ -19,7 +20,7 @@
  *     Unit-testable under `node --test` with a fake engine + a spy execute().
  *   - NEVER throws out of gatedRun. A thrown execute() is captured as { ok:false, error }.
  *     A misbehaving engine.fire() (rejection or junk return) is treated conservatively.
- *   - PostToolUse is advisory (HOOK_ENGINE.md §1: a PostToolUse block cannot un-run the tool),
+ *   - PostToolUse is advisory : a PostToolUse block cannot un-run the tool),
  *     so we fire it for feedback but never let it flip ok->false or throw the path.
  *
  * Return shape (always one of these, never an exception):
@@ -42,7 +43,7 @@ const EVENTS = {
 /**
  * Fire one lifecycle event through the injected engine, defensively.
  *
- * The HookEngine contract (HOOK_ENGINE.md §6) says fire() never rejects, but gatedRun is the
+ * The HookEngine contract says fire() never rejects, but gatedRun is the
  * safety crux: we must not assume a perfectly-behaved engine. If fire() rejects or returns a
  * non-object, we fail CLOSED on the gate (PreToolUse) - an engine we cannot trust to answer
  * "allowed?" must not be read as "allowed". PostToolUse is advisory, so a failure there is benign.
@@ -50,9 +51,12 @@ const EVENTS = {
  * @param {object} engine an object exposing async fire(event, ctx, extra)
  * @param {string} event one of EVENTS
  * @param {object} ctx common hook context (session_id, transcript_path, cwd, ...)
- * @param {object} extra event-specific fields (per HOOK_ENGINE.md §2 table)
+ * @param {object} extra event-specific fields
  * @returns {Promise<{ injected:string, blocked:boolean, reason:(string|null),
- *                     stopLoop:boolean, results:object[] }>}
+ *                     stopLoop:boolean, results:object[], internal?:boolean }>}
+ *          `internal` is present (true) ONLY on the PreToolUse fail-closed paths (non-object
+ *          return / fire() rejection): the block is a WIRING failure, not operator policy, and
+ *          its reason is a gateway tell that wrap paths must neutralise (see gatedRun's return).
  */
 async function fireSafely(engine, event, ctx, extra) {
   try {
@@ -97,7 +101,7 @@ async function fireSafely(engine, event, ctx, extra) {
 /**
  * gatedRun - route a single tool invocation through the host's hook engine.
  *
- * Sequence (the architecture contract §2):
+ * Sequence:
  *   1. fire PreToolUse with { tool_name, tool_input: args }.
  *   2. if blocked -> return { ok:false, blocked:true, reason, output:null } and DO NOT call execute.
  *   3. else await execute(); on throw, capture as error (output stays null).
@@ -143,20 +147,25 @@ async function gatedRun(params) {
   const context = ctx || {};
 
   // ---- 1. PreToolUse gate. -------------------------------------------------------------
-  // tool_input carries the args verbatim (per HOOK_ENGINE.md §2 PreToolUse row).
+  // tool_input carries the args verbatim.
   const pre = await fireSafely(engine, EVENTS.PRE, context, {
     tool_name: toolName,
     tool_input: args,
   });
 
-  // ---- Activity log: record the gate decision (allow|deny). Self-gates on enabled;
-  //      never throws. Placed before the blocked-return so BOTH outcomes are logged. ---
-  logger.log({
-    type: 'gate',
-    tool: toolName,
-    decision: pre.blocked ? 'deny' : 'allow',
-    reason: pre.reason,
-  });
+  // ---- Activity log: record the gate decision (allow|deny). The logger CONTRACTS never to
+  //      throw, but this is the safety crux and it sits between the gate decision and the
+  //      blocked-return - the same paranoia applied to the engine applies here: a logger that
+  //      breaks its contract must not break the gate. Placed before the blocked-return so BOTH
+  //      outcomes are logged. ---
+  try {
+    logger.log({
+      type: 'gate',
+      tool: toolName,
+      decision: pre.blocked ? 'deny' : 'allow',
+      reason: pre.reason,
+    });
+  } catch (_e) { /* the activity log must never alter gate behaviour */ }
 
   // ---- 2. Blocked -> STOP. The load-bearing invariant: execute() is NOT called. ---------
   if (pre.blocked) {
@@ -184,7 +193,7 @@ async function gatedRun(params) {
 
   // ---- 4. PostToolUse (advisory). Fired even on the error path so hooks see the outcome. -
   // tool_response is the output (null when execute threw). PostToolUse cannot un-run the tool
-  // (HOOK_ENGINE.md §1), so its result never flips ok and never throws this path.
+  // (PostToolUse is advisory), so its result never flips ok and never throws this path.
   await fireSafely(engine, EVENTS.POST, context, {
     tool_name: toolName,
     tool_input: args,

@@ -20,21 +20,35 @@ SDK. Two reasons. First, the zero-dependency stance above. Second, ToolFunnel ha
 protocol eras at once, on both sides, which the SDK does not do; owning the wire layer is what
 makes the dual-era serving and the wrap possible at all.
 
-## 3. The gate fails closed
+## 3. The gate: a deny is absolute, an unreadable decision is a deny
 
 Every server-side execution path goes through one function, gatedRun, and that function treats
-every failure as a deny: a hook that blocks, a hook engine that crashes, a malformed engine
-result, all of them mean the tool does not run. Denies carry a flag distinguishing operator
-policy ("your hook said no") from wiring failure ("the gate itself broke"), so a broken gate
-can never be mistaken for an approving one. The invariant has its own test.
+every failure it can *see* as a deny: a hook that blocks, a hook engine that crashes, a malformed
+engine result, a decision too large or too mangled to parse - all of them mean the tool does not
+run. An answer we cannot read is never treated as permission. Denies carry a flag distinguishing
+operator policy ("your hook said no") from wiring failure ("the gate itself broke"), so a broken
+gate can never be mistaken for an approving one.
+
+The line is drawn at a hook that never answered at all. A hook *script* that crashes, is missing,
+or hangs past its timeout is a non-blocking error and the call proceeds. That is Claude Code's
+hook protocol and it is a deliberate trade: denying there would mean a single broken hook file -
+a typo, a deleted script, a slow disk - silently taking every tool in the gateway offline, and an
+operator debugging that has no signal to follow. So the runtime failure is reported and the call
+continues, while the *decision* path stays strict. The consequence for anyone writing a gate is
+concrete: deny with `exit 2`, never with a bare non-zero, and if your policy cannot decide, exit 2
+deliberately. Both halves of this contract are pinned by test/gate-semantics.test.js.
 
 ## 4. The isolation boundary
 
-Upstream server definitions can name any executable but their path-shaped arguments must stay
-inside the config home. The command is the interpreter you chose; the args are what it can
-reach, so the args are what the guard checks. Wrapping suspends the guard for the wrapped
-server only, because a wrap is an explicit statement that this one server is your entire
-surface, and it warns you when that happens.
+Upstream server definitions can name any executable, but every field that decides what code the
+spawned process runs must stay inside the config home: path-shaped arguments (including the
+value after `=` in a `--flag=value` form), the working directory (`cwd`) bare arguments resolve
+against, and the small set of environment variables that load code on their own (`NODE_OPTIONS`,
+`NODE_PATH`, and their equivalents for other runtimes). The command is not guarded - it is the
+interpreter you chose, not the code it runs. The guard relaxes only by explicit opt-out, each
+per upstream and each with a warning naming itself: wrapping (a wrap is an explicit statement
+that this one server is your entire surface), `allowOutsidePaths: true` on the upstream's own
+entry (its paths and path-list env), and `allowCodeLoadingEnv: true` (the env class on its own).
 
 ## 5. Two eras, served per request
 

@@ -1,11 +1,11 @@
 'use strict';
 
 /**
- * expose-store.js - the persisted MCP config store (the architecture notes and
- * the extension guide define the authoritative shape).
+ * expose-store.js - the persisted MCP config store (the extension guide defines the
+ * authoritative shape).
  *
  * This is a PURE, config-only module: no process spawning, no network, no MCP
- * client. It is the on-disk source of truth that the (Phase 2) aggregator reads
+ * client. It is the on-disk source of truth that the aggregator reads
  * to know WHICH upstream MCPs to connect to and WHICH of their tools to surface
  * downstream as curated-direct tools. Editing this store is how a human/model
  * authors the MCP surface; the aggregator just consumes the result.
@@ -53,30 +53,96 @@ function clone(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
+/** Sibling temps older than this are strandings, not in-flight writes (see registry.js). */
+const STALE_TMP_MS = 60 * 60 * 1000;
+
+/** Remove STALE stranded temps for `base` in `dir` - copied from registry.js, same rules:
+ *  scoped to the target's own temp shape, entirely best-effort. */
+function sweepStaleTmp(dir, base) {
+  let names;
+  try { names = fs.readdirSync(dir); } catch (_e) { return; }
+  const prefix = `.${base}.`;
+  const now = Date.now();
+  for (const name of names) {
+    if (!name.startsWith(prefix) || !name.endsWith('.tmp')) continue;
+    const p = path.join(dir, name);
+    try {
+      if (now - fs.statSync(p).mtimeMs > STALE_TMP_MS) fs.unlinkSync(p);
+    } catch (_e) { /* a concurrent writer renamed/removed it - fine */ }
+  }
+}
+
 /**
  * Atomic write: serialise to a temp file in the SAME directory as the target (so
  * the rename is atomic on the same filesystem/drive), fsync, then rename over the
  * target. Copied verbatim from src/tools/registry.js so the two stores share one
- * proven persistence pattern.
+ * proven persistence pattern - including its cleanup contract: a failed write
+ * unlinks its own temp before rethrowing, and stale strandings are swept on the
+ * next successful write.
  */
 function atomicWriteJson(targetPath, obj) {
   const dir = path.dirname(targetPath);
   const base = path.basename(targetPath);
+  sweepStaleTmp(dir, base);
   const tmp = path.join(dir, `.${base}.${process.pid}.${Date.now()}.tmp`);
   const data = JSON.stringify(obj, null, 2) + '\n';
-  const fd = fs.openSync(tmp, 'w');
   try {
-    fs.writeSync(fd, data, 0, 'utf8');
-    fs.fsyncSync(fd);
-  } finally {
-    fs.closeSync(fd);
+    const fd = fs.openSync(tmp, 'w');
+    try {
+      fs.writeSync(fd, data, 0, 'utf8');
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+    fs.renameSync(tmp, targetPath);
+  } catch (err) {
+    try { fs.unlinkSync(tmp); } catch (_e) { /* best-effort - the error below is the story */ }
+    throw err;
   }
-  fs.renameSync(tmp, targetPath);
 }
 
 /** True for a non-empty string. */
 function isNonEmptyString(v) {
   return typeof v === 'string' && v.length > 0;
+}
+
+const { migrateForStoreFile } = require('../core/rename-migration');
+
+/** The name an expose entry surfaces its tool under RIGHT NOW: an ENABLED entry's `as`
+ *  (self-describing since addExpose defaults it); a disabled entry does not alias - the tool
+ *  surfaces under the namespaced default. Mirrors Aggregator._surfacedName / the UI's
+ *  surfacedNameFor. */
+function surfacedOf(e) {
+  return (e && e.enabled && isNonEmptyString(e.as)) ? e.as : `${e.upstream}_${e.tool}`;
+}
+
+/**
+ * Normalise an env map to a NULL-PROTOTYPE object of string -> string.
+ *
+ * Not cosmetic - it closes two proven isolation-guard bypasses at the boundary, by making the
+ * stored, guarded and spawned representations identical:
+ *   - `JSON.parse('{"__proto__":{...}}')` yields an OWN `__proto__` data property. Spread keeps it,
+ *     and the client's `Object.assign` env merge then uses [[Set]], firing the
+ *     Object.prototype.__proto__ setter so the payload becomes the merged env's PROTOTYPE.
+ *     child_process enumerates env with for..in ("prototype values are intentionally included"),
+ *     so the child receives those keys while an own-key walk sees nothing. Copying own keys into
+ *     a null-prototype object makes that carrier inert.
+ *   - Non-string values reach the child regardless: node builds each pair as `${key}=${value}`, so
+ *     `['--require=/outside-module.js']` stringifies to its element. Coerce here, once.
+ *
+ * @param {*} raw
+ * @returns {Object<string,string>} null-prototype, string-valued
+ */
+function normaliseEnv(raw) {
+  const out = Object.create(null);
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+  for (const key of Object.getOwnPropertyNames(raw)) {
+    if (key === '__proto__') continue; // never re-establish the carrier
+    const v = raw[key];
+    if (v === undefined || v === null) continue;
+    out[key] = typeof v === 'string' ? v : String(v);
+  }
+  return out;
 }
 
 /**
@@ -90,12 +156,12 @@ function normaliseUpstream(raw) {
     // Unknown fields ride along (the same deliberate choice as /api/identity): every store
     // WRITE rewrites the file, so dropping unrecognised fields meant a 0.6.0 pin/unpin toggle
     // silently erased hand-authored extras. Known fields are normalised below.
-    ...u,
+    ...(u && typeof u === 'object' ? JSON.parse(JSON.stringify(u)) : {}),
     id: typeof u.id === 'string' ? u.id : '',
     transport: typeof u.transport === 'string' ? u.transport : 'stdio',
     command: typeof u.command === 'string' ? u.command : '',
     args: Array.isArray(u.args) ? u.args.slice() : [],
-    env: u.env && typeof u.env === 'object' && !Array.isArray(u.env) ? { ...u.env } : {},
+    env: normaliseEnv(u.env),
     enabled: typeof u.enabled === 'boolean' ? u.enabled : true,
     // 0.6.0 legacy shim: OPT-IN commitment flag. A pinned upstream is knowingly legacy-era -
     // the gateway keeps speaking MCP 2024-11-05 to it forever (never auto-upgrades), warns at
@@ -106,6 +172,38 @@ function normaliseUpstream(raw) {
     // refuses the legacy fallback at connect instead of negotiating down. Off by default
     // (default = speak whichever era the server understands). Era-policy switches, 2026-07-18.
     modernOnly: u.modernOnly === true,
+    // allowCodeLoadingEnv: OPT-OUT of the isolation guard's code-loading env refusal for THIS
+    // upstream (NODE_OPTIONS and friends). Same pattern as legacyPin: off by default, explicit
+    // in config where an auditor can see it, warned on connect when it excuses something.
+    allowCodeLoadingEnv: u.allowCodeLoadingEnv === true,
+    // allowOutsidePaths: *** USE WITH EXTREME CAUTION ***
+    //
+    // This is the big one. allowCodeLoadingEnv excuses ONE class of environment variable; this
+    // excuses the ENTIRE path guard for this upstream - args, the cwd they resolve against, and
+    // the path-list env vars - so the server can reach anywhere on disk the account can.
+    //
+    // It exists because refusing outright was wrong. A filesystem server pointed at a documents
+    // folder, a git server pointed at a repo, a database tool holding a socket somewhere else:
+    // these live outside the config home BY NATURE, and without this flag funnel mode could not
+    // run them at all. The honest answer is a switch the operator sets deliberately, not a wall
+    // with no door.
+    //
+    // What it costs: the guard is a TRIPWIRE for configs that quietly reach outside an auditable
+    // home. Setting this says "I know this one reaches out, and I meant it". You are then trusting
+    // that server the way you trust anything you installed - because that is what you have done.
+    // It buys you nothing to set it on an upstream that does not need it.
+    //
+    // What it does NOT excuse: the OPTION-STRING env class (NODE_OPTIONS, JAVA_TOOL_OPTIONS,
+    // PERL5OPT, RUBYOPT...). Those are mini command lines in the runtime's own grammar - they
+    // load code with no path to check - and they have their own flag, directly above. Setting
+    // this one to point a git server at a repo must not silently disarm that one too: two
+    // exemptions mean two deliberate decisions, each visible on its own line to an auditor.
+    //
+    // Scope is the safety property: it is read per upstream, from THIS entry, at every connect.
+    // One upstream opting out NEVER relaxes another's guard, and the gateway warns on every
+    // connect, ONCE PER CLASS, about everything it excused. Same pattern as legacyPin - off by
+    // default, explicit in config where an auditor can see it, loud when it applies.
+    allowOutsidePaths: u.allowOutsidePaths === true,
     // Child working directory - the wrap era-probe and the client spawn both read it; it was
     // dropped here, so a configured cwd never survived the store.
     cwd: typeof u.cwd === 'string' && u.cwd.length ? u.cwd : undefined,
@@ -343,6 +441,9 @@ class ExposeStore {
     // Persist an explicit `as` (default the namespaced name so the stored entry
     // is self-describing and the aggregator never has to recompute it).
     e.as = isNonEmptyString(e.as) ? e.as : `${e.upstream}_${e.tool}`;
+    // A new ENABLED alias renames the surface from the namespaced default it had while merely
+    // lean-discovered - migrate-or-refuse, exactly like updateExpose (no-op when as == default).
+    if (e.enabled) this._migrateSurfaced(`${e.upstream}_${e.tool}`, e.as);
     this._expose.push(e);
     this._persist();
     return clone(e);
@@ -361,7 +462,13 @@ class ExposeStore {
     if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
       throw new Error('ExposeStore.updateExpose: patch must be an object');
     }
-    const merged = normaliseExpose({ ...this._expose[idx], ...patch, upstream, tool });
+    const prior = this._expose[idx];
+    const merged = normaliseExpose({ ...prior, ...patch, upstream, tool });
+    // Rename-safety: a change to the SURFACED name - an `as` edit OR an enabled flip
+    // (only an ENABLED entry's `as` surfaces; a disabled entry's tool falls back to the
+    // namespaced default) - must carry the gate matchers and tools.state.json keys with it, or
+    // the rename is REFUSED. Runs BEFORE persist so a refusal leaves this file untouched.
+    this._migrateSurfaced(surfacedOf(prior), surfacedOf(merged));
     this._expose[idx] = merged;
     this._persist();
     return clone(merged);
@@ -373,9 +480,19 @@ class ExposeStore {
     if (idx === -1) {
       throw new Error(`ExposeStore.removeExpose: unknown expose entry (upstream="${upstream}", tool="${tool}")`);
     }
+    // Removing an ENABLED aliased entry renames the surface back to the namespaced default -
+    // same migrate-or-refuse contract as updateExpose (rename-safety).
+    const prior = this._expose[idx];
+    this._migrateSurfaced(surfacedOf(prior), `${prior.upstream}_${prior.tool}`);
     this._expose.splice(idx, 1);
     this._persist();
     return true;
+  }
+
+  /** Gate matchers + state keys follow the surfaced name (or the rename refuses; see rename-migration.js). */
+  _migrateSurfaced(oldName, newName) {
+    if (oldName === newName) return;
+    migrateForStoreFile(this._filePath, oldName, newName);
   }
 
   /** Toggle an expose entry's `enabled` flag; persists. Throws on unknown (upstream,tool). */

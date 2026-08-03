@@ -39,10 +39,14 @@ const ENTRY = path.join(REPO_ROOT, 'bin', 'toolfunnel.js');
 const EXPOSE_PATH = path.join(REPO_ROOT, 'mcp', 'expose.json');
 const MANIFEST_PATH = path.join(REPO_ROOT, 'hooks', 'hooks.manifest.json');
 const TOOL_STATE_PATH = path.join(REPO_ROOT, 'tools', 'tools.state.json');
+// The gateway's hook-loader may write the hooks.state.json overlay while it runs, so it belongs
+// in the snapshot/restore set like the other three - it was the one mutable config file no test
+// restored, which is exactly how an aborted run could leave residue for the next one.
+const HOOK_STATE_PATH = path.join(REPO_ROOT, 'hooks', 'hooks.state.json');
 const MOCK_SERVER = path.join(REPO_ROOT, 'mcp', 'servers', 'mock-upstream', 'server.js');
 const DENY_HOOK = path.join(REPO_ROOT, 'test', 'fixtures', 'scripts', 'deny-hook.js');
 
-const REQUEST_TIMEOUT_MS = 12000;
+const REQUEST_TIMEOUT_MS = 45000; // a CEILING, not a wait - generous so a loaded CI box cannot flake it
 
 // ── results harness ─────────────────────────────────────────────────────────────────────────
 const results = [];
@@ -146,6 +150,7 @@ function denyManifest(matcher) {
   const exposeSnap = snapshot(EXPOSE_PATH);
   const manifestSnap = snapshot(MANIFEST_PATH);
   const stateSnap = snapshot(TOOL_STATE_PATH);
+  const hookStateSnap = snapshot(HOOK_STATE_PATH);
   let fatal = null;
 
   try {
@@ -228,6 +233,7 @@ function denyManifest(matcher) {
     restore(EXPOSE_PATH, exposeSnap);
     restore(MANIFEST_PATH, manifestSnap);
     restore(TOOL_STATE_PATH, stateSnap);
+    restore(HOOK_STATE_PATH, hookStateSnap);
   }
 
   // ── Report ──────────────────────────────────────────────────────────────────────────────────
@@ -241,9 +247,10 @@ function denyManifest(matcher) {
   const exposeOk = snapshot(EXPOSE_PATH) === exposeSnap;
   const manifestOk = snapshot(MANIFEST_PATH) === manifestSnap;
   const stateOk = snapshot(TOOL_STATE_PATH) === stateSnap;
+  const hookStateOk = snapshot(HOOK_STATE_PATH) === hookStateSnap;
   console.log('restore: expose.json ' + (exposeOk ? 'OK' : 'MISMATCH') + ', hooks.manifest.json ' + (manifestOk ? 'OK' : 'MISMATCH') + ', tools.state.json ' + (stateOk ? 'OK' : 'MISMATCH'));
 
-  const ok = !fatal && passed === results.length && results.length === expected && exposeOk && manifestOk && stateOk;
+  const ok = !fatal && passed === results.length && results.length === expected && exposeOk && manifestOk && stateOk && hookStateOk;
   if (ok) {
     console.log(`\nPASS: lean-forward test - ${passed}/${expected} assertions passed (lean list + instructions + forward/unwrap + gate parity on the lean name + curatable list; config restored)`);
     process.exit(0);

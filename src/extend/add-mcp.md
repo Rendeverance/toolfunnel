@@ -5,15 +5,12 @@ This is the instruction served by `toolfunnel_howto({ topic: "add-mcp" })`. It e
 tools to expose downstream** to the CLI. All of this is configured in one persisted file:
 `mcp/expose.json`.
 
-The architecture (see the architecture overview, §1): many upstream MCPs each expose many tools; the
+The architecture: many upstream MCPs each expose many tools; the
 aggregator connects to them and the **MCP Manager picks which tools to surface** to the CLI as
 *curated-direct* tools - alongside the four lean meta-tools (`toolfunnel_list_tools`,
 `toolfunnel_tool_instructions`, `toolfunnel_run_tool`, `toolfunnel_howto`). The CLI sees a small surface; everything
 else stays reachable through the register.
 
-> Phase note: the live aggregator (`src/mcp/aggregator.js`) is Phase 2. This doc defines the
-> `expose.json` shape so the config is authorable now and the aggregator reads exactly these fields
-> when it lands.
 
 ---
 
@@ -69,7 +66,7 @@ from them:
 |---|---|---|
 | `id` | string | Stable key for this upstream. Referenced by `expose[].upstream`. Unique. |
 | `transport` | string | How the aggregator connects. `"stdio"` (spawn `command`+`args`) is the baseline. |
-| `command` / `args` / `env` | string / string[] / object | The process the aggregator spawns for a `stdio` upstream. Path-shaped **args** must stay **inside the config home** - the isolation guard refuses to connect an upstream whose args escape it. (The `command` itself, an executable, is not guarded; the currently-WRAPPED upstream is exempt in transparent-wrapper mode, with a warning.) |
+| `command` / `args` / `env` | string / string[] / object | The process the aggregator spawns for a `stdio` upstream. The isolation guard refuses to connect an upstream whose path-shaped **args** (including `--flag=value` values), **cwd**, or code-loading **env** vars (`NODE_OPTIONS`, `NODE_PATH`, and their equivalents) reach outside the config home. (The `command` itself, an executable, is not guarded. Opt-outs, each warned loudly by name: the currently-WRAPPED upstream is exempt; `allowOutsidePaths: true` on the entry exempts its paths; `allowCodeLoadingEnv: true` exempts the env class.) |
 | `enabled` | boolean | Whether the aggregator connects to this upstream at startup. |
 | `description` | string | Human-facing note for the MCP Manager UI. |
 
@@ -105,7 +102,7 @@ an `expose` entry (no upstream reconnect required to *list*, though see §3 on t
 
 ## 3. Curated-direct vs. the register (update cost)
 
-This matters because the two layers refresh differently (see the architecture overview, §1):
+This matters because the two layers refresh differently:
 
 - **Curated-direct tools** (what `expose[]` produces) are negotiated with the CLI **at connect time**.
   Changing the exposed set therefore needs a **reconnect**, or a `notifications/tools/list_changed`

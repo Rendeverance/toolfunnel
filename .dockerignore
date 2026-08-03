@@ -6,3 +6,7 @@ assets
 docs
 test
 examples
+dev
+dist
+auth
+toolfunnel.json

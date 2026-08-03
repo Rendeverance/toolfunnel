@@ -9,7 +9,7 @@
  *   B - UNIT: a full valid file overrides every field; a PARTIAL file overrides only its fields.
  *   C - UNIT tolerance, field by field: bad JSON -> all defaults; an invalid FIELD (empty name,
  *       port 0 / out-of-range / non-integer) falls back to that field's default without
- *       poisoning the valid fields next to it.
+ *       corrupting the valid fields next to it.
  *   D - E2E: with a toolfunnel.json at the repo root, a REAL spawned gateway (stdio) reports the
  *       custom serverInfo in the initialize handshake - the wrapped-MCP identity story, proven at
  *       the wire. Without it (restored), serverInfo is "toolfunnel" @ package.json version.
@@ -129,7 +129,7 @@ function initializeServerInfo() {
     const dirC3 = scratchWith(JSON.stringify({ serverName: 'good-name', httpPort: 'not-a-port' }));
     scratchDirs.push(dirC3);
     const c3 = loadServerConfig(dirC3);
-    check('C: one bad field does not poison the valid field next to it', () => {
+    check('C: one bad field does not corrupt the valid field next to it', () => {
       assert.strictEqual(c3.serverName, 'good-name');
       assert.strictEqual(c3.httpPort, 9998);
     });

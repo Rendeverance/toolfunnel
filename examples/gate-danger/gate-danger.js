@@ -13,7 +13,7 @@
  * (appending a line to the file named by TOOLFUNNEL_DANGER_LOG) never happens. The proof
  * the gate held is the ABSENCE of that line.
  *
- * Contract (hook-runner.js, docs/hooks-and-gating.md): the runner pipes the PreToolUse
+ * Contract (hook-runner.js; docs/MANUAL.pdf section 10): the runner pipes the PreToolUse
  * event JSON to this script's stdin, then reads the result. Two ways to deny - this example
  * uses the simplest:
  *

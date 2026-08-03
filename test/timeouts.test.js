@@ -153,7 +153,7 @@ function handle(msg) {
       listExposed: () => [],
       exposedName: (e) => `${e.upstream}_${e.tool}`,
     };
-    const agg = new Aggregator({ store, v3Root: tmp });
+    const agg = new Aggregator({ store, gatewayRoot: tmp });
     await agg.discover('u1');
     const client = agg._clients.get('u1');
     check('D: store timeoutMs=777 lands as the client payload window', () => {
@@ -174,7 +174,7 @@ function handle(msg) {
       listExposed: () => [],
       exposedName: (e) => `${e.upstream}_${e.tool}`,
     };
-    const agg = new Aggregator({ store, v3Root: tmp });
+    const agg = new Aggregator({ store, gatewayRoot: tmp });
     await agg.discover('u1');
     const client = agg._clients.get('u1');
     check('F: store requestTimeoutMs=45000 lands as the client control window', () => {
@@ -196,7 +196,7 @@ function handle(msg) {
       listExposed: () => [{ upstream: 'u1', tool: 'progtool', as: 'u1_prog', enabled: true }],
       exposedName: (e) => e.as || `${e.upstream}_${e.tool}`,
     };
-    const agg = new Aggregator({ store, v3Root: tmp });
+    const agg = new Aggregator({ store, gatewayRoot: tmp });
     await agg.discover('u1');
     const client = agg._clients.get('u1');
     let beats = 0;

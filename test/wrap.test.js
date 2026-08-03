@@ -183,6 +183,29 @@ process.stderr.write = (str, ...rest) => {
       upstreams: [{ id: 'escapee', transport: 'stdio', command: process.execPath, args: [outsideCopy], enabled: true }],
       expose: [],
     }, null, 2));
+    // 10c: the ERA PROBE spawns the upstream too, so it must run the SAME isolation guard as
+    // every other spawn. It built its McpClient directly, so no guard ran on that path at all -
+    // and KNOWN_BUGS claims command/args/env are guarded wherever an upstream is spawned. Under
+    // a wrap the guard WARNS rather than refuses (the wrap is the operator's explicit "this
+    // server is my whole surface"), so the observable is the warning, not a refusal.
+    fs.writeFileSync(path.join(HOME, 'mcp', 'expose.json'), JSON.stringify({
+      version: 1,
+      upstreams: [{
+        id: 'escapee', transport: 'stdio', command: process.execPath, args: [outsideCopy],
+        env: { NODE_PATH: outsideDir }, enabled: true,
+      }],
+      expose: [],
+    }, null, 2));
+    const probeRun = spawnSync(process.execPath, [BIN, 'wrap', 'escapee'], { env, encoding: 'utf8', timeout: 30000 });
+    check('CLI: the era probe runs the isolation guard on its own spawn',
+      /\[toolfunnel\] isolation:/.test(probeRun.stderr),
+      'era-probe stderr carried no isolation finding: ' + JSON.stringify(probeRun.stderr.slice(-400)));
+    fs.writeFileSync(path.join(HOME, 'mcp', 'expose.json'), JSON.stringify({
+      version: 1,
+      upstreams: [{ id: 'escapee', transport: 'stdio', command: process.execPath, args: [outsideCopy], enabled: true }],
+      expose: [],
+    }, null, 2));
+
     const escRun = spawnSync(process.execPath, [BIN, 'wrap', 'escapee'], { env, encoding: 'utf8', timeout: 30000 });
     const stateAfterEsc = JSON.parse(fs.readFileSync(STATE_PATH, 'utf8'));
     check('CLI: wrapping an outside-root upstream WARNS loudly + sets the wrap',
@@ -204,6 +227,28 @@ process.stderr.write = (str, ...rest) => {
     check('gateway: same upstream UNWRAPPED is refused (funnel guard intact)',
       !!(funRes && Array.isArray(funRes.failed) && funRes.failed.some((f) => f.id === 'escapee' && /isolation/.test(f.error))));
     await funBuild.aggregator.closeAll();
+
+    // 10d. (A3) The wrap notice must enumerate EVERY class the wrap excuses - cwd and code-loading
+    // env, not just path-shaped args. The archetypal wrap target (a filesystem server on a
+    // documents folder) HAS an outside arg, so the args-only notice fired there - but a clean-args
+    // upstream carrying a code-loading env var and an outside cwd wrapped with NO notice at all:
+    // the one moment of informed consent was blind to the class that loads code.
+    const insideCopy = path.join(HOME, 'mcp', 'inside-copy.js');
+    fs.copyFileSync(path.join(REPO_ROOT, 'mcp', 'servers', 'mock-upstream', 'server.js'), insideCopy);
+    fs.writeFileSync(path.join(HOME, 'mcp', 'expose.json'), JSON.stringify({
+      version: 1,
+      upstreams: [{
+        id: 'quietesc', transport: 'stdio', command: process.execPath, args: [insideCopy],
+        cwd: outsideDir, env: { NODE_OPTIONS: '--max-old-space-size=4096' }, enabled: true,
+      }],
+      expose: [],
+    }, null, 2));
+    const quietRun = spawnSync(process.execPath, [BIN, 'wrap', 'quietesc'], { env, encoding: 'utf8', timeout: 30000 });
+    check('CLI: the wrap notice enumerates code-loading ENV and outside CWD, not just args',
+      quietRun.status === 0 && /WRAP SECURITY NOTICE/.test(quietRun.stderr) &&
+      /NODE_OPTIONS/.test(quietRun.stderr) && quietRun.stderr.includes(outsideDir),
+      'stderr: ' + JSON.stringify(String(quietRun.stderr || '').slice(-500)));
+    setPassthrough(STATE_PATH, null);
     fs.writeFileSync(path.join(HOME, 'mcp', 'expose.json'), exposeBackup); // restore for the tests below
 
     // ── Regression pins ─────────────────────────────────────────────

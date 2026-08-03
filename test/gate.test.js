@@ -3,7 +3,7 @@
 /**
  * gate.test.js - proves the SAFETY CRUX of the gateway: the hook gate BLOCKS.
  *
- * The load-bearing invariant (src/mcp/gated-run.js, docs/hooks-and-gating.md):
+ * The load-bearing invariant (src/mcp/gated-run.js; docs/MANUAL.pdf section 10):
  *
  *     A PreToolUse deny MUST prevent execute() from ever being called.
  *
