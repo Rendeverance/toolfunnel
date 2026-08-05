@@ -44,15 +44,11 @@ ToolFunnel is one small MCP server that sits between your agent and everything e
 
 ## Under the hood
 
-Three claims in this README carry the most weight, and each one has a proof you can run:
-
-- **A deny is absolute - and an unreadable decision is a deny.** A PreToolUse deny means the tool's execute path is never entered. The test suite proves it directly: a tool plants a side-effect file, the gate denies the call, and the test asserts the file never appears. A hook whose decision cannot be *read* - output past the cap, unparseable JSON - is also denied, because an unreadable answer must never read as permission. The deliberate exception: a hook script that crashes, is missing, or hangs past its timeout is a non-blocking error and the call proceeds (Claude Code hook parity - one broken hook file must not take every tool offline). So write denies as `exit 2`, never as a bare non-zero. `test/gate-semantics.test.js` pins every case.
-- **The wrap is tested at the wire, against servers we didn't write.** Elicitation bridging, cancel translation into the upstream's own request ids, identity mirroring and subscription replay all run over real pipes in the suite, including integration tests against the official MCP SDK client and a real npx-launched third-party server.
-- **The suite runs on 3 operating systems.** CI covers Linux, macOS and Windows across Node 18, 20 and 22 (63 test files). `npm test` runs the same suite locally.
-
 The reasoning behind the bigger design decisions (why no SDK, why fail-closed, why zero dependencies, where the isolation boundary sits) is in [docs/design.md](docs/design.md).
 
-**Current release: 0.7.0** - the reconciliation pass against the finalised 2026-07-28 specification plus a defect-hunt hardening pass: best-version protocol negotiation for connecting clients, stricter HTTP header enforcement, verbatim upstream error relay, hook-matcher migration on rename, both elicitation modes, and a refcounted subscription lifecycle. Every item landed with a failing test first and the wire surface byte-diffed before and after. The full list of what changed is in the [release notes](https://github.com/Rendeverance/toolfunnel/releases); what is still open is in [docs/KNOWN_BUGS.md](docs/KNOWN_BUGS.md); the security model is in [SECURITY.md](SECURITY.md).
+The version log is contained within the [release notes](https://github.com/Rendeverance/toolfunnel/releases); what is still open is in [docs/KNOWN_BUGS.md](docs/KNOWN_BUGS.md)
+
+The security model is in [SECURITY.md](SECURITY.md).
 
 ## Wrap any MCP server - one command, both protocol eras, invisible
 
@@ -68,7 +64,7 @@ Watch it happen (everything on screen is real output):
 
 ![toolfunnel wrap in 22 seconds: one command, then the client sees the wrapped server's own identity, tools, and results](demo/toolfunnel-wrap-demo.gif)
 
-That's it - zero configuration. The name is an attached upstream's id (not attached yet? that's one `tf_mcp_add` call or UI row first). The command probes the server and tells you which protocol era(s) it speaks; if the server needs paths outside the gateway root (a filesystem server serving your documents folder, say) you get a clear security notice up front explaining exactly what that means. Changed your mind, or just looking?
+That's it - zero configuration. The name is an attached upstream's id (not attached yet? that's one `tf_mcp_add` call or UI row first). The command probes the server and tells you which protocol era(s) it speaks; if the server needs paths outside the gateway root (a filesystem server serving your documents folder, say) you get a clear security notice up front explaining exactly what that means.
 
 ```
 toolfunnel wrap                       # show what's currently wrapped
@@ -79,20 +75,17 @@ toolfunnel wrap my-old-server --as legacy-tools   # present a name of your choos
 The wrap survives restarts, and the web UI has the same controls (Wrap / Unwrap on the MCPs tab). ToolFunnel becomes that server, for both eras at once:
 
 - **Any client, any server, any combination.** Legacy client → modern server, modern client → legacy server, or matched pairs - all four combinations work through the same wrap. The gateway speaks both dialects natively and translates between them.
-- **Invisible from both sides.** The client sees the wrapped server's own identity, tools, results, errors, and notifications - byte-for-byte, verified against real published servers. The server sees a normal client with your client's identity. No renamed tools, no injected prefixes, no "via toolfunnel" tells - the wrap presents the server *as itself*. Tool calls wait up to 120 s by default and a progress-reporting tool keeps its call alive indefinitely; for silent tools that run longer, set `"timeoutMs"` on the upstream in `expose.json`, and for a server that needs longer than 10 s to boot before it can answer its handshake, set `"requestTimeoutMs"` the same way.
+- **Invisible from both sides.** The client sees the wrapped server's own identity, tools, results, errors, and notifications - byte-for-byte, verified against real published servers. The server sees a normal client with your client's identity. No renamed tools, no injected prefixes, no "via toolfunnel" tells - the wrap presents the server *as itself*. 
 - **The hard parts are bridged, not dropped.** Mid-call user prompts (elicitation) from a legacy server are translated into the modern retry pattern and back - for modern clients; a legacy client gets a clean decline rather than a hang (the bridge targets the era gap, and legacy-to-legacy relay is on the roadmap). Resource subscriptions survive - and are silently re-established if the wrapped server crashes and reconnects. Progress tokens flow through. Cancellations are translated into the server's own request ids.
 - **Still governable when you want it.** Wrapping doesn't switch off the gate: every call can still pass your PreToolUse hooks, and every tool still has its visibility dials - hide a dangerous tool, and it vanishes from the wrapped surface too. Transparency is the default; the levers are opt-in.
 
-Use it to keep a favourite unmaintained server alive past the cutover, to give a modern-only server to your older tooling, or just to put a policy gate in front of a server you didn't write - without its client ever knowing. One related dial: if an upstream should *stay* on the old protocol forever, set `legacyPin` on it (a toggle in the UI, or one field in `mcp/expose.json`) and the gateway will never auto-upgrade it - opt-in, and it warns loudly so nobody forgets it's there. Full details (including the security model for wrapped servers with filesystem access): the [manual](docs/MANUAL.pdf).
+Use it to keep a favourite unmaintained server alive past the cutover, to give a modern-only server to your older tooling, or just to put a policy gate in front of a server you didn't write - without its client ever knowing. 
+
+Full details (including the security model for wrapped servers with filesystem access): the [manual](docs/MANUAL.pdf).
 
 ## Build your own MCP server - no code, no SDK
 
 ToolFunnel is a no-code MCP builder. Point it at a few scripts (any language), curate a set of tools from other MCP servers, or mix both, then switch its own four meta-tools off - and what your agent connects to is a plain, top-level MCP server presenting exactly your chosen tools. No decorators, no framework, no `@tool` boilerplate, no Python. One `tf_pack` call turns it into a publishable npm package your users install with `npx your-mcp`.
-
-That puts ToolFunnel head to head with a framework like FastMCP for the "I just want to stand up an MCP server" job, from the opposite direction:
-
-- **FastMCP:** write Python, decorate your functions, ship a framework dependency.
-- **ToolFunnel:** declare your tools in JSON (or let the AI author them for you), and you have a gated MCP server - assembled from scripts *and* other people's MCP servers - with zero runtime dependencies and a policy gate built in.
 
 If you can write a script, you can ship an MCP. The full walkthrough is in the [manual](docs/MANUAL.pdf); the short version is `toolfunnel_howto({ topic: "create-tool" })` and `tf_pack`.
 
@@ -102,9 +95,9 @@ The model never sees your long tail of tools directly. It sees four fixed **meta
 
 ### The visibility matrix
 
-Every tool - your own, a forwarded upstream tool, and the four meta-tools - has three independent visibility dials: **enabled** (lean-visible), **hot** (promoted to the every-turn `tools/list` surface, directly callable), and **hidden** (manager-list declutter). Toggles are live, no restart.
+Every tool - your own, a forwarded upstream tool, and the four meta-tools - has three independent visibility dials: **enabled** (lean-visible), **hot** (promoted to the every-turn `tools/list` surface, directly callable), and **hidden** (manager-list declutter). Toggles are live, no restart required, no new session required.
 
-This is what lets ToolFunnel be a lean register and a conventional MCP at the same time: keep the long tail lean, promote the few tools you call constantly, or promote your chosen set and switch the meta-tools off to present a plain top-level MCP server (the no-code-MCP posture above). Two footguns the UI warns about: hiding the meta-tools removes the agent's ability to discover tools by name, and promoting many tools reintroduces the context bloat the lean register exists to avoid.
+This is what lets ToolFunnel be a lean register and a conventional MCP at the same time: keep the long tail lean, promote the few tools you call constantly, or promote your chosen set and switch the meta-tools off to present a plain top-level MCP server (the no-code-MCP posture above). 
 
 ### The gate
 
