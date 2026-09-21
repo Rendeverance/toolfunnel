@@ -508,6 +508,13 @@ class Aggregator {
    * failure, handshake timeout, listTools failure) is collected into failed[]. An
    * upstream already connected (cached) is treated as connected without reconnecting.
    *
+   * BEHAVIOUR CHANGE (concurrent connect): a startup failure is no longer a one-off failed[]
+   * entry. Every failed upstream is handed to _scheduleReconnect, so a PERMANENT failure (bad
+   * command, isolation refusal) now retries in the background for the whole session -
+   * exponential 1s..16s, then the 30s keepalive indefinitely. That is the same treatment a
+   * mid-session death already got; reconnect_slow is logged once when the slow phase begins,
+   * and failed[] still reports the startup outcome to the caller as before.
+   *
    * @returns {Promise<{ connected: string[], failed: Array<{id:string, error:string}> }>}
    */
   async connectAll() {
@@ -544,6 +551,13 @@ class Aggregator {
       // Discard INSIDE the catch (not in the result loop below) so a half-built client is reaped
       // the moment its connect fails, instead of lingering for the rest of the batch. The rethrow
       // hands the original error to allSettled; a throwing _discard must never mask it.
+      //
+      // These startup promises are NOT registered in _connecting. A concurrent ensureConnected(id)
+      // during the batch would find the pre-handshake client _connectOne caches, treat it as stale
+      // and discard it. Nothing can call in during startup today - http-transport awaits
+      // connectAll() before listen() and before the reload swap - so the batch is unobservable.
+      // If a caller is ever added that can race startup, set/delete the _connecting entry around
+      // each task here.
       const promise = this._connectOne(upstream).catch((err) => {
         try { this._discard(id); } catch (_e) { /* cleanup is best-effort; report the real error */ }
         throw err;
