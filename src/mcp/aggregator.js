@@ -7,8 +7,10 @@
  * and the live upstream MCP servers (src/mcp/mcp-client.js). It:
  *
  *   1. CONNECTS one McpClient per ENABLED upstream in the ExposeStore (connectAll),
- *      caching the connected client + its discovered tools. A failed upstream never
- *      sinks the others - failures are collected, not thrown.
+ *      caching the connected client + its discovered tools. Upstreams connect CONCURRENTLY,
+ *      so startup costs the SLOWEST upstream rather than the SUM of all of them. A failed
+ *      upstream never sinks the others - failures are collected, not thrown, and each one
+ *      arms the same background reconnect a mid-session death gets.
  *   2. DISCOVERS an upstream's tool surface on demand (discover) - what the MCP
  *      Manager UI's 'discover' button calls.
  *   3. Computes the CURATED-DIRECT tool definitions to advertise downstream
@@ -521,26 +523,55 @@ class Aggregator {
       return { connected, failed: [{ id: '(store)', error: errMsg(err) }] };
     }
 
+    // CONCURRENT connect. Per-upstream cost is dominated by process boot, remote round-trips and
+    // the dual-era probe window, so connecting SEQUENTIALLY made startup the SUM of every
+    // upstream's latency; started together it is the SLOWEST one instead. Upstreams are
+    // independent: _connectOne touches only this upstream's own entry in _clients/_tools/_eraMemo,
+    // and the store rejects duplicate ids at load, so there is no cross-upstream state to race on.
+    // Each promise carries its own cleanup, and allSettled means ONE upstream's failure can never
+    // reject the batch - the NEVER-THROWS contract above still holds.
+    const tasks = [];
     for (const upstream of upstreams) {
       if (!upstream || upstream.enabled !== true) continue; // only ENABLED upstreams
 
       const id = upstream.id;
       if (this._clients.has(id)) {
         // Already connected this session - keep it; don't double-spawn.
-        connected.push(id);
+        tasks.push({ id, cached: true, promise: null });
         continue;
       }
 
-      try {
-        await this._connectOne(upstream);
+      // Discard INSIDE the catch (not in the result loop below) so a half-built client is reaped
+      // the moment its connect fails, instead of lingering for the rest of the batch. The rethrow
+      // hands the original error to allSettled; a throwing _discard must never mask it.
+      const promise = this._connectOne(upstream).catch((err) => {
+        try { this._discard(id); } catch (_e) { /* cleanup is best-effort; report the real error */ }
+        throw err;
+      });
+      tasks.push({ id, cached: false, promise });
+    }
+
+    const settled = await Promise.allSettled(tasks.map((t) => t.promise));
+
+    // Walk the tasks in STORE order so connected[]/failed[] stay stable and every enabled
+    // upstream lands in EXACTLY ONE of them - a settled promise is fulfilled or rejected, so
+    // no upstream can fall through this loop unreported.
+    for (let i = 0; i < tasks.length; i++) {
+      const { id, cached } = tasks[i];
+      if (cached || settled[i].status === 'fulfilled') {
         connected.push(id);
-      } catch (err) {
-        // Clean up any half-built client so a failure leaves no zombie/cache entry.
-        this._discard(id);
-        const error = errMsg(err);
-        logger.log({ type: 'mcp', event: 'connect_failed', upstream: id, error });
-        failed.push({ id, error });
+        continue;
       }
+      const error = errMsg(settled[i].reason);
+      logger.log({ type: 'mcp', event: 'connect_failed', upstream: id, error });
+      failed.push({ id, error });
+      // A STARTUP failure is usually transient - a slow-booting upstream that missed its
+      // handshake window while eleven siblings were spawning next to it. Arm the same
+      // self-healing backoff a mid-session death gets: without it a startup failure stranded
+      // the upstream with no client, no in-flight connect and no timer for the WHOLE session,
+      // silently costing the agent that upstream's tools. The retry runs off-chain (unref'd
+      // timer) and signals tools/list_changed when the upstream comes back.
+      this._scheduleReconnect(id, 0);
     }
 
     return { connected, failed };
