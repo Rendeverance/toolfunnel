@@ -1,0 +1,59 @@
+name: Publish to npm
+
+# Publishes the package to npm when a GitHub release is published. Uses npm trusted publishing
+# (OIDC): no npm token is stored in this repo. The trusted publisher on npmjs.com is bound to this
+# repository and to this workflow filename (publish.yml), so renaming the file breaks publishing.
+# Provenance attestations are generated automatically by npm for OIDC publishes.
+on:
+  release:
+    types: [published]
+
+permissions:
+  id-token: write   # required: lets GitHub mint the OIDC token npm exchanges for publish rights
+  contents: read
+
+jobs:
+  publish:
+    name: publish ${{ github.event.release.tag_name }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Trusted publishing needs npm CLI >= 11.5.1 and Node >= 22.14.0 (npm docs). Node 22's bundled
+      # npm is older, so upgrade it explicitly.
+      - name: Use Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+      - name: Upgrade npm for trusted publishing
+        run: |
+          npm install -g npm@latest
+          node --version
+          npm --version
+
+      # The release tag must match package.json, so a mistyped tag can never publish the wrong version.
+      - name: Check release tag matches package.json version
+        run: |
+          TAG="${{ github.event.release.tag_name }}"
+          TAG="${TAG#v}"
+          PKG="$(node -p "require('./package.json').version")"
+          echo "release tag: $TAG  package.json: $PKG"
+          if [ "$TAG" != "$PKG" ]; then
+            echo "::error::release tag ($TAG) does not match package.json version ($PKG)"
+            exit 1
+          fi
+
+      # Dev/test tooling only (jose for the OAuth suite); the package itself has zero runtime deps.
+      - name: Install dev/test tooling
+        run: npm install
+      - name: Run the test suite
+        run: npm test
+
+      # Lists exactly what will ship. Read this in the run log before trusting the publish: it is the
+      # leak check for anything that should not be in the tarball.
+      - name: Show tarball contents
+        run: npm pack --dry-run
+
+      - name: Publish
+        run: npm publish
