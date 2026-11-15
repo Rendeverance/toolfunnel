@@ -1,7 +1,7 @@
 # Known bugs
 
-The **Open** list is what remains open as of 0.8.0. **Fixed in 0.8.0** marks the defects a
-0.7.x user could meet that this release closed. The full change list is in the
+The **Open** list is what remains open as of 0.8.1. **Fixed in 0.8.1** and **Fixed in 0.8.0** mark
+the defects an earlier user could meet that those releases closed. The full change list is in the
 [release notes](https://github.com/Rendeverance/toolfunnel/releases).
 
 ## Open
@@ -37,6 +37,14 @@ The **Open** list is what remains open as of 0.8.0. **Fixed in 0.8.0** marks the
 - **OPEN (minor) - A very large approvals file slows refused calls.** Each refused call re-reads
   `mcp/tool-approvals.json`; at 22 MB that costs about half a second per refused call. A home
   with two real upstreams holds about 250 KB.
+
+## Fixed in 0.8.1
+
+- ***FIXED*** - **A stdio gateway outlived a client that had gone, and could spin at a full core.** When
+  the client closed stdin, the gateway answered and then stayed running, holding its upstreams open.
+  When the client crashed, a broken stderr turned every log line into an error that logged again,
+  round and round. The gateway now answers what was asked, closes its upstreams and exits when stdin
+  closes or stdout breaks, and ignores a broken stderr. Pinned by `test/stdio-orphan.test.js`.
 
 ## Fixed in 0.8.0
 
