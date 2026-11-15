@@ -128,11 +128,33 @@ check('C1: writeScript - refused rename leaves no temp; stale sibling swept on s
 });
 
 // ── Report ─────────────────────────────────────────────────────────────────────────────
+// ── D: ONE atomic writer. Four copies of the pattern had diverged (rename-migration's lacked both the
+// failure-path unlink and the stale sweep; three used a single writeSync where the loader's looped).
+// Pin the consolidation: under src/, only the shared module performs the temp-then-rename dance
+// (six copies existed: registry x2, expose-store, rename-migration, auth/config, logger).
+check('D: only src/core/atomic-write.js renames a temp over its target under src/ (one writer, not six)', () => {
+  const offenders = [];
+  const walk = (dir) => {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) { if (e.name !== 'public') walk(p); }
+      else if (e.name.endsWith('.js')) {
+        const rel = path.relative(REPO_ROOT, p).replace(/\\/g, '/');
+        if (rel === 'src/core/atomic-write.js') continue;
+        // The writer idiom renames a `tmp` over the target; a rename of anything else (log rotation) is not a writer.
+        fs.readFileSync(p, 'utf8').split('\n').forEach((line, i) => { if (/\brenameSync\s*\(\s*tmp\w*\b/.test(line)) offenders.push(`${rel}:${i + 1}`); });
+      }
+    }
+  };
+  walk(path.join(REPO_ROOT, 'src'));
+  assert.deepStrictEqual(offenders, [], 'renameSync outside the shared writer:\n  ' + offenders.join('\n  '));
+});
+
 for (const r of results) {
   console.log((r.ok ? 'ok   - ' : 'NOT OK - ') + r.name + (r.ok ? '' : '  :: ' + r.detail));
 }
 const passed = results.filter((r) => r.ok).length;
-const expected = 7;
+const expected = 8;
 if (passed === results.length && results.length === expected) {
   console.log(`\nPASS: orphan-tmp test - ${passed}/${expected} assertions passed (failure paths unlink their temp; stale strandings swept; fresh/unrelated temps untouched)`);
   process.exit(0);

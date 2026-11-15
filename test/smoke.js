@@ -9,7 +9,10 @@
  */
 
 const path = require('node:path');
+const { useTempHome } = require('./helpers/temp-home');
+useTempHome({ prefix: 'tf-smoke-' }); // scratch config home, claimed BEFORE any src/ module captures the repo's
 const { buildProtocol, handleMessage } = require(path.join(__dirname, '..', 'src', 'mcp', 'server.js'));
+const { META_TOOLS } = require(path.join(__dirname, '..', 'src', 'mcp', 'protocol.js'));
 
 let nextId = 1;
 function rpc(build, method, params) {
@@ -39,7 +42,7 @@ function rpc(build, method, params) {
   const list = await rpc(build, 'tools/list');
   const tools = (list && list.result && list.result.tools) || [];
   const toolNames = tools.map((t) => t && t.name);
-  const metas = ['toolfunnel_list_tools', 'toolfunnel_tool_instructions', 'toolfunnel_howto'];
+  const metas = Object.values(META_TOOLS); // the one definition, never a hand-typed copy
   const haveMetas = metas.every((m) => toolNames.includes(m));
   if (haveMetas) pass.push('tools/list advertises meta-tools: ' + metas.join(', '));
   else fail.push('tools/list missing meta-tools; got: ' + JSON.stringify(toolNames));

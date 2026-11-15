@@ -88,7 +88,10 @@ Two protocols:
   as the result text with `isError: true`.
 - any other code → non-blocking error (stderr captured, loop continues; never throws).
 
-**B) JSON (advanced)** - honored **only on exit 0**, when stdout parses as a JSON object:
+**B) JSON (advanced)** - honored **only on exit 0**, when stdout is a JSON object carrying protocol
+keys - or ends with one on its own line after other output (a printed startup line is fine). A
+decision that cannot be read (truncated, followed by stray text) **denies**; a printed object that
+is not a decision (a diagnostic dump, a JSON log line) is ignored:
 ```json
 {
   "continue": true,

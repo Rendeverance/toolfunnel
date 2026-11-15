@@ -53,60 +53,15 @@ function clone(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
-/** Sibling temps older than this are strandings, not in-flight writes (see registry.js). */
-const STALE_TMP_MS = 60 * 60 * 1000;
-
-/** Remove STALE stranded temps for `base` in `dir` - copied from registry.js, same rules:
- *  scoped to the target's own temp shape, entirely best-effort. */
-function sweepStaleTmp(dir, base) {
-  let names;
-  try { names = fs.readdirSync(dir); } catch (_e) { return; }
-  const prefix = `.${base}.`;
-  const now = Date.now();
-  for (const name of names) {
-    if (!name.startsWith(prefix) || !name.endsWith('.tmp')) continue;
-    const p = path.join(dir, name);
-    try {
-      if (now - fs.statSync(p).mtimeMs > STALE_TMP_MS) fs.unlinkSync(p);
-    } catch (_e) { /* a concurrent writer renamed/removed it - fine */ }
-  }
-}
-
-/**
- * Atomic write: serialise to a temp file in the SAME directory as the target (so
- * the rename is atomic on the same filesystem/drive), fsync, then rename over the
- * target. Copied verbatim from src/tools/registry.js so the two stores share one
- * proven persistence pattern - including its cleanup contract: a failed write
- * unlinks its own temp before rethrowing, and stale strandings are swept on the
- * next successful write.
- */
-function atomicWriteJson(targetPath, obj) {
-  const dir = path.dirname(targetPath);
-  const base = path.basename(targetPath);
-  sweepStaleTmp(dir, base);
-  const tmp = path.join(dir, `.${base}.${process.pid}.${Date.now()}.tmp`);
-  const data = JSON.stringify(obj, null, 2) + '\n';
-  try {
-    const fd = fs.openSync(tmp, 'w');
-    try {
-      fs.writeSync(fd, data, 0, 'utf8');
-      fs.fsyncSync(fd);
-    } finally {
-      fs.closeSync(fd);
-    }
-    fs.renameSync(tmp, targetPath);
-  } catch (err) {
-    try { fs.unlinkSync(tmp); } catch (_e) { /* best-effort - the error below is the story */ }
-    throw err;
-  }
-}
+// THE atomic writer (temp + fsync + rename, failure-path unlink, stale sweep) - shared by every store.
+const { atomicWriteJson } = require('../core/atomic-write');
 
 /** True for a non-empty string. */
 function isNonEmptyString(v) {
   return typeof v === 'string' && v.length > 0;
 }
 
-const { migrateForStoreFile } = require('../core/rename-migration');
+const { migrateForStoreFile, snapshotForStoreFile, restoreSnapshot } = require('../core/rename-migration');
 
 /** The name an expose entry surfaces its tool under RIGHT NOW: an ENABLED entry's `as`
  *  (self-describing since addExpose defaults it); a disabled entry does not alias - the tool
@@ -170,7 +125,7 @@ function normaliseUpstream(raw) {
     legacyPin: u.legacyPin === true,
     // modernOnly: legacyPin's MIRROR - this upstream must speak the modern era; the client
     // refuses the legacy fallback at connect instead of negotiating down. Off by default
-    // (default = speak whichever era the server understands). Era-policy switches, 2026-07-18.
+    // (default = speak whichever era the server understands).
     modernOnly: u.modernOnly === true,
     // allowCodeLoadingEnv: OPT-OUT of the isolation guard's code-loading env refusal for THIS
     // upstream (NODE_OPTIONS and friends). Same pattern as legacyPin: off by default, explicit
@@ -204,6 +159,11 @@ function normaliseUpstream(raw) {
     // connect, ONCE PER CLASS, about everything it excused. Same pattern as legacyPin - off by
     // default, explicit in config where an auditor can see it, loud when it applies.
     allowOutsidePaths: u.allowOutsidePaths === true,
+    // strictApproval (tool descriptor approval): a server VERSION change does not approve changed
+    // tool descriptors by itself - they wait for acceptance like a same-version change.
+    // Off by default (a version bump is the ordinary upgrade signal); on where the upstream's
+    // maintainer is not trusted to bump honestly. See src/mcp/tool-approvals.js.
+    strictApproval: u.strictApproval === true,
     // Child working directory - the wrap era-probe and the client spawn both read it; it was
     // dropped here, so a configured cwd never survived the store.
     cwd: typeof u.cwd === 'string' && u.cwd.length ? u.cwd : undefined,
@@ -228,6 +188,9 @@ function normaliseUpstream(raw) {
 function normaliseExpose(raw) {
   const e = raw && typeof raw === 'object' ? raw : {};
   return {
+    // Unknown fields ride along, as on upstreams (normaliseUpstream): every write rewrites the
+    // whole file, so dropping them erased hand-authored extras on the next unrelated edit.
+    ...JSON.parse(JSON.stringify(e)),
     upstream: typeof e.upstream === 'string' ? e.upstream : '',
     tool: typeof e.tool === 'string' ? e.tool : '',
     as: typeof e.as === 'string' ? e.as : '',
@@ -244,28 +207,156 @@ function normaliseExpose(raw) {
  * @param {object} entry        normalised upstream
  * @param {Map}    byId         existing upstreams keyed by id (for uniqueness)
  * @param {string} [ignoreId]   an id to skip in the uniqueness check (updates)
+ * @param {string} [filePath]   named in the message when given (load and store writes)
  */
-function validateUpstream(entry, byId, ignoreId) {
+function validateUpstream(entry, byId, ignoreId, filePath) {
+  const at = filePath ? `ExposeStore: ${filePath}:` : 'ExposeStore:';
   if (!isNonEmptyString(entry.id)) {
-    throw new Error('ExposeStore: upstream.id must be a non-empty string');
+    throw new Error(`${at} upstream "id" must be a non-empty string`);
   }
   if (byId.has(entry.id) && entry.id !== ignoreId) {
-    throw new Error(`ExposeStore: upstream id "${entry.id}" already exists`);
+    throw new Error(`${at} upstream id "${entry.id}" already exists`);
   }
   if (!VALID_TRANSPORTS.has(entry.transport)) {
     throw new Error(
-      `ExposeStore: upstream.transport must be one of ${[...VALID_TRANSPORTS].join('|')} (id=${entry.id})`
+      `${at} upstream "${entry.id}": "transport" must be one of ${[...VALID_TRANSPORTS].join('|')}, got ${describeValue(entry.transport)}`
     );
   }
-  if (entry.transport === 'stdio' && !isNonEmptyString(entry.command)) {
-    throw new Error(`ExposeStore: stdio upstream needs a non-empty "command" (id=${entry.id})`);
+  // A disabled entry is never spawned, so a placeholder without a command still loads.
+  if (entry.transport === 'stdio' && entry.enabled !== false && !isNonEmptyString(entry.command)) {
+    throw new Error(`${at} upstream "${entry.id}": a stdio upstream needs a non-empty "command"`);
   }
   if (entry.legacyPin === true && entry.modernOnly === true) {
     throw new Error(
-      `ExposeStore: upstream "${entry.id}" sets BOTH legacyPin and modernOnly - they contradict (force legacy vs refuse legacy); pick one`
+      `${at} upstream "${entry.id}" sets BOTH legacyPin and modernOnly - they contradict (force legacy vs refuse legacy); pick one`
     );
   }
   return entry;
+}
+
+// ── fail-loud config ────────────────────────────────────────────────────────────────────────
+//
+// The normalisers above replace a wrong-typed value with the default, silently: `"enabled":
+// "false"` became ENABLED, `"timeoutMs": "5000"` the 120 s default, `"args": "a b"` no args,
+// `"allowOutsidePaths": 1` false. The checks below run on the RAW object - at load, and on every
+// write before normalising (which would coerce the evidence away) - and name the first bad field.
+// Absent (undefined) and null both mean "unset" and keep the default. Unknown fields are not
+// checked: they ride along untouched.
+
+const UPSTREAM_BOOLEAN_FIELDS = ['enabled', 'legacyPin', 'modernOnly', 'allowCodeLoadingEnv', 'allowOutsidePaths', 'strictApproval'];
+const UPSTREAM_STRING_FIELDS = ['transport', 'command', 'cwd', 'description'];
+const UPSTREAM_MS_FIELDS = ['timeoutMs', 'requestTimeoutMs'];
+const EXPOSE_STRING_FIELDS = ['upstream', 'tool', 'as', 'category'];
+
+function isSet(v) {
+  return v !== undefined && v !== null;
+}
+
+// Unknown fields still ride along (see normaliseUpstream), but a misspelt known one did nothing
+// and said nothing: `"strictAproval": true` loaded and left strictApproval off. Loading with a
+// warnUnknown callback names each unknown field, with the nearest known one when it is close.
+// Fields starting with "_" or "$" are comments or schema references, so they are not reported.
+const UPSTREAM_KNOWN_FIELDS = ['id', 'args', 'env', ...UPSTREAM_BOOLEAN_FIELDS, ...UPSTREAM_STRING_FIELDS, ...UPSTREAM_MS_FIELDS];
+const EXPOSE_KNOWN_FIELDS = [...EXPOSE_STRING_FIELDS, 'enabled'];
+
+/** Edit distance between two short strings (case-insensitive); swapping two neighbours counts as one edit. */
+function editDistance(a, b) {
+  a = a.toLowerCase(); b = b.toLowerCase();
+  const d = Array.from({ length: a.length + 1 }, (_, i) => [i]);
+  for (let j = 1; j <= b.length; j++) d[0][j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) d[i][j] = Math.min(d[i][j], d[i - 2][j - 2] + 1);
+    }
+  }
+  return d[a.length][b.length];
+}
+
+/** @returns {string[]} one message per unknown field of a RAW entry. */
+function unknownFieldMessages(raw, known, at) {
+  const out = [];
+  for (const key of Object.keys(raw)) {
+    if (known.includes(key) || key.startsWith('_') || key.startsWith('$')) continue;
+    let best = null;
+    let bestD = Infinity;
+    for (const k of known) {
+      const d = editDistance(key, k);
+      if (d < bestD) { best = k; bestD = d; }
+    }
+    const guess = bestD <= Math.max(1, Math.floor(best.length / 4)) ? ` (did you mean "${best}"?)` : '';
+    out.push(`${at}: unknown field ${JSON.stringify(key)}${guess}. It is kept but has no effect.`);
+  }
+  return out;
+}
+
+/** A short, safe description of a value for an error message. */
+function describeValue(v) {
+  if (v === null) return 'null';
+  if (Array.isArray(v)) return 'an array';
+  if (typeof v === 'string') return 'a string'; // never the value: args and env strings can hold secrets
+  if (typeof v === 'object') return 'an object';
+  return `${typeof v} ${String(v)}`;
+}
+
+/** @returns {string|null} the first wrong-typed known field of a RAW upstream, or null. */
+function upstreamFieldProblem(raw) {
+  for (const f of UPSTREAM_BOOLEAN_FIELDS) {
+    if (isSet(raw[f]) && typeof raw[f] !== 'boolean') return `"${f}" must be true or false, got ${describeValue(raw[f])}`;
+  }
+  for (const f of UPSTREAM_STRING_FIELDS) {
+    if (isSet(raw[f]) && typeof raw[f] !== 'string') return `"${f}" must be a string, got ${describeValue(raw[f])}`;
+  }
+  for (const f of UPSTREAM_MS_FIELDS) {
+    const v = raw[f];
+    if (isSet(v) && !(typeof v === 'number' && Number.isFinite(v) && v > 0)) {
+      return `"${f}" must be a positive number of milliseconds, got ${describeValue(v)}`;
+    }
+  }
+  if (isSet(raw.args)) {
+    if (!Array.isArray(raw.args)) return `"args" must be an array of strings, got ${describeValue(raw.args)}`;
+    const i = raw.args.findIndex((a) => typeof a !== 'string');
+    if (i !== -1) return `"args" must be an array of strings, element ${i} is ${describeValue(raw.args[i])}`;
+  }
+  if (isSet(raw.env)) {
+    if (typeof raw.env !== 'object' || Array.isArray(raw.env)) {
+      return `"env" must be an object of NAME: value pairs, got ${describeValue(raw.env)}`;
+    }
+    // Scalars are coerced to strings by normaliseEnv (unchanged); an object or array value has
+    // no meaning as an environment variable - including the "__proto__" carrier, now refused
+    // loudly instead of dropped.
+    for (const key of Object.getOwnPropertyNames(raw.env)) {
+      const v = raw.env[key];
+      if (isSet(v) && typeof v === 'object') {
+        return `"env" value for ${JSON.stringify(key)} must be a string, number or boolean, got ${describeValue(v)}`;
+      }
+    }
+  }
+  return null;
+}
+
+/** @returns {string|null} the first wrong-typed known field of a RAW expose entry, or null. */
+function exposeFieldProblem(raw) {
+  for (const f of EXPOSE_STRING_FIELDS) {
+    if (isSet(raw[f]) && typeof raw[f] !== 'string') return `"${f}" must be a string, got ${describeValue(raw[f])}`;
+  }
+  if (isSet(raw.enabled) && typeof raw.enabled !== 'boolean') {
+    return `"enabled" must be true or false, got ${describeValue(raw.enabled)}`;
+  }
+  return null;
+}
+
+/** `upstream "u1"` - the id when it is a usable string, else the array position. */
+function upstreamLabel(raw, index) {
+  const id = raw && typeof raw.id === 'string' && raw.id ? `upstream "${raw.id}"` : 'upstream';
+  return index === undefined ? id : `${id} (upstreams[${index}])`;
+}
+
+/** `expose entry (upstream="u1", tool="t1")`, with the array position at load. */
+function exposeLabel(raw, index) {
+  const q = (v) => (typeof v === 'string' ? JSON.stringify(v) : '(missing)');
+  const where = index === undefined ? '' : ` (expose[${index}])`;
+  return `expose entry (upstream=${q(raw && raw.upstream)}, tool=${q(raw && raw.tool)})${where}`;
 }
 
 class ExposeStore {
@@ -279,29 +370,56 @@ class ExposeStore {
     this._filePath = filePath;
 
     const d = data && typeof data === 'object' ? data : {};
+    // Fail-loud config: a present top-level field of the wrong type refuses, never reads as empty.
+    for (const f of ['upstreams', 'expose']) {
+      if (isSet(d[f]) && !Array.isArray(d[f])) {
+        throw new Error(`ExposeStore: ${filePath}: "${f}" must be an array, got ${describeValue(d[f])}`);
+      }
+    }
+    if (isSet(d.version) && typeof d.version !== 'number') {
+      throw new Error(`ExposeStore: ${filePath}: "version" must be a number, got ${describeValue(d.version)}`);
+    }
     this._version = typeof d.version === 'number' ? d.version : 1;
 
     // Index upstreams by id; reject duplicate ids at load (a duplicate id makes
     // getUpstream / cascade-remove ambiguous). Keep insertion order via the Map.
     this._upstreams = new Map();
     const rawUpstreams = Array.isArray(d.upstreams) ? d.upstreams : [];
-    for (const raw of rawUpstreams) {
+    rawUpstreams.forEach((raw, i) => {
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+        throw new Error(`ExposeStore: ${filePath}: upstreams[${i}] must be an object, got ${describeValue(raw)}`);
+      }
       const u = normaliseUpstream(raw);
       if (!isNonEmptyString(u.id)) {
-        throw new Error(`ExposeStore: an upstream is missing its id in ${filePath}`);
+        throw new Error(`ExposeStore: an upstream is missing its id in ${filePath} (upstreams[${i}])`);
       }
       if (this._upstreams.has(u.id)) {
         throw new Error(`ExposeStore: duplicate upstream id "${u.id}" in ${filePath}`);
       }
+      const problem = upstreamFieldProblem(raw);
+      if (problem) throw new Error(`ExposeStore: ${filePath}: ${upstreamLabel(raw, i)}: ${problem}`);
+      // The write-time shape rules (transport, a stdio command, the era-flag contradiction) hold
+      // at load too: a file that no write could have produced is refused, not half-run.
+      validateUpstream(u, this._upstreams, undefined, filePath);
       this._upstreams.set(u.id, u);
-    }
+    });
 
     // expose[] is kept as an ordered array; the natural key is (upstream,tool).
     // Reject duplicate (upstream,tool) pairs at load.
     this._expose = [];
     const seenExpose = new Set();
     const rawExpose = Array.isArray(d.expose) ? d.expose : [];
-    for (const raw of rawExpose) {
+    rawExpose.forEach((raw, i) => {
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+        throw new Error(`ExposeStore: ${filePath}: expose[${i}] must be an object, got ${describeValue(raw)}`);
+      }
+      const problem = exposeFieldProblem(raw);
+      if (problem) throw new Error(`ExposeStore: ${filePath}: ${exposeLabel(raw, i)}: ${problem}`);
+      for (const f of ['upstream', 'tool']) {
+        if (!isNonEmptyString(raw[f])) {
+          throw new Error(`ExposeStore: ${filePath}: ${exposeLabel(raw, i)}: "${f}" must be a non-empty string`);
+        }
+      }
       const e = normaliseExpose(raw);
       const key = `${e.upstream} ${e.tool}`;
       if (seenExpose.has(key)) {
@@ -311,7 +429,7 @@ class ExposeStore {
       }
       seenExpose.add(key);
       this._expose.push(e);
-    }
+    });
   }
 
   // ── upstreams: read API (clones, never throw) ─────────────────────────────
@@ -334,8 +452,9 @@ class ExposeStore {
    * stdio requires a non-empty command. Persists atomically. Returns the clone.
    */
   addUpstream(entry) {
+    this._refuseWrongTypes(entry, upstreamFieldProblem, upstreamLabel);
     const u = normaliseUpstream(entry);
-    validateUpstream(u, this._upstreams);
+    validateUpstream(u, this._upstreams, undefined, this._filePath);
     this._upstreams.set(u.id, u);
     this._persist();
     return clone(u);
@@ -351,8 +470,9 @@ class ExposeStore {
     if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
       throw new Error('ExposeStore.updateUpstream: patch must be an object');
     }
+    this._refuseWrongTypes({ ...existing, ...patch, id }, upstreamFieldProblem, upstreamLabel);
     const merged = normaliseUpstream({ ...existing, ...patch, id });
-    validateUpstream(merged, this._upstreams, id);
+    validateUpstream(merged, this._upstreams, id, this._filePath);
     this._upstreams.set(id, merged);
     this._persist();
     return clone(merged);
@@ -423,6 +543,7 @@ class ExposeStore {
    * namespaced `<upstream>_<tool>`. Persists atomically. Returns the clone.
    */
   addExpose(entry) {
+    this._refuseWrongTypes(entry, exposeFieldProblem, exposeLabel);
     const e = normaliseExpose(entry);
     if (!isNonEmptyString(e.upstream)) {
       throw new Error('ExposeStore.addExpose: expose.upstream must be a non-empty string');
@@ -443,9 +564,16 @@ class ExposeStore {
     e.as = isNonEmptyString(e.as) ? e.as : `${e.upstream}_${e.tool}`;
     // A new ENABLED alias renames the surface from the namespaced default it had while merely
     // lean-discovered - migrate-or-refuse, exactly like updateExpose (no-op when as == default).
+    const snap = e.enabled && e.as !== `${e.upstream}_${e.tool}` ? snapshotForStoreFile(this._filePath) : null;
     if (e.enabled) this._migrateSurfaced(`${e.upstream}_${e.tool}`, e.as);
     this._expose.push(e);
-    this._persist();
+    try {
+      this._persist();
+    } catch (err) {
+      this._expose.pop();
+      if (snap) restoreSnapshot(snap); // a failed persist puts the migrated files back byte-for-byte
+      throw err;
+    }
     return clone(e);
   }
 
@@ -463,14 +591,22 @@ class ExposeStore {
       throw new Error('ExposeStore.updateExpose: patch must be an object');
     }
     const prior = this._expose[idx];
+    this._refuseWrongTypes({ ...prior, ...patch, upstream, tool }, exposeFieldProblem, exposeLabel);
     const merged = normaliseExpose({ ...prior, ...patch, upstream, tool });
     // Rename-safety: a change to the SURFACED name - an `as` edit OR an enabled flip
     // (only an ENABLED entry's `as` surfaces; a disabled entry's tool falls back to the
     // namespaced default) - must carry the gate matchers and tools.state.json keys with it, or
     // the rename is REFUSED. Runs BEFORE persist so a refusal leaves this file untouched.
+    const snap = surfacedOf(prior) !== surfacedOf(merged) ? snapshotForStoreFile(this._filePath) : null;
     this._migrateSurfaced(surfacedOf(prior), surfacedOf(merged));
     this._expose[idx] = merged;
-    this._persist();
+    try {
+      this._persist();
+    } catch (err) {
+      this._expose[idx] = prior;
+      if (snap) restoreSnapshot(snap);
+      throw err;
+    }
     return clone(merged);
   }
 
@@ -483,9 +619,16 @@ class ExposeStore {
     // Removing an ENABLED aliased entry renames the surface back to the namespaced default -
     // same migrate-or-refuse contract as updateExpose (rename-safety).
     const prior = this._expose[idx];
+    const snap = surfacedOf(prior) !== `${prior.upstream}_${prior.tool}` ? snapshotForStoreFile(this._filePath) : null;
     this._migrateSurfaced(surfacedOf(prior), `${prior.upstream}_${prior.tool}`);
     this._expose.splice(idx, 1);
-    this._persist();
+    try {
+      this._persist();
+    } catch (err) {
+      this._expose.splice(idx, 0, prior);
+      if (snap) restoreSnapshot(snap);
+      throw err;
+    }
     return true;
   }
 
@@ -494,6 +637,15 @@ class ExposeStore {
     if (oldName === newName) return;
     migrateForStoreFile(this._filePath, oldName, newName);
   }
+
+  /**
+   * The other half of "migrate BEFORE persist": that ordering makes a REFUSED migration leave this
+   * file untouched; a migration that succeeded followed by a failed persist would leave the
+   * manifest naming the NEW surface while the file still named the OLD one - the gate firing on a
+   * name nothing surfaced. Each mutating site snapshots the migration's files (snapshotForStoreFile)
+   * before migrating and restores the bytes on a failed persist. A reverse MIGRATION is not an
+   * unwind - it re-validates and a pattern hook matching the new name refuses it. rename-rollback.test.js.
+   */
 
   /** Toggle an expose entry's `enabled` flag; persists. Throws on unknown (upstream,tool). */
   setExposeEnabled(upstream, tool, enabled) {
@@ -523,6 +675,13 @@ class ExposeStore {
     return this._expose.findIndex((e) => e.upstream === upstream && e.tool === tool);
   }
 
+  /** Fail-loud config on a WRITE: throw, naming the file, entry and field, before anything changes. */
+  _refuseWrongTypes(raw, problemOf, labelOf) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return; // the callers' own shape checks own this
+    const problem = problemOf(raw);
+    if (problem) throw new Error(`ExposeStore: ${this._filePath}: ${labelOf(raw)}: ${problem}`);
+  }
+
   /** Serialise current state back to the config file atomically. */
   _persist() {
     atomicWriteJson(this._filePath, this.toJSON());
@@ -538,11 +697,18 @@ class ExposeStore {
  *    created until the first write (keeps the server starting clean).
  *  - MALFORMED JSON (or a duplicate id / duplicate expose key) -> throw a clear
  *    error so misconfiguration is caught at load, not at run time.
+ *  - A PRESENT-BUT-WRONG-TYPED known field (`"enabled": "false"`, `"timeoutMs": "5000"`,
+ *    `"args": "a b"`...) -> throw naming the file, the entry and the field (fail-loud config).
+ *    Absent fields keep their defaults; `null` counts as absent.
+ *
+ *  - With opts.warnUnknown, each unknown field on an upstream or expose entry is reported through
+ *    it (gateway start and reload pass one; the web UI, which loads on every request, does not).
  *
  * @param {string} filePath
+ * @param {{ warnUnknown?: (message: string) => void }} [opts]
  * @returns {ExposeStore}
  */
-function loadExposeStore(filePath) {
+function loadExposeStore(filePath, opts = {}) {
   if (!isNonEmptyString(filePath)) {
     throw new Error('loadExposeStore: filePath (non-empty string) is required');
   }
@@ -562,7 +728,19 @@ function loadExposeStore(filePath) {
   } catch (err) {
     throw new Error(`loadExposeStore: config at "${filePath}" is not valid JSON: ${err.message}`);
   }
-  return new ExposeStore({ filePath, data });
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    throw new Error(`loadExposeStore: config at "${filePath}" must be a JSON object, got ${describeValue(data)}`);
+  }
+  const store = new ExposeStore({ filePath, data });
+  if (typeof opts.warnUnknown === 'function') {
+    (data.upstreams || []).forEach((raw, i) => {
+      for (const m of unknownFieldMessages(raw, UPSTREAM_KNOWN_FIELDS, `${filePath}: ${upstreamLabel(raw, i)}`)) opts.warnUnknown(m);
+    });
+    (data.expose || []).forEach((raw, i) => {
+      for (const m of unknownFieldMessages(raw, EXPOSE_KNOWN_FIELDS, `${filePath}: ${exposeLabel(raw, i)}`)) opts.warnUnknown(m);
+    });
+  }
+  return store;
 }
 
 module.exports = {

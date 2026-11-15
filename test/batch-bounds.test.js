@@ -25,6 +25,8 @@
 
 const path = require('node:path');
 
+const { useTempHome } = require('./helpers/temp-home');
+useTempHome({ prefix: 'tf-batch-bounds-' }); // scratch config home, so the src/ modules below never resolve the repo's
 const serverModule = require('../src/mcp/server.js');
 const { handleBatch } = serverModule;
 const registryModule = require('../src/tools/registry.js');

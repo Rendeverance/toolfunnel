@@ -105,8 +105,8 @@ function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
   // tools it spawns, so a hint condition reading the env AFTER init is always-false: the
   // shipped hint was DEAD and KNOWN_BUGS documented it as working. Runs FIRST - before the
   // register snapshot below - so the brief default-home spawn cannot contaminate check D.
-  const hintProbe = (env, ms) => new Promise((resolve) => {
-    const c = spawn(process.execPath, [ENTRY], { cwd: os.tmpdir(), env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+  const hintProbe = (env, ms, entry) => new Promise((resolve) => {
+    const c = spawn(process.execPath, [entry || ENTRY], { cwd: os.tmpdir(), env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
     let err = '';
     c.stderr.on('data', (d) => { err += d; });
     setTimeout(() => {
@@ -117,7 +117,24 @@ function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
   });
   const envNoHome = { ...process.env };
   delete envNoHome.TOOLFUNNEL_HOME;
-  const errDefault = await hintProbe(envNoHome, 2500);
+  // A defaulted home is the package root of the entry that runs. Spawning THIS checkout's entry made
+  // the checkout the home: for 2.5 s the probe was a real gateway on the developer's live config - it
+  // connected every upstream in the checkout's expose.json and recorded their tool approvals
+  // there. Probe a throwaway COPY of the package instead: same code, an empty expose.json.
+  const pkgCopy = fs.mkdtempSync(path.join(os.tmpdir(), 'tf-pkgcopy-'));
+  for (const d of ['bin', 'src', 'tools', 'hooks']) {
+    fs.cpSync(path.join(REPO_ROOT, d), path.join(pkgCopy, d), { recursive: true });
+  }
+  fs.copyFileSync(path.join(REPO_ROOT, 'package.json'), path.join(pkgCopy, 'package.json'));
+  fs.mkdirSync(path.join(pkgCopy, 'mcp'), { recursive: true });
+  fs.writeFileSync(path.join(pkgCopy, 'mcp', 'expose.json'), JSON.stringify({ version: 1, upstreams: [], expose: [] }) + '\n');
+  const errDefault = await hintProbe(envNoHome, 2500, path.join(pkgCopy, 'bin', 'toolfunnel.js'));
+  try { fs.rmSync(pkgCopy, { recursive: true, force: true }); } catch (_e) { /* best-effort */ }
+  check('E: the defaulted-home probe never boots on THIS checkout (its live config)', () => {
+    const line = errDefault.split('\n').find((l) => l.includes('config home:')) || '';
+    assert.ok(line.length > 0, 'no config-home line: ' + errDefault.slice(0, 200));
+    assert.ok(!line.includes(REPO_ROOT), 'the probe ran with this checkout as its home: ' + line.trim());
+  });
   check('E: a DEFAULTED config home prints the relocation hint', () => {
     assert.ok(errDefault.includes('config home:'), 'no config-home line at all: ' + errDefault.slice(0, 200));
     assert.ok(errDefault.includes('use --config-dir <dir> or TOOLFUNNEL_HOME to relocate'),
@@ -133,6 +150,13 @@ function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
   const pkgRegisterSnap = fs.readFileSync(PKG_REGISTER, 'utf8');
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'tf-home-'));
+  // A (setup): a dev clone's mcp/ tree carries user-state the tarball never ships - the live
+  // store and operator backups of it. Plant a throwaway "backup" beside the live store (never
+  // touching the store itself) so the seed must prove it copies only shipped defaults. On a
+  // clean checkout the live store is committed EMPTY, which is why the empty-default check
+  // alone could not see this: it was green against a dead guard.
+  const PLANTED_BAK = path.join(REPO_ROOT, 'mcp', `expose.json.bak-cfghome-test-${process.pid}`);
+  fs.writeFileSync(PLANTED_BAK, JSON.stringify({ version: 1, upstreams: [{ id: 'planted' }], expose: [] }) + '\n');
   let child = null;
   let fatal = null;
 
@@ -176,6 +200,11 @@ function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
     });
     check('A: no state overlay is seeded (a fresh home starts at default visibility)', () => {
       assert.ok(!fs.existsSync(path.join(home, 'tools', 'tools.state.json')), 'tools.state.json should be absent');
+    });
+    check('A: user-state beside the live store (operator backups) is NOT seeded into a fresh home', () => {
+      assert.ok(!fs.existsSync(path.join(home, 'mcp', path.basename(PLANTED_BAK))),
+        'a planted mcp/expose.json.bak-* from the package tree was copied into the home');
+      assert.ok(fs.existsSync(path.join(home, 'mcp', 'expose.example.json')), 'the shipped example must still seed');
     });
 
     // C - the surface is alive, and a management mutation lands IN THE HOME.
@@ -229,13 +258,14 @@ function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
       try { child.kill(); } catch (_e) { /* ignore */ }
     }
     try { fs.rmSync(home, { recursive: true, force: true }); } catch (_e) { /* best-effort */ }
+    try { fs.unlinkSync(PLANTED_BAK); } catch (_e) { /* best-effort */ }
   }
 
   for (const r of results) console.log((r.ok ? 'ok   - ' : 'NOT OK - ') + r.name + (r.ok ? '' : '  :: ' + r.detail));
   if (fatal) console.log('FATAL: ' + ((fatal && fatal.stack) || fatal));
 
   const passed = results.filter((r) => r.ok).length;
-  const expected = 11;
+  const expected = 13;
   const ok = !fatal && passed === results.length && results.length === expected;
   if (ok) {
     console.log(`\nPASS: config-home test - ${passed}/${expected} assertions passed (seeded home, pack identity, seeded-script engine shim, home-confined mutations, package untouched)`);

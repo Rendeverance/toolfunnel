@@ -1,8 +1,7 @@
 # Known bugs
 
-The **Open** list is what remains open as of 0.7.0. **Fixed in 0.7.0** marks the items from
-0.6.0's file that this release closed - kept and marked rather than silently deleted, so a
-0.6.0 reader can see their fate. The full change list is in the
+The **Open** list is what remains open as of 0.8.0. **Fixed in 0.8.0** marks the defects a
+0.7.x user could meet that this release closed. The full change list is in the
 [release notes](https://github.com/Rendeverance/toolfunnel/releases).
 
 ## Open
@@ -13,7 +12,7 @@ The **Open** list is what remains open as of 0.7.0. **Fixed in 0.7.0** marks the
   upstream is in scope.
 - **OPEN - The elicitation bridge does not cover legacy clients.** A wrapped upstream's mid-call
   `elicitation/create` bridges to MODERN clients as MRTR (`input_required` + retry), form and url
-  mode, gated on the caller's declared capability (0.7.0). A LEGACY client gets an automatic
+  mode, gated on the caller's declared capability. A LEGACY client gets an automatic
   decline instead - relaying backwards requests to legacy clients is unbuilt - and
   `sampling/createMessage` / `roots/list` from upstreams are answered `-32601`. An elicitation can
   only be bound to a call when exactly ONE wrapped call is in flight for that upstream (always
@@ -26,32 +25,45 @@ The **Open** list is what remains open as of 0.7.0. **Fixed in 0.7.0** marks the
   and wrapped tool calls; the remaining best-effort windows there are sub-millisecond (a cancel
   racing the instant a forward is issued) plus the PreToolUse gate-evaluation phase of a tool
   call (registered at upstream-issue time, post-gate).
+- **OPEN - A wrapped server's `instructions` are not covered by tool approval.** Tool descriptor
+  approval pins each tool's model-facing fields (`name`, `title`, `description`, `inputSchema`,
+  `outputSchema`, `annotations`). In wrap mode the wrapped server's `instructions` also reach the
+  model, unpinned, and a tool's `_meta`, `execution` and `icons` are forwarded without being
+  hashed. Pinning `instructions` is planned.
+- **OPEN - A command on a drive mounted after startup stops being retried.** A missing command is a
+  permanent failure: about five minutes of retries, then the upstream stops (named on stderr and
+  in `/health.stopped`) until `expose.json` is saved, the gateway restarts, or the upstream is
+  reconnected. A drive or share that appears later than that is not noticed on its own.
+- **OPEN (minor) - A very large approvals file slows refused calls.** Each refused call re-reads
+  `mcp/tool-approvals.json`; at 22 MB that costs about half a second per refused call. A home
+  with two real upstreams holds about 250 KB.
 
-## Fixed in 0.7.0
+## Fixed in 0.8.0
 
-- ***FIXED*** - **Legacy version negotiation.** 0.6.0 answered every `initialize` with
-  2024-11-05 whatever the client asked for, and supported exactly one legacy revision. The
-  gateway now echoes the requested version when it supports it (else answers its latest legacy),
-  and the legacy set spans 2024-11-05 / 2025-03-26 / 2025-06-18 / 2025-11-25. Pinned by
-  `test/negotiation.test.js`. One direction remains conservative: the client still offers
-  2024-11-05 to legacy upstreams (field fidelity is unaffected; only the advertised version
-  string is older than either end requires).
-- ***FIXED*** - **Header validation used a generic error code for an unsupported version.** An
-  unsupported `MCP-Protocol-Version` header answered the generic `-32600`; it now answers
-  `-32022` with `data.supported` and `data.requested` - the same code and shape the `_meta`
-  path already used for the same condition, so a client can renegotiate without parsing prose.
-  Pinned by `test/header-enforcement.test.js`.
-- ***FIXED*** - **The wrap's identity-mirror reconnect re-ran the full era negotiation** (worst
-  case roughly 3 s per respawn against an upstream that ignores `server/discover`). The
-  negotiated era is now remembered per upstream, and a death-driven reconnect goes straight to
-  the era it knows. A failed hinted connect or an explicit reconnect re-negotiates in full, so
-  an upstream upgraded across a restart is never pinned down an era. Pinned by
-  `test/reconnect-era-memo.test.js`.
-- ***FIXED*** - **`io.modelcontextprotocol/logLevel` was stripped on wrapped forwards.** Now
-  era-keyed at the client boundary: a modern upstream gets the caller's level verbatim in
-  `_meta`; a legacy upstream that declared the `logging` capability gets `logging/setLevel`
-  issued before the call (and the key never leaks into legacy `_meta`). Pinned by
-  `test/loglevel.test.js`.
+- ***FIXED*** - **A hook's decision was ignored when the hook printed anything before its JSON.**
+  The exit code decided instead, so a gate that logged a line and then denied, exiting 0, let the
+  call through. The decision is now read wherever it sits, and two different decisions (a hook
+  that echoes model-supplied text after its own answer) fail closed. Pinned by
+  `test/gate-semantics.test.js`.
+- ***FIXED*** - **The hook engine substituted stand-ins when one of its parts failed to load.** It
+  now refuses to load and names the missing part. Pinned by `test/hook-engine-requires.test.js`.
+- ***FIXED*** - **Child hooks saw the wrong `HOOKS_DIR` and `CLAUDE_PROJECT_DIR`.** Both now point
+  at the config home. Pinned by `test/hook-env.test.js`.
+- ***FIXED*** - **A relative upstream `cwd` was checked against one directory and spawned in
+  another.** The isolation guard and the spawn now both resolve it against the config home.
+  Pinned by `test/upstream-cwd.test.js`.
+- ***FIXED*** - **Stopping a stdio gateway could leave its upstreams running (POSIX).** SIGINT or
+  SIGTERM now closes every upstream, then exits 130 or 143. Pinned by
+  `test/stdio-shutdown.test.js`.
+- ***FIXED*** - **A permanent startup failure retried forever, and on Windows a missing command
+  looked like a crashing server.** A missing command, a missing working directory or an isolation
+  refusal now stops after about five minutes with one line naming the cause, and shows in
+  `/health.stopped`. Pinned by `test/permanent-failure-ceiling.test.js`.
+- ***FIXED*** - **A wrong-typed config field was coerced or dropped silently.** The config now
+  refuses to load, naming the file, the entry and the field. Pinned by
+  `test/fail-loud-config.test.js`.
+- ***FIXED*** - **The legacy dispatcher answered notifications.** A notification now never gets a
+  reply. Pinned by `test/legacy-notifications.test.js`.
 
 ## By design (not bugs)
 
@@ -76,5 +88,13 @@ These answer "why doesn't it do X". They are considered decisions, not defects.
 - **Discover works on a DISABLED upstream**, so its tools can be inspected before enabling. An
   explicit allowance on the discover path only; the disabled upstream never reaches the tool
   surface.
+- **Upstreams connect all at once, with no concurrency cap.** Right for the handful to tens of
+  upstreams a gateway holds.
+- **The legacy SSE transport's dead-client prune branch never runs.** The stream's close and error
+  handlers already clean up; the only effect is a counter that reads high. Cosmetic.
+- **Tool approval trusts a version bump.** A change at the same server version waits for
+  acceptance; a changed version is approved and reported, because that is what an update looks
+  like. A maintainer can bump the version too: `strictApproval: true` on an upstream holds every
+  change for acceptance.
 
 Found a bug, or want to help with the open work? Issues and PRs are welcome.

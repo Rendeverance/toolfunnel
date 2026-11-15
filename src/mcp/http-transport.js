@@ -72,7 +72,7 @@ const SSE_KEEPALIVE_MS = 25000;
 // Hard cap on a POSTed JSON-RPC body so a pathological/huge request can't exhaust memory. A
 // JSON-RPC tools/call payload is tiny; 4 MiB is generous headroom. Over the cap -> -32700.
 const MAX_BODY_BYTES = 4 * 1024 * 1024;
-// Hard cap on JSON-RPC batch members (0.7.0). MAX_BODY_BYTES alone is no bound on WORK: a
+// Hard cap on JSON-RPC batch members. MAX_BODY_BYTES alone is no bound on WORK: a
 // tools/call member is ~100 bytes, so 4 MiB buys tens of thousands of gated invocations - each
 // spawning hook children and a tool child - executed serially while the socket is held. 64 is well
 // past any real client's batching and far short of a denial of service.
@@ -135,6 +135,12 @@ function makeLog(logger) {
 /** Default build factory - the real full build over the on-disk (EMPTY by default) expose.json. */
 function defaultBuildFactory() {
   return require('./server').buildProtocol();
+}
+
+/** A host as it appears in a URL: a literal IPv6 address is bracketed (`[::1]`), anything else verbatim. */
+function urlHost(h) {
+  const v = String(h == null ? '' : h);
+  return v.includes(':') && !v.startsWith('[') ? '[' + v + ']' : v;
 }
 
 /**
@@ -393,7 +399,7 @@ function createHttpMcpServer(opts = {}) {
 
   /** The advertised base URL once bound (null before start / after stop). */
   function currentUrl() {
-    return boundPort == null ? null : `http://${host}:${boundPort}`;
+    return boundPort == null ? null : `http://${urlHost(host)}:${boundPort}`;
   }
 
   // ── SSE plumbing ──────────────────────────────────────────────────────────────────────────
@@ -405,6 +411,13 @@ function createHttpMcpServer(opts = {}) {
    * server stop) the client is deregistered and its timer cleared.
    */
   function openSse(req, res) {
+    // Same ceiling as the modern listen streams: every open stream is a registered response plus
+    // a keep-alive timer for the life of the socket, and nothing bounded the legacy channel - a
+    // client opening streams it never closed grew the host without limit. A GET has no JSON-RPC
+    // id, so the refusal is a plain JSON body, not an error envelope.
+    if (sseClients.size >= MODERN_LISTENERS_MAX) {
+      return sendJson(res, 503, { error: 'sse stream limit reached (' + MODERN_LISTENERS_MAX + ') - close an existing stream first' });
+    }
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-store',
@@ -487,9 +500,9 @@ function createHttpMcpServer(opts = {}) {
     // At capacity -> refuse the NEW stream with a clear error BEFORE any SSE bytes are written;
     // existing streams are never evicted (they may carry subscriptions the client relies on).
     //
-    // ORDER MATTERS (0.7.0): this check used to sit AFTER subscribeResources below, and the 503
-    // return path registers no cleanup - so a refused listen took refcounts it never released.
-    // Each leaked ref pinned its URI above zero (no resources/unsubscribe ever sent) and kept it
+    // ORDER MATTERS: this check must sit BEFORE subscribeResources below, because the 503
+    // return path registers no cleanup - a refused listen would take refcounts it never releases.
+    // Each leaked ref would pin its URI above zero (no resources/unsubscribe ever sent) and keep it
     // in the replay set, re-subscribed on every future upstream reconnect, unboundedly.
     if (modernListeners.size >= MODERN_LISTENERS_MAX) {
       return sendJson(res, 503, makeErrorWithId(subId, ERR.INTERNAL,
@@ -539,7 +552,7 @@ function createHttpMcpServer(opts = {}) {
       clearInterval(keepAlive);
       modernListeners.delete(entry);
       // 5.4: the stream WAS the subscription - closing it releases the listen-owned resource
-      // URIs (this cleanup previously released nothing: leak site #2). _released guards the
+      // URIs. _released guards the
       // up-to-four close/error events that all route here.
       if (entry._released !== true && entry.agreed && Array.isArray(entry.agreed.resourceSubscriptions)) {
         entry._released = true;
@@ -739,7 +752,7 @@ function createHttpMcpServer(opts = {}) {
       raw = await readBody(req);
     } catch (err) {
       // Oversized / aborted body -> the SAME flush-then-close -32700 as the Content-Length pre-check
-      // (readBody no longer destroys the request, so the reply can actually reach the client; a
+      // (readBody does not destroy the request, so the reply can actually reach the client; a
       // genuinely-dead socket is fine too - sendJsonAndClose's writes are defensively wrapped).
       log('POST /mcp body read failed:', (err && err.message) || String(err));
       return sendJsonAndClose(req, res, 200, makeError(ERR.PARSE, 'Parse error: ' + ((err && err.message) || 'bad body')));
@@ -765,16 +778,16 @@ function createHttpMcpServer(opts = {}) {
       if (hv === undefined || hv === '2025-03-26') {
         // A MODERN-shaped member cannot legally travel in a batch: batching exists ONLY in
         // 2025-03-26, which predates the modern era entirely. Refusing here closes an era-mixing
-        // hole (0.7.0): this branch runs BEFORE bodyIsModern below, so a modern body wrapped in a
-        // one-element array used to skip validateModernHeaders, the Mcp-Param cross-check and the
-        // disconnect-cancel accounting, and still be SERVED with full modern semantics because
+        // hole: this branch runs BEFORE bodyIsModern below, so a modern body wrapped in a
+        // one-element array would otherwise skip validateModernHeaders, the Mcp-Param cross-check and
+        // the disconnect-cancel accounting, and still be SERVED with full modern semantics because
         // handleMessage re-detects the era from the body.
         if (msg.some((m) => modern.isModernRequest(m))) {
           return sendJson(res, 400, makeError(ERR.INVALID_REQUEST,
             'modern-era messages cannot be batched - JSON-RPC batching is 2025-03-26 only; send each modern request as its own POST'));
         }
         // A batch is executed member-by-member with a gated tool call possible in every slot, so an
-        // uncapped array is one POST buying unbounded sequential execution (0.7.0).
+        // uncapped array is one POST buying unbounded sequential execution.
         if (msg.length > MAX_BATCH_MEMBERS) {
           return sendJson(res, 400, makeError(ERR.INVALID_REQUEST,
             `batch too large (${msg.length} members, max ${MAX_BATCH_MEMBERS}) - split it`));
@@ -889,19 +902,58 @@ function createHttpMcpServer(opts = {}) {
       });
     }
 
+    // Per-request progress. A single request that carries a progressToken and accepts
+    // text/event-stream gets an SSE answer the moment its FIRST beat arrives: its own progress (its
+    // own token - the aggregator scopes tokens per call), then its result, then the end. Streamable
+    // HTTP allows exactly this ("MAY send ... notifications before sending the JSON-RPC response.
+    // These messages SHOULD relate to the originating client request"), and it is the only place
+    // progress may go: the shared GET stream would hand one caller's beats to every listener. No beat
+    // arrives -> the same JSON answer (status mapping included) as before.
+    const ptok = msg && msg.params && msg.params._meta && msg.params._meta.progressToken;
+    const wantsStream = !!(msg && !Array.isArray(msg) && msg.id !== undefined && msg.id !== null &&
+      ((typeof ptok === 'string' && ptok.length) || Number.isInteger(ptok)) &&
+      /text\/event-stream/i.test(String(req.headers.accept || '')));
+    let streaming = false;
+    const progress = wantsStream ? (params) => {
+      if (modernDisconnected || res.writableEnded || res.destroyed) return;
+      try {
+        if (!streaming) {
+          streaming = true;
+          res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive' });
+        }
+        res.write('data: ' + JSON.stringify({ jsonrpc: JSONRPC, method: 'notifications/progress', params }) + '\n\n');
+      } catch (_e) { /* a dead socket: the result path below meets it too */ }
+    } : undefined;
+
     let response;
     try {
-      response = await handleMessage(build, msg);
+      response = await handleMessage(build, msg, undefined, { progress });
     } catch (err) {
       // handleMessage is contracted never to throw, but the transport must survive even if a
       // wiring bug breaks that contract - a single bad request can never crash the host.
       log('handleMessage threw (should not):', (err && err.stack) || String(err));
+      if (streaming) {
+        try {
+          res.write('data: ' + JSON.stringify(makeError(ERR.INTERNAL, 'Internal error', (err && err.message) || String(err))) + '\n\n');
+          res.end();
+        } catch (_e) { /* ignore */ }
+        return;
+      }
       return sendJson(res, 200, makeError(ERR.INTERNAL, 'Internal error', (err && err.message) || String(err)));
     }
 
     // 4.4: a cancelled request gets NO further messages (MUST) - the socket is gone anyway;
     // returning here keeps the contract explicit and the counter honest.
     if (modernDisconnected) return;
+
+    if (streaming) {
+      // Streaming began (status 200 already sent): the result - or the JSON-RPC error - is the
+      // stream's last event, then the stream ends ("After the JSON-RPC response has been sent, the
+      // server SHOULD terminate the SSE stream").
+      try { if (response != null) res.write('data: ' + JSON.stringify(response) + '\n\n'); } catch (_e) { /* ignore */ }
+      try { res.end(); } catch (_e) { /* ignore */ }
+      return;
+    }
 
     // A notification (no reply) -> 202 Accepted, no body. A request -> 200 with the JSON-RPC result.
     if (response == null) {
@@ -1058,10 +1110,9 @@ function createHttpMcpServer(opts = {}) {
       // alias (the older HTTP+SSE shape, deprecated but still supported). Both routes
       // hand off to the same openSse() - the loopback/auth guard above already gated the request.
       if (method === 'GET' && (pathName === '/mcp' || pathName === '/mcp/sse')) {
-        // MODERN-ONLY POLICY (0.7.0): the GET-SSE stream is a LEGACY-era channel (modern uses
+        // MODERN-ONLY POLICY: the GET-SSE stream is a LEGACY-era channel (modern uses
         // subscriptions/listen on POST) - answer the spec's own compatibility shape, 405 Method
         // Not Allowed + Allow: POST (the Streamable HTTP spec's rule; a MUST across three revisions).
-        // Replaces the old 400/-32020 - HeaderMismatch was an allocation-policy misuse here too.
         if (build && build.serveLegacy === false) {
           res.writeHead(405, { Allow: 'POST', 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
           return res.end(JSON.stringify(makeError(ERR.INVALID_REQUEST,
@@ -1112,6 +1163,42 @@ function createHttpMcpServer(opts = {}) {
    *             upstreamsConnected:number, upstreams:number, toolsExposed:number,
    *             connected:string[], failed:Array<{id:string, error:string}> }}
    */
+  /** The aggregator's stopped upstreams, defensively (a degraded or older build reports none). */
+  function stoppedNow() {
+    try {
+      const agg = build && build.aggregator;
+      const s = agg && typeof agg.stoppedUpstreams === 'function' ? agg.stoppedUpstreams() : [];
+      return Array.isArray(s) ? s.map((x) => ({ id: x.id, error: x.error, attempts: x.attempts })) : [];
+    } catch (_e) {
+      return [];
+    }
+  }
+
+  /** Tools the aggregator dropped for a broken descriptor, defensively (none on a degraded build). */
+  function invalidToolsNow() {
+    try {
+      const agg = build && build.aggregator;
+      const v = agg && typeof agg.invalidTools === 'function' ? agg.invalidTools() : [];
+      return Array.isArray(v) ? v : [];
+    } catch (_e) {
+      return [];
+    }
+  }
+
+  /** The aggregator's tool descriptor changes, defensively (a degraded or older build: none). */
+  function toolChangesNow() {
+    try {
+      const agg = build && build.aggregator;
+      const c = agg && typeof agg.toolChanges === 'function' ? agg.toolChanges() : null;
+      return {
+        pending: c && Array.isArray(c.pending) ? c.pending : [],
+        upgraded: c && Array.isArray(c.upgraded) ? c.upgraded : [],
+      };
+    } catch (_e) {
+      return { pending: [], upgraded: [] };
+    }
+  }
+
   function health() {
     let toolsExposed = 0;
     let upstreamsConnected = 0;
@@ -1184,6 +1271,13 @@ function createHttpMcpServer(opts = {}) {
       // visible. Fresh copies so the caller can never mutate the internal snapshot.
       connected: lastConnect.connected.slice(),
       failed: lastConnect.failed.map((f) => ({ id: f.id, error: f.error })),
+      // LIVE (not the startup snapshot): upstreams that hit the permanent-failure ceiling and
+      // stopped retrying - they stay here until a config reload or a reconnect.
+      stopped: stoppedNow(),
+      // Tool descriptor approval: changes waiting for acceptance + recent upgrades, live.
+      toolChanges: toolChangesNow(),
+      // Tools dropped because their descriptor is structurally broken, live.
+      invalidTools: invalidToolsNow(),
       // OAuth resource-server status (no secrets - issuer/audience live in the well-known doc):
       // whether auth is enabled, whether the optional jose dependency is installed, and whether the
       // current config is coherent enough to enforce (misconfigured: configError() reason present).
@@ -1497,9 +1591,9 @@ function createHttpMcpServer(opts = {}) {
         prevAggForSubs._subscribedUris instanceof Set && prevAggForSubs._subscribedUris.size) {
       next.aggregator._subscribedUris = new Set(prevAggForSubs._subscribedUris);
       // Carry the REFCOUNTS too, exactly as reloadExpose does (server.js). Without them the new
-      // aggregator held the URIs with an empty refs Map, and releaseResources treats refcount 0 as
-      // "last holder" - so the first listener to close unsubscribed upstream and killed the
-      // channel for every other listener still holding that URI (0.7.0).
+      // aggregator holds the URIs with an empty refs Map, and releaseResources treats refcount 0 as
+      // "last holder" - so the first listener to close would unsubscribe upstream and kill the
+      // channel for every other listener still holding that URI.
       if (prevAggForSubs._subscribedRefs instanceof Map) {
         next.aggregator._subscribedRefs = new Map(prevAggForSubs._subscribedRefs);
       }

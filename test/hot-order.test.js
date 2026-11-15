@@ -15,6 +15,8 @@
 
 const path = require('node:path');
 const REPO_ROOT = path.resolve(__dirname, '..');
+const { useTempHome } = require('./helpers/temp-home');
+useTempHome({ prefix: 'tf-hot-order-' }); // scratch config home, claimed BEFORE any src/ module captures the repo's
 const s = require(path.join(REPO_ROOT, 'src', 'mcp', 'server.js'));
 
 let fails = 0;

@@ -396,7 +396,7 @@ class HookLoader {
     // A matcher that does not compile can never be evaluated - storing it would author a
     // hook whose gate the engine must refuse on every tool-bearing call (hook-engine's
     // unreadable-gate rule). Refuse HERE so the UI's POST /api/hooks/add and tf_hook_add
-    // both answer with the problem instead of 200/ok. (0.7.0; matcher-compile.test.js.)
+    // both answer with the problem instead of 200/ok.
     if (spec.matcher !== undefined && spec.matcher !== null && typeof spec.matcher !== 'string') {
       throw new Error('addEntry: spec.matcher must be a string when provided');
     }
@@ -640,66 +640,8 @@ function collapseManifest(manifest, hooksDir) {
   return copy;
 }
 
-/**
- * Atomically write a JS object as pretty JSON: write to a temp file in the SAME directory
- * as the target (so rename is atomic on the same filesystem), then rename over the target.
- *
- * @param {string} targetPath absolute destination
- * @param {object} obj
- */
-function atomicWriteJson(targetPath, obj) {
-  const data = JSON.stringify(obj, null, 2) + '\n';
-  atomicWriteText(targetPath, data, path.dirname(targetPath));
-}
-
-/**
- * Atomically write text: temp file in `tmpDir` (must be on the same volume as the target),
- * fsync, then rename over the target. Cleans up the temp file on failure.
- *
- * @param {string} targetPath absolute destination
- * @param {string} data
- * @param {string} tmpDir directory to place the temp file (same FS as target)
- */
-function atomicWriteText(targetPath, data, tmpDir) {
-  const dir = tmpDir || path.dirname(targetPath);
-  const tmpName = `.${path.basename(targetPath)}.${process.pid}.${Date.now()}.${Math.random()
-    .toString(36)
-    .slice(2)}.tmp`;
-  const tmpPath = path.join(dir, tmpName);
-
-  let fd;
-  try {
-    fd = fs.openSync(tmpPath, 'w');
-    fs.writeFileSync(fd, data);
-    try {
-      fs.fsyncSync(fd);
-    } catch (_) {
-      // fsync may fail on some platforms/filesystems; the rename is still ordered.
-    }
-  } finally {
-    if (fd !== undefined) {
-      try {
-        fs.closeSync(fd);
-      } catch (_) {
-        /* ignore */
-      }
-    }
-  }
-
-  try {
-    // rename is atomic on the same filesystem and overwrites the destination on POSIX;
-    // on Windows it overwrites too as long as the target isn't locked.
-    fs.renameSync(tmpPath, targetPath);
-  } catch (err) {
-    // Best-effort cleanup so we don't leave temp files behind.
-    try {
-      fs.unlinkSync(tmpPath);
-    } catch (_) {
-      /* ignore */
-    }
-    throw err;
-  }
-}
+// THE atomic writer (temp + fsync + rename, failure-path unlink, stale sweep) - shared by every store.
+const { atomicWriteJson, atomicWriteText } = require('./atomic-write');
 
 /**
  * Load a manifest from disk, expand ${HOOKS_DIR} in every command string, and return a

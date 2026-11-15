@@ -125,16 +125,21 @@ async function resolveJwksUri(cfg, timeoutMs) {
           /* malformed URL on either side -> treat as cross-origin -> refuse */
         }
         if (!sameOrigin) {
-          throw new Error(
+          const refusal = new Error(
             `discovered jwks_uri "${doc.jwks_uri}" is not on the issuer origin - refusing the ` +
               'cross-origin discovery result. If your IdP intentionally hosts JWKS on a separate ' +
               'origin, state that trust explicitly by setting "jwksUri" in auth/auth.config.json.'
           );
+          refusal.code = 'JWKS_ORIGIN_REFUSED'; // an operator-config verdict: no later candidate can remedy it
+          throw refusal;
         }
         return doc.jwks_uri;
       }
       lastErr = new Error(`discovery doc at ${url} has no jwks_uri`);
     } catch (e) {
+      // Last-error-wins hid the actionable refusal behind whatever the LAST candidate said (usually a
+      // plain 404). The refusal is final: surface it now.
+      if (e && e.code === 'JWKS_ORIGIN_REFUSED') throw e;
       lastErr = e;
     }
   }

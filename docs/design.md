@@ -63,7 +63,7 @@ caller speaks - stripping a server's own fields would be data loss and a wrapper
 
 Everything mutable (tools, upstreams, hooks, identity, logs) lives in the config home,
 relocatable with `--config-dir` or `TOOLFUNNEL_HOME`, seeded once, never overwritten by
-updates. One folder to back up, one folder to package, one folder to hand a colleague. The
+updates (a tool new in a release is added to the register once). One folder to back up, one folder to package, one folder to hand a colleague. The
 gateway prints the resolved home at every start so there is never any doubt about where state
 lives.
 

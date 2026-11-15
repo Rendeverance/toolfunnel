@@ -41,11 +41,12 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawn, execFile } = require('node:child_process');
 const reaper = require('../core/child-reaper');
-const { migrateForStoreFile } = require('../core/rename-migration');
+const { takeWithinCap } = require('../core/output-cap');
+const { migrateForStoreFile, snapshotForStoreFile, restoreSnapshot } = require('../core/rename-migration');
 
-// LOCAL tool execution bounds (0.7.0). The upstream path has had per-method timeouts since 0.6.0;
-// the local executor had none, and stdio serialises on one promise chain, so a hanging local tool
-// starved every later request (including `ping`, which clients use as a liveness probe). 120 s
+// LOCAL tool execution bounds. The upstream path has per-method timeouts; stdio serialises on one
+// promise chain, so a local tool with no clock would starve every later request (including
+// `ping`, which clients use as a liveness probe). 120 s
 // matches the upstream PAYLOAD window so a slow-but-alive local tool behaves like a slow upstream.
 // Test seam: the suite proves the timeout/cap BEHAVIOUR (not just these names) by shrinking the
 // windows via env; production never sets them.
@@ -106,61 +107,9 @@ function cloneEntry(entry) {
   return JSON.parse(JSON.stringify(entry));
 }
 
-/**
- * A sibling temp older than this is a STRANDING (a crashed/killed writer), not an
- * in-flight write - a live writer's temp exists for milliseconds. Swept on the next
- * successful write of the same target; the generous age keeps a concurrent writer safe.
- */
-const STALE_TMP_MS = 60 * 60 * 1000;
-
-/**
- * Remove STALE stranded temps for `base` in `dir` (the `.<base>.<pid>.<ts>.tmp` shape the
- * atomic writers below produce). Scoped to the target's own temp shape - never another
- * file's - and entirely best-effort: sweeping must never fail a write.
- */
-function sweepStaleTmp(dir, base) {
-  let names;
-  try { names = fs.readdirSync(dir); } catch (_e) { return; }
-  const prefix = `.${base}.`;
-  const now = Date.now();
-  for (const name of names) {
-    if (!name.startsWith(prefix) || !name.endsWith('.tmp')) continue;
-    const p = path.join(dir, name);
-    try {
-      if (now - fs.statSync(p).mtimeMs > STALE_TMP_MS) fs.unlinkSync(p);
-    } catch (_e) { /* a concurrent writer renamed/removed it - fine */ }
-  }
-}
-
-/**
- * Atomic write: serialise to a temp file in the SAME directory as the target
- * (so rename is atomic on the same filesystem/drive), fsync, then rename over
- * the target. A crash leaves either the old file or the new file, never a
- * half-written register. The temp NEVER outlives a failure: any throw (a refused
- * rename - win32 scanners hold targets briefly - a full disk, a write error)
- * unlinks it before rethrowing, and stale strandings from writers that died
- * mid-flight are swept on the next successful write (sweepStaleTmp above).
- */
-function atomicWriteJson(targetPath, obj) {
-  const dir = path.dirname(targetPath);
-  const base = path.basename(targetPath);
-  sweepStaleTmp(dir, base);
-  const tmp = path.join(dir, `.${base}.${process.pid}.${Date.now()}.tmp`);
-  const data = JSON.stringify(obj, null, 2) + '\n';
-  try {
-    const fd = fs.openSync(tmp, 'w');
-    try {
-      fs.writeSync(fd, data, 0, 'utf8');
-      fs.fsyncSync(fd);
-    } finally {
-      fs.closeSync(fd);
-    }
-    fs.renameSync(tmp, targetPath);
-  } catch (err) {
-    try { fs.unlinkSync(tmp); } catch (_e) { /* best-effort - the error below is the story */ }
-    throw err;
-  }
-}
+// THE atomic writer (temp + fsync + rename, failure-path unlink, stale sweep) - shared by every store.
+// Re-exported below for the callers that historically imported it from here.
+const { atomicWriteJson, atomicWriteText } = require('../core/atomic-write');
 
 /** Validate a register entry shape; throws with a clear message on a bad shape. */
 function validateEntry(entry, { requireId = true } = {}) {
@@ -245,12 +194,11 @@ function defaultRunScript(scriptsRoot, invoke, args) {
     let stdout = '';
     let stderr = '';
     let settled = false;
-    // BOUNDED + TIMED (0.7.0). The upstream call path has had per-method windows since 0.6.0
-    // (10 s control / 120 s payload) but the LOCAL executor had no clock and no output cap at all,
-    // and stdio serialises every message on one promise chain - so a single hanging local tool
-    // wedged the entire session: measured 2026-07-30, a 40 s tool left a following `ping` and
-    // `tools/list` unanswered for 12 s+, which a client using ping as its liveness probe reads as
-    // a dead gateway. Same shape as the fix in core/hook-runner.js.
+    // BOUNDED + TIMED, like the upstream call path's per-method windows (10 s control / 120 s
+    // payload). stdio serialises every message on one promise chain, so a single hanging local
+    // tool would wedge the entire session: a following `ping` goes unanswered, which a client
+    // using ping as its liveness probe reads as a dead gateway. Same shape as the timeout in
+    // core/hook-runner.js.
     const finish = (result) => {
       if (settled) return;
       settled = true;
@@ -286,8 +234,10 @@ function defaultRunScript(scriptsRoot, invoke, args) {
     let errBytes = 0;
     child.stdout.on('data', (d) => {
       if (outBytes >= MAX_TOOL_OUTPUT_BYTES) return;
-      stdout += d;
-      outBytes += Buffer.byteLength(d, 'utf8');
+      const kept = takeWithinCap(d, outBytes, MAX_TOOL_OUTPUT_BYTES);
+      stdout += kept;
+      outBytes += Buffer.byteLength(kept, 'utf8');
+      if (kept.length < d.length) outBytes = MAX_TOOL_OUTPUT_BYTES; // cut at a character: the cap is reached
       if (outBytes >= MAX_TOOL_OUTPUT_BYTES) {
         killTree(child);
         finish({ ok: false, code: null, stdout, stderr: stderr + '\nRegistry: tool output exceeded the cap and was terminated', outputCapped: true });
@@ -295,8 +245,10 @@ function defaultRunScript(scriptsRoot, invoke, args) {
     });
     child.stderr.on('data', (d) => {
       if (errBytes >= MAX_TOOL_OUTPUT_BYTES) return;
-      stderr += d;
-      errBytes += Buffer.byteLength(d, 'utf8');
+      const kept = takeWithinCap(d, errBytes, MAX_TOOL_OUTPUT_BYTES);
+      stderr += kept;
+      errBytes = kept.length < d.length ? MAX_TOOL_OUTPUT_BYTES : errBytes + Buffer.byteLength(kept, 'utf8');
+      if (errBytes >= MAX_TOOL_OUTPUT_BYTES) stderr += '\n[stderr truncated at cap]';
     });
     child.on('error', (err) => {
       if (settled) return;
@@ -419,11 +371,21 @@ class Registry {
     // in rename-migration.js). Runs BEFORE persist so a refusal leaves the register untouched.
     const oldSurfaced = existing.name || id;
     const newSurfaced = merged.name || id;
+    const snap = oldSurfaced !== newSurfaced ? snapshotForStoreFile(this._filePath) : null;
     if (oldSurfaced !== newSurfaced) {
       migrateForStoreFile(this._filePath, oldSurfaced, newSurfaced, { migrateState: false });
     }
     this._byId.set(id, cloneEntry(merged));
-    this._persist();
+    try {
+      this._persist();
+    } catch (err) {
+      // The other half of "runs BEFORE persist": a persist that fails AFTER a successful migration
+      // must not leave the manifest naming a surface the register does not. Unwind memory and
+      // migrate back (best-effort), then rethrow - a failed rename is a no-op on disk.
+      this._byId.set(id, existing);
+      if (snap) restoreSnapshot(snap); // byte-for-byte; a reverse migration would re-validate and can refuse
+      throw err;
+    }
     return this.getEntry(id);
   }
 
@@ -498,23 +460,7 @@ class Registry {
       throw new Error(`Registry.writeScript: script path escapes scripts root ("${invokePath}")`);
     }
     fs.mkdirSync(scriptsRoot, { recursive: true });
-    const dir = path.dirname(resolved);
-    const base = path.basename(resolved);
-    sweepStaleTmp(dir, base);
-    const tmp = path.join(dir, `.${base}.${process.pid}.${Date.now()}.tmp`);
-    try {
-      const fd = fs.openSync(tmp, 'w');
-      try {
-        fs.writeSync(fd, text, 0, 'utf8');
-        fs.fsyncSync(fd);
-      } finally {
-        fs.closeSync(fd);
-      }
-      fs.renameSync(tmp, resolved);
-    } catch (err) {
-      try { fs.unlinkSync(tmp); } catch (_e) { /* best-effort - the error below is the story */ }
-      throw err;
-    }
+    atomicWriteText(resolved, text); // bytes as given (no line-ending normalisation), temp + rename
     return resolved;
   }
 

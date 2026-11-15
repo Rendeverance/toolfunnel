@@ -34,3 +34,5 @@ Thumbs.db
 /tmp/
 coverage/
 dev/
+# Tool descriptor approvals (0.8.0): user state the gateway writes into its home - never committed.
+mcp/tool-approvals.json

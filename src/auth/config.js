@@ -39,6 +39,7 @@ const path = require('node:path');
 /** The CONFIG HOME (TOOLFUNNEL_HOME / --config-dir; defaults to the package root - see
  *  src/core/config-home.js). Auth config is user-state, so it lives with the home. */
 const { resolveConfigHome } = require('../core/config-home');
+const { atomicWriteJson } = require('../core/atomic-write'); // THE atomic writer, shared by every store
 const ROOT = resolveConfigHome();
 
 /** The toggle/config file. NOT created until setConfig() writes it. */
@@ -163,10 +164,7 @@ function setConfig(patch) {
   };
 
   fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true });
-  // Atomic write: unique temp file in the same dir, then rename over the target.
-  const tmp = CONFIG_PATH + '.' + process.pid + '.' + Date.now() + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify(next, null, 2) + '\n');
-  fs.renameSync(tmp, CONFIG_PATH);
+  atomicWriteJson(CONFIG_PATH, next); // temp + fsync + rename, failure-path unlink, stale sweep
 
   return next;
 }

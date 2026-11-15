@@ -30,6 +30,9 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
+const { useTempHome } = require('./helpers/temp-home');
+// The HTTP half loads src/ in-process: claim a scratch config home first so it never serves the repo's stores.
+useTempHome({ prefix: 'tf-batching-http-' });
 const ENTRY = path.join(REPO_ROOT, 'bin', 'toolfunnel.js');
 
 let fails = 0;

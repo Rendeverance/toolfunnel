@@ -35,6 +35,7 @@
  */
 
 const childProcess = require('node:child_process');
+const fs = require('node:fs');
 const path = require('node:path');
 
 const JSONRPC = '2.0';
@@ -42,8 +43,8 @@ const PROTOCOL_VERSION = '2024-11-05';
 // The 2026-07-28 ("modern") protocol version this client can SPEAK to a modern upstream. Over
 // stdio the modern era needs only per-request `_meta` - the Mcp-Method/Mcp-Name/MCP-Protocol-Version
 // headers are HTTP-transport-only, so a stdio client is modern by adding `_meta` + skipping the
-// initialize handshake. Built to the RC spec (locked 2026-05-21); reconcile minor final deltas 28 July.
-const MODERN_PROTOCOL_VERSION = '2026-07-28';
+// initialize handshake.
+const { MODERN_PROTOCOL_VERSION } = require('./modern'); // the ONE definition (version-literal.test.js pins it)
 const CLIENT_INFO = Object.freeze({ name: 'toolfunnel', version: '3.0.0-client' });
 
 /**
@@ -72,11 +73,65 @@ const CLIENT_INFO = Object.freeze({ name: 'toolfunnel', version: '3.0.0-client' 
 function winLaunch(command, args) {
   const argv = Array.isArray(args) ? args : [];
   if (process.platform !== 'win32') return { command, args: argv };
-  // A concrete executable can be spawned directly - no shim resolution needed.
-  if (path.isAbsolute(command) && /\.(exe|com)$/i.test(command)) return { command, args: argv };
-  // Otherwise hand it to cmd.exe, which resolves the .cmd/.bat shim via PATHEXT.
+  // A concrete executable can be spawned directly - no shim resolution needed. A relative one
+  // (`../../x/node.exe`, the drive-independent config) resolves against the spawn's cwd.
+  const pathShaped = path.isAbsolute(command) || /[\\/]/.test(command);
+  if (pathShaped && /\.(exe|com)$/i.test(command)) return { command, args: argv };
+  // Otherwise hand it to cmd.exe, which resolves the .cmd/.bat shim via PATHEXT. cmd reads a '/'
+  // as a switch, so a path reaches it with backslashes.
   const comspec = process.env.ComSpec || 'cmd.exe';
-  return { command: comspec, args: ['/c', command, ...argv] };
+  return { command: comspec, args: ['/c', pathShaped ? command.replace(/\//g, '\\') : command, ...argv] };
+}
+
+/**
+ * Windows only: is `command` definitely absent from everywhere cmd.exe would look - the working
+ * directory, then each PATH directory, trying each PATHEXT extension?
+ *
+ * winLaunch routes every non-.exe command through cmd.exe, so a missing command never fails the
+ * spawn with ENOENT: cmd prints a LOCALISED "is not recognized" line and exits 1, exactly like a
+ * server that crashed on start. The owner classifies permanent failures by error code (the
+ * aggregator's reconnect ceiling), so connect() asks this AFTER a failed connect and stamps ENOENT.
+ * It never blocks a spawn. Conservative by construction - it answers true only when every
+ * candidate is definitely absent: a stat error other than ENOENT/ENOTDIR (an App Execution Alias
+ * can refuse stat) counts as found. A PATH entry is split quote-aware (cmd.exe accepts
+ * "C:\a;b" as one directory), and a %VAR% the env cannot expand stays literal, as it does for cmd.exe.
+ *
+ * @param {string} command
+ * @param {string} [cwd]  the child's working directory
+ * @param {object} [env]  the child's merged environment
+ * @returns {boolean}
+ */
+function commandMissing(command, cwd, env) {
+  if (process.platform !== 'win32' || typeof command !== 'string' || command.length === 0) return false;
+  const e = env || process.env;
+  // Env names are case-insensitive on Windows and a merged env can hold both `Path` and `PATH`:
+  // take every spelling (more candidates can only make the answer more conservative).
+  const all = (name) => Object.keys(e).filter((k) => k.toUpperCase() === name).map((k) => String(e[k] || ''));
+  const exts = all('PATHEXT').join(';').split(';').filter(Boolean);
+  const candidates = [command, ...(exts.length ? exts : ['.COM', '.EXE', '.BAT', '.CMD']).map((x) => command + x)];
+  const base = typeof cwd === 'string' && cwd.length ? path.resolve(cwd) : process.cwd();
+  const isPath = /[\\/]/.test(command) || path.isAbsolute(command);
+  const dirs = [base];
+  if (!isPath) {
+    for (const d of all('PATH').join(';').match(/(?:"[^"]*"|[^;])+/g) || []) {
+      const dir = d.replace(/"/g, '').trim();
+      if (!dir) continue;
+      // Expand %VAR% from the child's env where we can; an unknown one stays literal. Either way the
+      // extra candidate can only turn up a match (the safe direction), never hide one.
+      dirs.push(dir.replace(/%([^%]+)%/g, (m, v) => { const hit = all(v.toUpperCase())[0]; return hit !== undefined ? hit : m; }));
+    }
+  }
+  for (const dir of dirs) {
+    for (const name of candidates) {
+      try {
+        fs.statSync(path.resolve(dir, name));
+        return false;
+      } catch (err) {
+        if (!err || (err.code !== 'ENOENT' && err.code !== 'ENOTDIR')) return false;
+      }
+    }
+  }
+  return true;
 }
 
 /**
@@ -161,7 +216,7 @@ class McpClient {
     this._forceLegacy = forceLegacy === true;
     // modernOnly: the MIRROR of legacyPin - refuse the legacy fallback entirely. A modernOnly
     // upstream that does not answer server/discover with the modern protocol FAILS the connect
-    // with a clear error instead of silently negotiating down (era-policy switches, 2026-07-18).
+    // with a clear error instead of silently negotiating down.
     this._modernOnly = modernOnly === true;
     // eraHint ('legacy' is the only meaningful value): the OWNER's memo of the era this upstream
     // negotiated LAST time - an observation, not a policy. It skips the server/discover probe the
@@ -413,6 +468,9 @@ class McpClient {
     // with an error that names the policy - never a silent downgrade.
     if (!discovered && this._modernOnly) {
       this.close();
+      // A command that was never found cannot answer discover either - say THAT, not the policy.
+      const missing = this._missingCommandError('McpClient: upstream could not start');
+      if (missing) throw missing;
       throw new Error(`McpClient: upstream "${this.id}" is modernOnly but did not answer server/discover with the 2026-07-28 protocol - refusing the legacy fallback`);
     }
 
@@ -428,10 +486,10 @@ class McpClient {
           protocolVersion: PROTOCOL_VERSION,
           clientInfo: this._clientInfo,
           // elicitation: real SDK-based servers GATE ctx.elicit() on the client declaring this
-          // capability - without it they answer "Method not found" and never elicit at all
-          // (found testing against real published elicitation servers, 2026-07-17). We honestly handle every elicitation now: the
-          // elicitation bridge's MRTR path for modern callers, a clean decline otherwise.
-          // BOTH modes declared (0.7.0): the 2025-11-25 back-compat rule reads a bare
+          // capability - without it they answer "Method not found" and never elicit at all.
+          // Every elicitation is handled: the elicitation bridge's MRTR path for modern callers,
+          // a clean decline otherwise.
+          // BOTH modes declared: the 2025-11-25 back-compat rule reads a bare
           // `{}` as FORM ONLY, and "Servers MUST NOT send elicitation requests with modes that
           // are not supported by the client" - so without `url` here a conformant upstream is
           // FORBIDDEN from url mode and the relay is structurally dead. Every elicit of either
@@ -441,7 +499,14 @@ class McpClient {
         this._initializeResult = result;
       } catch (err) {
         this.close();
-        throw new Error(`McpClient: initialize failed: ${(err && err.message) || String(err)}`);
+        const message = `McpClient: initialize failed: ${(err && err.message) || String(err)}`;
+        // Name a missing working directory or command first (a spawn ENOENT names only the
+        // executable, and the Windows launch shim hides a missing command behind "exited (code=1)"),
+        // else keep the cause's code - the owner classifies by it.
+        const missing = this._missingCommandError(message);
+        if (missing) throw missing;
+        if (err && typeof err.code === 'string') throw Object.assign(new Error(message), { code: err.code });
+        throw new Error(message);
       }
       // Tell the server the handshake is complete (notification - no id, no reply).
       this._notify('notifications/initialized', {});
@@ -480,7 +545,7 @@ class McpClient {
   }
 
   /**
-   * Era-keyed logLevel handling (0.7.0). A caller's per-request
+   * Era-keyed logLevel handling. A caller's per-request
    * `io.modelcontextprotocol/logLevel` must reach the upstream in the upstream's own vocabulary:
    * MODERN upstream -> left in `_meta` (the trio merge in request()/callTool() preserves it - the
    * trio does not define logLevel), because the modern severity clause obliges the upstream to
@@ -506,7 +571,10 @@ class McpClient {
     const caps = this._initializeResult && this._initializeResult.capabilities;
     if (typeof level === 'string' && caps && caps.logging && level !== this._lastSetLogLevel) {
       this._lastSetLogLevel = level;
-      this._request('logging/setLevel', { level }).catch(() => {}); // fire-and-forget, ordered by the pipe
+      // Fire-and-forget, ordered by the pipe (issued BEFORE the main request). A refusal or timeout
+      // reverts the memo so the next call at this level asks again - memoising it as done left the
+      // upstream at whatever level it had for the rest of the session.
+      this._request('logging/setLevel', { level }).catch(() => { if (this._lastSetLogLevel === level) this._lastSetLogLevel = undefined; });
     }
     return out;
   }
@@ -539,6 +607,15 @@ class McpClient {
    * caught and rethrown clean. Extracted from connect() so probeDiscover() can share it.
    */
   _spawnChild() {
+    // Per-child read state starts CLEAN. On an in-place respawn (connect/probeDiscover after the
+    // previous child died) a half-arrived frame, a refused over-cap skip count, or the old child's
+    // stderr would otherwise be prepended to the new child's first bytes: the drain then swallows
+    // its first reply as the rest of a dead body, and every error quotes the wrong stderr. Same
+    // values as the constructor. The log-level memo goes too - a new process knows no level.
+    this._buf = Buffer.alloc(0);
+    this._skipRemaining = 0;
+    this._stderr = '';
+    this._lastSetLogLevel = undefined;
     try {
       // Cross-platform: POSIX passes through; Windows routes a .cmd/.bat shim through cmd.exe.
       const launch = winLaunch(this._command, this._args);
@@ -550,7 +627,9 @@ class McpClient {
       });
     } catch (err) {
       this._child = null;
-      throw new Error(`McpClient: failed to spawn "${this._command}": ${(err && err.message) || String(err)}`);
+      const failed = new Error(`McpClient: failed to spawn "${this._command}": ${(err && err.message) || String(err)}`);
+      if (err && typeof err.code === 'string') failed.code = err.code; // the owner classifies by code
+      throw failed;
     }
 
     if (!this._child || !this._child.stdin || !this._child.stdout) {
@@ -560,6 +639,21 @@ class McpClient {
     }
 
     this._wireChild();
+  }
+
+  /** A connect-failure Error carrying code ENOENT when the working directory or the command is
+   *  definitely absent (commandMissing - Windows, where the launch shim hides it), else null. */
+  _missingCommandError(message) {
+    if (typeof this._cwd === 'string' && this._cwd.length && !fs.existsSync(this._cwd)) {
+      return Object.assign(new Error(`McpClient: working directory "${this._cwd}" does not exist - ${message}`), { code: 'ENOENT' });
+    }
+    if (!commandMissing(this._command, this._cwd, Object.assign({}, process.env, this._env))) return null;
+    // The cause goes FIRST: the message continues with the upstream's stderr, which a reader
+    // (or the aggregator's bounded stop line) may cut short.
+    return Object.assign(
+      new Error(`McpClient: command "${this._command}" was not found (looked in the working directory and on PATH) - ${message}`),
+      { code: 'ENOENT' }
+    );
   }
 
   /**
@@ -578,7 +672,7 @@ class McpClient {
     try {
       return await this._request('server/discover', {
         _meta: {
-          'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+          'io.modelcontextprotocol/protocolVersion': MODERN_PROTOCOL_VERSION,
           'io.modelcontextprotocol/clientCapabilities': {},
           'io.modelcontextprotocol/clientInfo': this._clientInfo,
         },
@@ -593,8 +687,8 @@ class McpClient {
 
   /**
    * tools/list -> the upstream's COMPLETE tool definitions, following `nextCursor` pagination
-   * (0.7.0 - the single-shot version silently truncated a paginating upstream to page 1,
-   * leaving its later tools undiscoverable AND unrunnable). Returns the raw concatenated array
+   * (a single-shot list would silently truncate a paginating upstream to page 1, leaving its
+   * later tools undiscoverable AND unrunnable). Returns the raw concatenated array
    * [{name, description, inputSchema, ...}] from every page (empty array if the server returned
    * no tools). Rejects on timeout / transport failure of ANY page.
    *
@@ -736,11 +830,16 @@ class McpClient {
   _wireChild() {
     const child = this._child;
 
-    child.stdout.on('data', (chunk) => this._onData(chunk));
+    // Every handler below answers only while `child` is STILL this._child. A child that has
+    // exited (or been replaced by an in-place respawn) can still drain buffered stdout/stderr and
+    // fire 'exit'/'error' afterwards - Node emits 'exit' before the stdio streams are done - and
+    // those late events would otherwise land in the NEW child's read state or reject its waiters.
+    child.stdout.on('data', (chunk) => { if (this._child === child) this._onData(chunk); });
     child.stdout.on('error', (err) => this._logErr('stdout error:', (err && err.message) || String(err)));
 
     if (child.stderr) {
       child.stderr.on('data', (d) => {
+        if (this._child !== child) return;
         this._stderr += d.toString('utf8');
         // Keep the captured stderr bounded so a chatty child can't grow memory unbounded.
         if (this._stderr.length > 64 * 1024) {
@@ -756,8 +855,9 @@ class McpClient {
     // server that dies on the unknown method would otherwise corrupt a follow-up connect()). Only
     // null it if it is still THIS child (a fresh respawn may have replaced it).
     child.on('exit', (code, signal) => {
+      if (this._child !== child) return; // a stale child's exit: already handled or superseded
       this._connected = false;
-      if (this._child === child) this._child = null;
+      this._child = null;
       this._rejectAllWaiters(
         new Error(`McpClient: upstream exited (code=${code}, signal=${signal}). stderr:\n${this._stderr}`)
       );
@@ -765,11 +865,14 @@ class McpClient {
     });
     child.on('error', (err) => {
       // Spawn-level failure (e.g. ENOENT) - surfaces here, not as a throw from spawn().
+      if (this._child !== child) return; // a stale child's error: already handled or superseded
       this._connected = false;
-      if (this._child === child) this._child = null;
-      this._rejectAllWaiters(
-        new Error(`McpClient: child process error: ${(err && err.message) || String(err)}`)
-      );
+      this._child = null;
+      const failed = new Error(`McpClient: child process error: ${(err && err.message) || String(err)}`);
+      // Keep the code: the aggregator's reconnect ceiling classifies permanent failures by it
+      // (a re-wrap without it made a missing command look like any other death).
+      if (err && typeof err.code === 'string') failed.code = err.code;
+      this._rejectAllWaiters(failed);
       this._fireOnClose(`error: ${(err && err.message) || String(err)}`);
     });
   }
@@ -1014,8 +1117,8 @@ class McpClient {
 
     if (typeof msg.method === 'string') {
       // SERVER->CLIENT REQUEST (id + method): the upstream is asking ITS client something -
-      // elicitation/create, sampling/createMessage, roots/list. Previously dropped, which left
-      // a conformant upstream holding an open request forever (the elicitation bridge). Surface to the owner;
+      // elicitation/create, sampling/createMessage, roots/list. Dropping one would leave a
+      // conformant upstream holding an open request forever. Surface to the owner;
       // unhandled -> answer -32601 (the honest "this client cannot do that").
       if (typeof this.onServerRequest === 'function') {
         try { this.onServerRequest(msg); return; } catch (_e) { this._logErr('onServerRequest threw (ignored)'); }
@@ -1065,6 +1168,7 @@ module.exports = {
   // exported for unit tests / reuse
   frameRequest,
   winLaunch,
+  commandMissing,
   PROTOCOL_VERSION,
   CLIENT_INFO,
 };

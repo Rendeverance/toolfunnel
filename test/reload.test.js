@@ -35,13 +35,18 @@ const { spawn } = require('node:child_process');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const ENTRY = path.join(REPO_ROOT, 'bin', 'toolfunnel.js');
-const EXPOSE_PATH = path.join(REPO_ROOT, 'mcp', 'expose.json');
-const MOCK_SERVER = path.join(REPO_ROOT, 'mcp', 'servers', 'mock-upstream', 'server.js');
-const REGISTER_PATH = path.join(REPO_ROOT, 'tools', 'tools.register.json');
-const TOOL_STATE_PATH = path.join(REPO_ROOT, 'tools', 'tools.state.json');
-const LOG_CONFIG_PATH = path.join(REPO_ROOT, 'logs', 'log.config.json');
+const { makeTempHome } = require('./helpers/temp-home');
+// Every gateway here runs against a scratch config home (pre-seeded: shipped register, scripts,
+// hooks tree and mock upstreams inside it), never the repo's own stores.
+const HOME = makeTempHome({ prefix: 'tf-reload-', seed: true });
+process.on('exit', () => HOME.cleanup());
+const EXPOSE_PATH = HOME.expose;
+const MOCK_SERVER = path.join(HOME.mockDir, 'mock-upstream', 'server.js');
+const REGISTER_PATH = HOME.register;
+const TOOL_STATE_PATH = HOME.state;
+const LOG_CONFIG_PATH = HOME.logConfig;
 const TEST_LOG_REL = 'logs/test-reload.' + process.pid + '.jsonl';
-const TEST_LOG_PATH = path.join(REPO_ROOT, TEST_LOG_REL);
+const TEST_LOG_PATH = path.join(HOME.home, TEST_LOG_REL); // the logger resolves log paths against the config home
 
 const REQUEST_TIMEOUT_MS = 45000; // a CEILING, not a wait - generous so a loaded CI box cannot flake it
 const RELOAD_BUDGET_MS = 8000; // generous: fs.watch latency + 150ms debounce + connect + handshake
@@ -170,7 +175,7 @@ const EMPTY_EXPOSE = JSON.stringify({ version: 1, upstreams: [], expose: [] }, n
     // Start the gateway with an EMPTY expose.json (no upstreams).
     fs.writeFileSync(EXPOSE_PATH, EMPTY_EXPOSE);
 
-    child = spawn(process.execPath, [ENTRY], { cwd: REPO_ROOT, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+    child = spawn(process.execPath, [ENTRY], { cwd: REPO_ROOT, env: HOME.env(), stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
     const client = makeClient(child);
     child.on('error', (err) => client.rejectAll(new Error('child error: ' + ((err && err.message) || err))));
 

@@ -33,10 +33,15 @@ const { spawn } = require('node:child_process');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const ENTRY = path.join(REPO_ROOT, 'bin', 'toolfunnel.js');
+const { makeTempHome } = require('./helpers/temp-home');
+// One scratch config home for every gateway this file spawns - never the repo's stores.
+const HOME = makeTempHome({ prefix: 'tf-framing-limits-' });
+process.on('exit', () => HOME.cleanup());
 const FIXTURE = path.join(__dirname, 'fixtures', 'servers', 'framing-upstream.js');
 const { McpClient } = require(path.join(REPO_ROOT, 'src', 'mcp', 'mcp-client.js'));
 
 const OVERSIZE = 4718592; // matches the fixture: ~4.5 MiB, past the 4 MiB cap
+const CAP = 4 * 1024 * 1024; // MAX_MESSAGE_BYTES on both sides: a body of exactly this size is LEGAL
 
 const results = [];
 function check(name, fn) {
@@ -50,6 +55,7 @@ function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 function spawnGateway() {
   const child = spawn(process.execPath, [ENTRY], {
     cwd: REPO_ROOT,
+    env: HOME.env(),
     stdio: ['pipe', 'pipe', 'pipe'],
     windowsHide: true,
   });
@@ -223,13 +229,17 @@ function spawnGateway() {
       });
       assert.ok(init && init.result, 'baseline initialize failed');
 
+      // Wait for the exit itself; the cap only bounds a real failure (a loaded CI box can take
+      // several seconds to read 4 MiB and shut down).
+      const floodAt = Date.now();
       gw.child.stdin.write('x'.repeat(OVERSIZE)); // no framing, no newline
       const outcome = await Promise.race([
         gw.exited,
-        sleep(6000).then(() => null),
+        sleep(30000).then(() => null),
       ]);
       check('L4: the flooded session ENDS (process exits) instead of buffering toward OOM', () => {
-        assert.ok(outcome, 'the gateway is still running with the flood buffered');
+        assert.ok(outcome, 'the gateway is still running ' + (Date.now() - floodAt) +
+          ' ms after the flood, with the flood buffered');
       });
       check('L4: the refusal is announced with a clean -32700 before the session ends', () => {
         const err = gw.lines.find((l) => l && l.error && l.error.code === -32700 &&
@@ -244,13 +254,63 @@ function spawnGateway() {
   }
 
   // ── Report ──────────────────────────────────────────────────────────────────────────────────
+  // ── L5: client - a reply whose body is EXACTLY the cap is delivered (boundary, not over) ──────
+  // The buffer watchdog fired on `buf.length > cap` while a legal at-cap frame was still arriving
+  // (header bytes + cap body > cap with no complete frame yet) and dropped the connection.
+  {
+    const client = new McpClient({ id: 'limits-at-cap', command: process.execPath, args: [FIXTURE], requestTimeoutMs: 1500, toolTimeoutMs: 8000 });
+    try {
+      await client.connect();
+      let atCap = null, atCapErr = null;
+      try { atCap = await client.callTool('sized', { bodyBytes: CAP }); } catch (e) { atCapErr = e; }
+      check('L5: a reply whose body is EXACTLY the cap is delivered (the cap is inclusive)', () => {
+        assert.ok(atCap, 'callTool("sized") rejected: ' + (atCapErr && atCapErr.message));
+        const text = atCap.content && atCap.content[0] && atCap.content[0].text;
+        assert.ok(typeof text === 'string' && text.length > CAP - 256, 'delivered text is ' + (text && text.length) + ' chars');
+      });
+      check('L5: the connection survives an at-cap reply', () => {
+        assert.strictEqual(client.connected, true, 'client dropped the connection');
+      });
+    } finally {
+      client.close();
+    }
+  }
+
+  // ── L6: server - a request whose body is EXACTLY the cap is answered (boundary, not over) ─────
+  {
+    const gw = spawnGateway();
+    try {
+      const init = await gw.request('initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'framing-limits.test.js', version: '0.0.0' } });
+      assert.ok(init && init.result, 'baseline initialize failed');
+      const mk = (pad) => JSON.stringify({ jsonrpc: '2.0', id: 7, method: 'tools/list', params: { pad } });
+      const overhead = Buffer.byteLength(mk(''), 'utf8');
+      const atCapBody = mk('x'.repeat(CAP - overhead));
+      assert.strictEqual(Buffer.byteLength(atCapBody, 'utf8'), CAP, 'test bug: body is not exactly the cap');
+      gw.child.stdin.write(`Content-Length: ${CAP}\r\n\r\n`);
+      gw.child.stdin.write(atCapBody);
+      const deadline = Date.now() + 8000;
+      let answered = null;
+      while (!answered && Date.now() < deadline && gw.getExitInfo() === null) {
+        answered = gw.lines.find((l) => l && l.id === 7 && (l.result || l.error));
+        if (!answered) await sleep(50);
+      }
+      check('L6: a request whose body is EXACTLY the cap is answered (session not ended)', () => {
+        assert.strictEqual(gw.getExitInfo(), null, 'the gateway ENDED the session on a legal at-cap frame: ' + JSON.stringify(gw.getExitInfo()));
+        assert.ok(answered && answered.result && Array.isArray(answered.result.tools), 'no result for id 7; last lines: ' + JSON.stringify(gw.lines.slice(-2)).slice(0, 300));
+      });
+    } finally {
+      try { gw.child.stdin.end(); } catch (_e) { /* ignore */ }
+      setTimeout(() => { if (gw.getExitInfo() === null && gw.child.exitCode === null && !gw.child.killed) { try { gw.child.kill(); } catch (_e) { /* ignore */ } } }, 500);
+    }
+  }
+
   for (const r of results) {
     console.log((r.ok ? 'ok   - ' : 'NOT OK - ') + r.name + (r.ok ? '' : '  :: ' + r.detail));
   }
   const failed = results.filter((r) => !r.ok);
   const total = results.length;
-  if (failed.length === 0 && total === 10) {
-    console.log(`\nPASS: framing-limits - ${total}/10 assertions (4 MiB frame cap holds on both sides; sessions survive refusals, floods are dropped)`);
+  if (failed.length === 0 && total === 13) {
+    console.log(`\nPASS: framing-limits - ${total}/13 assertions (4 MiB frame cap holds on both sides, inclusive; sessions survive refusals, floods are dropped)`);
     process.exit(0);
   } else {
     console.log(`\nFAIL: framing-limits - ${total - failed.length}/${total} assertions passed`);

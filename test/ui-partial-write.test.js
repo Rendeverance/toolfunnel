@@ -29,6 +29,8 @@ const os = require('node:os');
 const path = require('node:path');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
+const { useTempHome } = require('./helpers/temp-home');
+useTempHome({ prefix: 'tf-ui-partial-write-' }); // scratch config home, so the src/ modules below never resolve the repo's
 const { createUiServer } = require(path.join(REPO_ROOT, 'src', 'ui', 'server.js'));
 
 let fails = 0;

@@ -160,7 +160,8 @@ function makeProtocol(deps) {
     try {
       const docs = await registry.instructions(name);
       if (docs === undefined || docs === null) {
-        return errorResult(`toolfunnel_tool_instructions: no tool named "${name}"`);
+        return errorResult(`toolfunnel_tool_instructions: no tool named "${name}" - call toolfunnel_list_tools ` +
+          '(a filter narrows it) to find the right name.');
       }
       return okResult(docs);
     } catch (err) {
@@ -173,7 +174,7 @@ function makeProtocol(deps) {
   // ONLY through gatedRun (PreToolUse gate -> execute -> PostToolUse). This function
   // must NEVER call `execute` itself - that would bypass the gate and break the entire
   // safety case.
-  async function runTool(args) {
+  async function runTool(args, callOpts) {
     const a = args || {};
     const name = a.name;
     if (typeof name !== 'string' || name.length === 0) {
@@ -193,7 +194,9 @@ function makeProtocol(deps) {
     //    executor. A null/undefined resolution means "no such tool" - a clean error, not a throw.
     let resolution;
     try {
-      resolution = await registry.resolveExecution(name, toolArgs);
+      // callOpts { meta, progress } reach an upstream tool's forward; a local register
+      // tool ignores them (a script has no progress channel).
+      resolution = await registry.resolveExecution(name, toolArgs, callOpts);
     } catch (err) {
       return errorResult(`toolfunnel_run_tool: could not resolve "${name}": ${(err && err.message) || err}`);
     }
@@ -262,7 +265,8 @@ function makeProtocol(deps) {
 
     if (!resolution || typeof resolution.execute !== 'function') {
       return errorResult(
-        `toolfunnel_run_tool: tool "${name}" is not runnable (no executable resolution from the register)`
+        `toolfunnel_run_tool: tool "${name}" is not runnable (no executable resolution from the register) - ` +
+          'check the name with toolfunnel_list_tools; an upstream tool is missing while its server is disconnected or disabled.'
       );
     }
 
@@ -343,7 +347,7 @@ function makeProtocol(deps) {
   // ---- dispatch -----------------------------------------------------------
   // The server's single entry point. Pure routing; never throws - an unknown tool or any
   // internal failure becomes a clear error result (defensive by construction).
-  async function dispatch(toolName, args) {
+  async function dispatch(toolName, args, callOpts) {
     try {
       switch (toolName) {
         case META_TOOLS.LIST:
@@ -351,13 +355,14 @@ function makeProtocol(deps) {
         case META_TOOLS.INSTRUCTIONS:
           return await toolInstructions(args);
         case META_TOOLS.RUN:
-          return await runTool(args);
+          return await runTool(args, callOpts);
         case META_TOOLS.HOWTO:
           return await howtoTool(args);
         default: {
           const known = Object.values(META_TOOLS).join(', ');
           return errorResult(
-            `Unknown meta-tool "${toolName}". This MCP exposes only: ${known}.`
+            `Unknown tool "${toolName}". This MCP's own tools are: ${known}. Register and upstream tools are ` +
+              'listed by toolfunnel_list_tools and run with toolfunnel_run_tool.'
           );
         }
       }

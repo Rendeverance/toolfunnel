@@ -88,5 +88,13 @@ if (spawnSync('git', ['tag'], { cwd: ROOT, encoding: 'utf8' }).stdout !== tagsBe
 const scripts = JSON.parse(pkgBefore).scripts || {};
 if (!/run-all\.js/.test(scripts.prepublishOnly || '')) fail('package.json missing prepublishOnly test gate');
 
+// ── --notes value is never read as the LEVEL ──────────────────────────────────
+// `--notes minor` (a notes text that happens to be a level word) bumped MINOR: the level scan
+// looked at every arg, including the token after --notes.
+const r3 = spawnSync(process.execPath, [SCRIPT, '--dry-run', '--no-npm', '--notes', 'minor'], { cwd: ROOT, encoding: 'utf8', timeout: 60000 });
+if (r3.status !== 0) fail(`--notes dry-run exited ${r3.status}\nstderr: ${r3.stderr}`);
+const out3 = r3.stdout || '';
+if (!/^plan: \d+\.\d+\.\d+ -> \d+\.\d+\.\d+ \(patch\)/m.test(out3)) fail('the --notes VALUE was read as the level (want patch):\n' + out3);
+
 console.log('release.test.js: all assertions passed');
 process.exit(0);

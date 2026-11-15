@@ -10,7 +10,7 @@
 
 ![ToolFunnel in 60 seconds: scripts → register → identity → live MCP server → npm package](demo/toolfunnel-demo.gif)
 
-**📖 Full documentation: [the ToolFunnel User Manual](docs/MANUAL.pdf)** - installation, the web UI, writing tools, attaching MCP servers, the policy gate, packaging, and troubleshooting, all illustrated with screenshots and worked examples. This README is the overview; the manual is the reference.
+**📖 Full documentation: [the ToolFunnel User Manual](docs/MANUAL.pdf)** - installation, the web UI, writing tools, attaching MCP servers, the policy gate, packaging, and troubleshooting, all illustrated with screenshots and worked examples. This README is the overview; the manual is the reference. The manual covers 0.7.0, with a supplement for what changed in 0.8.0.
 
 ## The problem
 
@@ -112,25 +112,35 @@ gatedRun({ engine, ctx, toolName, args, execute })
 
 Hooks speak the Claude-Code hook protocol (event JSON on stdin, exit `2` to block), so an existing hook travels here unchanged. The load-bearing invariant, proven by test: a PreToolUse deny means `execute()` is never called. The shipped example hooks are **disabled by default** - enable one in `hooks/hooks.manifest.json` (or the UI's Hooks tab) to turn policy on. Writing hooks, matchers, and worked examples: [manual](docs/MANUAL.pdf).
 
+### Tool changes wait for you
+
+A tool's description goes straight into your model's context whether or not the tool is ever called, so an MCP server that quietly changes what its tools *say* after you've attached it can steer your model. ToolFunnel records every upstream tool's description and schema the first time it connects, and from then on:
+
+- **Same server version, changed or new tool** - held. The gateway keeps serving the text you approved (a new tool stays hidden), and calls to that tool are refused until you accept the change. Everything else keeps working.
+- **New server version** - approved and reported, because that is what an update looks like. Set `"strictApproval": true` on an upstream to hold every change for acceptance instead.
+
+The refusal tells the model which tool changed and which fields - never the new text. You read that with `toolfunnel changes` or in the UI, and accept it there, with `toolfunnel accept <upstream> [tool]`, or through the agent: a 2026-07-28 client that supports elicitation just asks you in the chat, and any other client can run `tf_accept_change` once you've said yes. Either way an agent-side accept passes your PreToolUse gate as `tf_accept_change`, so a hook can forbid them.
+
 ## Why it's different
 
 Hosting tools and proxying other MCP servers is a crowded space - but for my own use case, which is why I rolled my own solution, I wanted something different.
 
-A quick feature comparison as of Aug 2nd 2026:
+A quick feature comparison as of Aug 2nd 2026 (the tool-approval, protocol and wrap rows re-checked against each project's own docs on Sep 24th 2026):
 
 | Capability | ToolFunnel | FastMCP | mcpproxy-go | MetaMCP | mcp-anything |
 |---|:--:|:--:|:--:|:--:|:--:|
 | Config-declared polyglot tools (no SDK) | ✓ | ✗ (decorators) | partial (proxy only) | ✗ | ✓ |
 | Lean server-side exposure (briefs + schema on demand) | ✓ | partial | ✓ | ✗ | ✗ |
 | Server-side fail-closed policy gate (Pre/Post) | ✓ | ✓ | ✓ | ✓ | ✗ |
+| Changed tool descriptions held for your approval | ✓ | ✗ | ✓ | ✗ | ✗ |
 | Live attach / hot-reload, no restart | ✓ | ✗ | partial | partial | ✓ |
 | Non-Docker self-healing reconnect | ✓ | ✗ | partial (Docker) | partial (circuit-breaker) | ✗ |
 | Visibility **matrix** - lean default + per-tool promote-to-every-turn + hide | ✓ | ✗ | filter only | cherry-pick only | ✗ |
 | Zero runtime dependencies\* | ✓ (Node, no SDK) | ✗ (framework) | ✓ (Go) | ✗ (Docker) | ✓ (Go) |
 | Runtime dependencies (installed / bundled) | **0\*** | many | 40+ (bundled) | many | bundled (Go) |
 | Config web UI | ✓ | ✗ | ✓ | ✓ | ✗ |
-| Dual-era protocol (2026-07-28 + legacy), client & server side | ✓ | ✗<br>✓(beta) | ✗ | ✗ | ✗ |
-| Transparent single-server wrap (invisible, era-bridging) | ✓ | ✗ | ✗ | ✗ | ✗ |
+| Dual-era protocol (2026-07-28 + legacy), client & server side | ✓ | ✓ (4.0) | ✗ | ✗ | ✗ |
+| Transparent single-server wrap (invisible, era-bridging) | ✓ | partial (4.0: era pinning, no bridge) | ✗ | ✗ | ✗ |
 
 Beyond the dependency count, four capability choices set ToolFunnel apart from a pure proxy like mcpproxy-go:
 

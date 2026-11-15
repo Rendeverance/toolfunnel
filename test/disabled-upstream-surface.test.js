@@ -33,6 +33,8 @@ const path = require('node:path');
 const assert = require('node:assert');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
+const { useTempHome } = require('./helpers/temp-home');
+useTempHome({ prefix: 'tf-disabled-surface-' }); // scratch config home, so the src/ modules below never resolve the repo's
 const { Aggregator } = require(path.join(REPO_ROOT, 'src', 'mcp', 'aggregator.js'));
 const { loadExposeStore } = require(path.join(REPO_ROOT, 'src', 'mcp', 'expose-store.js'));
 const MOCK_SERVER = path.join(REPO_ROOT, 'mcp', 'servers', 'mock-upstream', 'server.js');

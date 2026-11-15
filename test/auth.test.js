@@ -29,6 +29,8 @@ const path = require('node:path');
 const { generateKeyPair, exportJWK, SignJWT } = require('jose');
 
 const ROOT = path.resolve(__dirname, '..');
+const { useTempHome } = require('./helpers/temp-home');
+const HOME = useTempHome({ prefix: 'tf-auth-' }); // scratch config home, claimed BEFORE any src/ module captures the repo's
 const authConfig = require(path.join(ROOT, 'src', 'auth', 'config.js'));
 const resourceServer = require(path.join(ROOT, 'src', 'auth', 'resource-server.js'));
 const { createHttpMcpServer } = require(path.join(ROOT, 'src', 'mcp', 'http-transport.js'));
@@ -389,7 +391,7 @@ const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
     // ════════════════════════════════════════════════════════════════════════════════════════
     // Reset to a clean disabled state for the UI round-trip.
     authConfig.setConfig({ enabled: false, issuer: '', audience: '', jwksUri: '' });
-    uiHost = createUiServer({ host: '127.0.0.1', port: 0, root: ROOT });
+    uiHost = createUiServer({ host: '127.0.0.1', port: 0, root: HOME.home });
     const ui = await uiHost.start();
     const UH = '127.0.0.1';
 
@@ -422,7 +424,7 @@ const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
     // handled per persona, so an assertion sees the pin's refusal - not a 404-fallback error.
     discoServer = http.createServer((req, res) => {
       const base = `http://127.0.0.1:${discoServer.address().port}`;
-      const wk = /^\/(same|cross|redir)\/\.well-known\/(openid-configuration|oauth-authorization-server)$/.exec(req.url || '');
+      const wk = /^\/(same|cross|redir|mixed)\/\.well-known\/(openid-configuration|oauth-authorization-server)$/.exec(req.url || '');
       if (!wk) { res.writeHead(404, { 'Content-Type': 'application/json' }); return res.end('{}'); }
       if (wk[1] === 'same') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -431,6 +433,16 @@ const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
       if (wk[1] === 'cross') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         return res.end(JSON.stringify({ jwks_uri: 'https://elsewhere.test/jwks' }));
+      }
+      if (wk[1] === 'mixed') {
+        // The realistic shape: the FIRST candidate answers with a cross-origin jwks_uri, the SECOND is
+        // a plain 404. Last-error-wins reported the 404 and lost the actionable refusal.
+        if (wk[2] === 'openid-configuration') {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          return res.end(JSON.stringify({ jwks_uri: 'https://elsewhere.test/jwks' }));
+        }
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        return res.end('{}');
       }
       // redir - bounce toward the same-origin persona; discovery must REFUSE to follow.
       res.writeHead(302, { Location: `${base}/same/.well-known/openid-configuration` });
@@ -452,6 +464,17 @@ const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
     assert.ok(/not on the issuer origin/i.test(crossErr.message), 'F2: rejection names the origin pin (got: ' + crossErr.message + ')');
     assert.ok(/jwksUri/.test(crossErr.message), 'F2: rejection points at the explicit jwksUri escape hatch');
     pass.push('F2: cross-origin discovered jwks_uri refused (origin pin) with the explicit-trust hint');
+
+    // F4: the refusal SURVIVES a later candidate's 404. The origin-pin verdict is an operator-config
+    // finding no later candidate can remedy, so it is thrown immediately - not overwritten by
+    // whatever the last candidate happened to say.
+    let mixedErr = null;
+    try { await resourceServer.resolveJwksUri({ issuer: `${discoBase}/mixed` }, 3000); }
+    catch (e) { mixedErr = e; }
+    assert.ok(mixedErr, 'F4: mixed persona must reject');
+    assert.ok(/not on the issuer origin/i.test(mixedErr.message), 'F4: the cross-origin refusal must be the reported error, not the later 404 (got: ' + mixedErr.message + ')');
+    assert.ok(/jwksUri/.test(mixedErr.message), 'F4: rejection still points at the explicit jwksUri escape hatch');
+    pass.push('F4: a cross-origin refusal is not overwritten by a later candidate 404');
 
     // F3: the escape hatch - an EXPLICIT cfg.jwksUri is honoured untouched (operator-stated trust;
     // no discovery request is made, so the pin does not apply). This is how cross-origin IdPs

@@ -13,7 +13,7 @@
  *   D - tf_tool_set { action:'unhide' } clears it; tf_list shows it again.
  *   E - hide preserves a co-set axis (enabled) - independent merge, not replace.
  *
- * NON-DESTRUCTIVE: tools/tools.state.json is snapshotted and restored. Node built-ins only.
+ * NON-DESTRUCTIVE (every store named below lives in a scratch config home, never the repo's): tools/tools.state.json is snapshotted and restored. Node built-ins only.
  *
  * Run:  node test/hidden.test.js     (exit 0 = pass, non-zero = fail)
  */
@@ -24,9 +24,13 @@ const assert = require('node:assert');
 const { spawnSync } = require('node:child_process');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
-const STATE_PATH = path.join(REPO_ROOT, 'tools', 'tools.state.json');
-const TF_SET = path.join(REPO_ROOT, 'tools', 'scripts', 'tf-tool-set.js');
-const TF_LIST = path.join(REPO_ROOT, 'tools', 'scripts', 'tf-list.js');
+const { makeTempHome } = require('./helpers/temp-home');
+// The management scripts run against a scratch config home (pre-seeded so they exist inside it), never the repo's.
+const HOME = makeTempHome({ prefix: 'tf-hidden-', seed: true });
+process.on('exit', () => HOME.cleanup());
+const STATE_PATH = HOME.state;
+const TF_SET = path.join(HOME.scriptsDir, 'tf-tool-set.js');
+const TF_LIST = path.join(HOME.scriptsDir, 'tf-list.js');
 const TARGET = 'echo'; // a real register tool
 
 const results = [];
@@ -45,7 +49,7 @@ function writeState(obj) { fs.writeFileSync(STATE_PATH, JSON.stringify(obj, null
 function runScript(scriptPath, args) {
   const res = spawnSync(process.execPath, [scriptPath], {
     cwd: REPO_ROOT,
-    env: Object.assign({}, process.env, { TOOLFUNNEL_TOOL_ARGS: JSON.stringify(args == null ? null : args) }),
+    env: HOME.env({ TOOLFUNNEL_TOOL_ARGS: JSON.stringify(args == null ? null : args) }),
     encoding: 'utf8',
     windowsHide: true,
   });

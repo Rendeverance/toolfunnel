@@ -28,7 +28,11 @@ const { spawn } = require('node:child_process');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const ENTRY = path.join(REPO_ROOT, 'bin', 'toolfunnel.js');
-const ROOT_CONFIG = path.join(REPO_ROOT, 'toolfunnel.json');
+const { makeTempHome } = require('./helpers/temp-home');
+// The e2e phase writes toolfunnel.json into a scratch config home the spawned gateway is pointed
+// at - never the repo root's, which is the developer's own identity file.
+const HOME = makeTempHome({ prefix: 'tf-servercfg-home-' });
+const HOME_CONFIG = HOME.serverConfig;
 const PKG_VERSION = require(path.join(REPO_ROOT, 'package.json')).version;
 
 const { loadServerConfig } = require(path.join(REPO_ROOT, 'src', 'core', 'server-config.js'));
@@ -49,7 +53,7 @@ function scratchWith(content) {
 /** Spawn the real gateway, run initialize, resolve serverInfo. Kills the child either way. */
 function initializeServerInfo() {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [ENTRY], { cwd: REPO_ROOT, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+    const child = spawn(process.execPath, [ENTRY], { cwd: REPO_ROOT, env: HOME.env(), stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
     const timer = setTimeout(() => { try { child.kill(); } catch (_e) {} reject(new Error('initialize timed out')); }, 15000);
     let buf = '';
     child.stdout.setEncoding('utf8');
@@ -80,7 +84,6 @@ function initializeServerInfo() {
 }
 
 (async () => {
-  const rootCfgSnap = fs.existsSync(ROOT_CONFIG) ? fs.readFileSync(ROOT_CONFIG, 'utf8') : null;
   const scratchDirs = [];
   let fatal = null;
 
@@ -135,7 +138,7 @@ function initializeServerInfo() {
     });
 
     // D - E2E at the wire: the spawned gateway introduces itself per the root config.
-    fs.writeFileSync(ROOT_CONFIG, JSON.stringify({ serverName: 'wrapped-mcp-e2e', serverVersion: '9.9.9' }, null, 2) + '\n');
+    fs.writeFileSync(HOME_CONFIG, JSON.stringify({ serverName: 'wrapped-mcp-e2e', serverVersion: '9.9.9' }, null, 2) + '\n');
     const custom = await initializeServerInfo();
     check('D: initialize reports the configured identity (wrapped-MCP handshake)', () => {
       assert.ok(custom, 'no serverInfo in the initialize result');
@@ -143,7 +146,7 @@ function initializeServerInfo() {
       assert.strictEqual(custom.version, '9.9.9', 'got ' + JSON.stringify(custom));
     });
     // Remove the config and confirm the default identity is back (no sticky state).
-    fs.unlinkSync(ROOT_CONFIG);
+    fs.unlinkSync(HOME_CONFIG);
     const plain = await initializeServerInfo();
     check('D: without the file the gateway is plain "toolfunnel" @ the package version', () => {
       assert.ok(plain, 'no serverInfo in the initialize result');
@@ -153,10 +156,7 @@ function initializeServerInfo() {
   } catch (err) {
     fatal = err;
   } finally {
-    try {
-      if (rootCfgSnap === null) { if (fs.existsSync(ROOT_CONFIG)) fs.unlinkSync(ROOT_CONFIG); }
-      else fs.writeFileSync(ROOT_CONFIG, rootCfgSnap);
-    } catch (_e) { /* best-effort */ }
+    HOME.cleanup();
     for (const d of scratchDirs) {
       try { fs.rmSync(d, { recursive: true, force: true }); } catch (_e) { /* best-effort */ }
     }

@@ -35,6 +35,8 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
+const { useTempHome } = require('./helpers/temp-home');
+useTempHome({ prefix: 'tf-matcher-compile-' }); // scratch config home, so the src/ modules below never resolve the repo's
 const { matches, matcherError } = require(path.join(REPO_ROOT, 'src', 'core', 'matcher.js'));
 const { loadManifest } = require(path.join(REPO_ROOT, 'src', 'core', 'hook-loader.js'));
 const { HookEngine } = require(path.join(REPO_ROOT, 'src', 'core', 'hook-engine.js'));

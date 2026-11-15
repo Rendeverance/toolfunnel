@@ -40,6 +40,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const reaper = require('../core/child-reaper');
+const { takeWithinCap } = require('../core/output-cap');
 
 const { makeProtocol } = require('./protocol');
 const { gatedRun } = require('./gated-run');
@@ -79,16 +80,16 @@ const SCRIPTS_ROOT = path.join(ROOT, 'tools', 'scripts');
 // behaviourally identical to the bare gateway until an upstream + expose entry is added.
 const EXPOSE_PATH = path.join(ROOT, 'mcp', 'expose.json');
 
-// Every legacy revision this server speaks, NEWEST FIRST (0.7.0). initialize echoes the
+// Every legacy revision this server speaks, NEWEST FIRST. initialize echoes the
 // requested member (2.1); an unsupported string gets LEGACY_VERSIONS[0] (lifecycle SHOULD:
 // "the latest version supported by the server").
 const LEGACY_VERSIONS = Object.freeze(['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05']);
-// Hard cap on JSON-RPC batch members (0.7.0) - see handleBatch. Well past any real client's
+// Hard cap on JSON-RPC batch members - see handleBatch. Well past any real client's
 // batching, far short of buying unbounded gated execution with one message.
 const MAX_BATCH_MEMBERS = 64;
-// LOCAL shell-tool bounds (0.7.0), matching tools/registry.js's script executor: 120 s (the
+// LOCAL shell-tool bounds, matching tools/registry.js's script executor: 120 s (the
 // upstream PAYLOAD window) and a 4 MiB output ceiling. Without a clock a hanging shell tool
-// wedged the serialised stdio chain and starved every later request, `ping` included.
+// would wedge the serialised stdio chain and starve every later request, `ping` included.
 // Test seam: the suite proves the timeout/cap BEHAVIOUR by shrinking the windows via env;
 // production never sets them (same seam as tools/registry.js).
 const SHELL_TIMEOUT_MS = Number(process.env.TOOLFUNNEL_SHELL_TIMEOUT_MS) > 0
@@ -144,6 +145,11 @@ function logErr(...parts) {
   }
 }
 
+/** An unknown field in expose.json, named at start and on every reload (a misspelt flag does nothing). */
+function warnConfigField(message) {
+  logErr(message);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // Registry adapter - bridge the real Registry to what protocol.runTool consumes.
 //
@@ -186,11 +192,10 @@ function makeRegistryAdapter(registry, opts) {
   }
 
   /**
-   * Run a shell command, normalising to { ok, code, stdout, stderr }. ASYNC spawn - the old
-   * spawnSync blocked the event loop for the tool's whole duration, stalling every concurrent
-   * HTTP client (and pings) behind one long shell tool (0.5.0 debt). Its
-   * only caller is the gated async execute thunk, so the promise is awaited naturally; the
-   * spawn-failure contract (throw/reject with the same message) is unchanged.
+   * Run a shell command, normalising to { ok, code, stdout, stderr }. ASYNC spawn - a
+   * spawnSync would block the event loop for the tool's whole duration, stalling every concurrent
+   * HTTP client (and pings) behind one long shell tool. Its
+   * only caller is the gated async execute thunk, so the promise is awaited naturally.
    */
   function runShell(command, args) {
     return new Promise((resolve, reject) => {
@@ -213,9 +218,9 @@ function makeRegistryAdapter(registry, opts) {
       let stdout = '';
       let stderr = '';
       let settled = false;
-      // TIMED + BOUNDED (0.7.0) - the twin of the script executor's fix in tools/registry.js. A
-      // shell tool with no clock wedged the serialised stdio chain for its whole lifetime, and
-      // unbounded accumulation made a chatty tool a memory risk in the gateway process.
+      // TIMED + BOUNDED - the twin of the script executor's bounds in tools/registry.js. A
+      // shell tool with no clock would wedge the serialised stdio chain for its whole lifetime, and
+      // unbounded accumulation would make a chatty tool a memory risk in the gateway process.
       const finish = (result) => {
         if (settled) return;
         settled = true;
@@ -248,8 +253,10 @@ function makeRegistryAdapter(registry, opts) {
         child.stdout.setEncoding('utf8');
         child.stdout.on('data', (d) => {
           if (shOutBytes >= MAX_SHELL_OUTPUT_BYTES) return;
-          stdout += d;
-          shOutBytes += Buffer.byteLength(d, 'utf8');
+          const kept = takeWithinCap(d, shOutBytes, MAX_SHELL_OUTPUT_BYTES);
+          stdout += kept;
+          shOutBytes += Buffer.byteLength(kept, 'utf8');
+          if (kept.length < d.length) shOutBytes = MAX_SHELL_OUTPUT_BYTES; // cut at a character: the cap is reached
           if (shOutBytes >= MAX_SHELL_OUTPUT_BYTES) {
             killShellTree(child);
             finish({ ok: false, code: -1, stdout, stderr: stderr + '\nshell tool output exceeded the cap and was terminated', outputCapped: true });
@@ -260,8 +267,10 @@ function makeRegistryAdapter(registry, opts) {
         child.stderr.setEncoding('utf8');
         child.stderr.on('data', (d) => {
           if (shErrBytes >= MAX_SHELL_OUTPUT_BYTES) return;
-          stderr += d;
-          shErrBytes += Buffer.byteLength(d, 'utf8');
+          const kept = takeWithinCap(d, shErrBytes, MAX_SHELL_OUTPUT_BYTES);
+          stderr += kept;
+          shErrBytes = kept.length < d.length ? MAX_SHELL_OUTPUT_BYTES : shErrBytes + Buffer.byteLength(kept, 'utf8');
+          if (shErrBytes >= MAX_SHELL_OUTPUT_BYTES) stderr += '\n[stderr truncated at cap]';
         });
       }
       child.on('error', (err) => {
@@ -326,10 +335,10 @@ function makeRegistryAdapter(registry, opts) {
     },
 
     // Build the { execute, toolName, args, mode } resolution protocol.runTool hands to gatedRun.
-    resolveExecution(nameOrId, args) {
+    resolveExecution(nameOrId, args, callOpts) {
       const id = resolveId(nameOrId);
       // ENABLED means "lean-visible AND runnable" (tool-state.js) - the off-switch must switch the
-      // tool OFF, not merely hide it from the lean list (0.7.0). Read FRESH like list()
+      // tool OFF, not merely hide it from the lean list. Read FRESH like list()
       // so a UI toggle is live. Disabled resolves to null -> the existing clean "not runnable"
       // error; indistinguishable from absent, which is the point.
       const state = toolStatePath ? loadToolState(toolStatePath) : null;
@@ -376,7 +385,7 @@ function makeRegistryAdapter(registry, opts) {
       const agg = liveAggregator();
       if (!agg || typeof agg.resolveLeanExecution !== 'function') return null;
       let fwd = null;
-      try { fwd = agg.resolveLeanExecution(nameOrId, args); } catch (_e) { fwd = null; }
+      try { fwd = agg.resolveLeanExecution(nameOrId, args, callOpts); } catch (_e) { fwd = null; }
       if (!fwd || typeof fwd.execute !== 'function') return null;
       return { execute: fwd.execute, toolName: fwd.toolName, args: args == null ? {} : args, mode: 'gateway' };
     },
@@ -446,7 +455,7 @@ function buildProtocol() {
   // The aggregator over expose.json (EMPTY by default -> nothing connects).
   // loadExposeStore on a missing/empty file returns an empty store; Aggregator over an empty store
   // advertises no curated-direct tools and connectAll() is an instant no-op.
-  const store = loadExposeStore(EXPOSE_PATH);
+  const store = loadExposeStore(EXPOSE_PATH, { warnUnknown: warnConfigField });
   build.aggregator = new Aggregator({
     store, gatewayRoot: ROOT,
     // The WRAPPED upstream is exempt from the path-isolation guard (transparent-wrapper mode,
@@ -597,7 +606,7 @@ function handleToolsList(protocol, aggregator, opts) {
     if (res.parseError) warnCorruptToolState(statePath);
   }
 
-  // ── PASSTHROUGH (0.6.0): the transparent-wrapper mode ────────────────────────────────────────
+  // ── PASSTHROUGH: the transparent-wrapper mode ────────────────────────────────────────────────
   // When tools.state.json carries `"passthrough": "<upstreamId>"`, the advertised surface is
   // EXACTLY that upstream's tools (real schemas, implicitly hot) - no meta-tools, no locals, no
   // curated-direct. handleToolsCall routes by the same rule, so the callable surface stays equal
@@ -721,9 +730,9 @@ function passthroughDefinitions(aggregator, state, upstreamId) {
   }
   try {
     // The upstream's RAW discovered defs - a wrapped surface must advertise the tool exactly as
-    // the upstream does (annotations, title, outputSchema, future fields). The old projection to
-    // {name, description, inputSchema} made all 13 real server-everything tools differ from a
-    // direct connection (found wire-testing the wrap, 2026-07-17). leanToolDefinitions still drives the walk: it
+    // the upstream does (annotations, title, outputSchema, future fields); a projection to
+    // {name, description, inputSchema} would make it differ from a direct connection.
+    // leanToolDefinitions still drives the walk: it
     // carries the SURFACED name (the stable enabled:false key) and the collision guard.
     const rawByName = new Map();
     if (typeof aggregator.toolsByUpstream === 'function') {
@@ -835,7 +844,44 @@ function localToolDefinition(entry) {
   return { name: entry.id, description, inputSchema: schema };
 }
 
+/**
+ * The unknown-tool error with the next step in it (an agent
+ * recovers from "not found, call X", and retries a bare "not found" until it gives up). It names only
+ * what THIS client can see: the funnel listing when toolfunnel_list_tools AND toolfunnel_run_tool are
+ * on its surface, else tools/list alone - never a hidden meta-tool (lockdown) and never ToolFunnel
+ * under a wrap. recovery-hints.test.js.
+ * @param {string} name
+ * @param {boolean} funnelListing  both funnel meta-tools are visible to this client
+ */
+function unknownToolText(name, funnelListing) {
+  const base = `Unknown tool ${JSON.stringify(String(name))}. Call tools/list to see the tools available right now`;
+  return funnelListing
+    ? base + '; tools reached through toolfunnel_run_tool are listed by toolfunnel_list_tools.'
+    : base + '.';
+}
+
+/**
+ * tools/call: routeToolsCall, with one step either side for a held tool change. A modern caller
+ * that can answer a form question is ASKED to accept the change (MRTR input_required) instead of
+ * refused, and its retry carrying the user's yes accepts that exact change and runs the call.
+ */
 async function handleToolsCall(protocol, aggregator, deps, params) {
+  const d = deps || {};
+  let p = params || {};
+  const ask = d.modernCaller === true && typeof p.requestState === 'string' ? takeApprovalAsk(p.requestState) : null;
+  if (ask) {
+    if (ask.name !== p.name) return { content: [{ type: 'text', text: 'unknown or expired requestState' }], isError: true };
+    const notAccepted = await answerApprovalAsk(aggregator, d, ask, p.inputResponses);
+    if (notAccepted) return notAccepted;
+    p = Object.assign({}, p);
+    delete p.requestState;
+    delete p.inputResponses;
+  }
+  const result = await routeToolsCall(protocol, aggregator, d, p);
+  return askToAccept(result, d, p.name) || result;
+}
+
+async function routeToolsCall(protocol, aggregator, deps, params) {
   const p = params || {};
   const name = p.name;
   const args = p.arguments;
@@ -898,10 +944,14 @@ async function handleToolsCall(protocol, aggregator, deps, params) {
       const meta = stripProtocolMeta(p._meta);
       return await runLeanForward(aggregator, { engine: d0.engine, ctx: d0.ctx }, surfaced, args,
         { calledName: name, meta, cancelKey: d0.cancelKey || null, modernCaller: d0.modernCaller === true,
-          clientCapabilities: d0.clientCapabilities || null });
+          clientCapabilities: d0.clientCapabilities || null, progress: d0.progress || null });
     }
-    return { content: [{ type: 'text', text: `Unknown tool "${name}".` }], isError: true };
+    return { content: [{ type: 'text', text: unknownToolText(name, false) }], isError: true };
   }
+
+  // Whether the funnel listing is on THIS client's surface (for the unknown-tool hint): both meta-tools
+  // hot - a lockdown that hides them must not be undone by an error message naming them.
+  const funnelListing = isToolHot(state, 'toolfunnel_list_tools', true) && isToolHot(state, 'toolfunnel_run_tool', true);
 
   // 1. A meta-tool - but callable ONLY while it is on the advertised top-level surface (hot, default
   //    true). A meta HIDDEN via hot:false is dropped from tools/list AND becomes uncallable, so the
@@ -910,10 +960,13 @@ async function handleToolsCall(protocol, aggregator, deps, params) {
   //    local/upstream tool: this check runs FIRST, so a hot meta always wins precedence.)
   if (isMetaTool(protocol, name)) {
     if (isToolHot(state, name, true)) {
-      return wrapProtocolResult(await protocol.dispatch(name, args || {}));
+      // The caller's request _meta and progress sink ride into the meta-tool: toolfunnel_run_tool on
+      // an upstream tool forwards the token and relays its progress.
+      return wrapProtocolResult(await protocol.dispatch(name, args || {},
+        { meta: stripProtocolMeta(p._meta), progress: d0.progress || null }));
     }
     // Hidden meta-tool: not advertised, so not callable - the clean unknown-tool error (never run it).
-    return { content: [{ type: 'text', text: `Unknown tool "${name}".` }], isError: true };
+    return { content: [{ type: 'text', text: unknownToolText(name, funnelListing) }], isError: true };
   }
 
   if (d0.registry && isPromotedLocal(d0.registry, state, name)) {
@@ -921,14 +974,14 @@ async function handleToolsCall(protocol, aggregator, deps, params) {
   }
 
   if (aggregator && typeof aggregator.isExposed === 'function' && aggregator.isExposed(name)) {
-    // enabled:false must actually switch the tool OFF (tool-state contract: "AND runnable" -
-    // 0.7.0): the same clean unknown-tool error as every other not-on-the-surface call,
+    // enabled:false must actually switch the tool OFF (tool-state contract: "AND runnable"):
+    // the same clean unknown-tool error as every other not-on-the-surface call,
     // so a disabled tool is indistinguishable from an absent one.
     if (!isToolEnabled(state, name)) {
-      return { content: [{ type: 'text', text: `Unknown tool "${name}".` }], isError: true };
+      return { content: [{ type: 'text', text: unknownToolText(name, funnelListing) }], isError: true };
     }
-    // The caller's non-protocol _meta rides the forward here too - the progressToken is the
-    // upstream-side keep-alive (beats are NOT fanned out to funnel clients; wrap mode relays them).
+    // The caller's non-protocol _meta rides the forward here too; with the transport's progress sink
+    // the token is scoped to this call and its beats come back to THIS caller.
     return await runCuratedDirect(aggregator, deps, name, args, stripProtocolMeta(p._meta));
   }
 
@@ -936,12 +989,13 @@ async function handleToolsCall(protocol, aggregator, deps, params) {
     // VERBATIM envelope, exactly like curated-direct - routing this through protocol.runTool's
     // lean adapter flattened multi-block content to one JSON-stringified text block and dropped
     // structuredContent: identical advertised def, broken results.
-    return await runHotUpstreamDirect(aggregator, { engine: d0.engine, ctx: d0.ctx }, name, args,
+    return await runHotUpstreamDirect(aggregator, { engine: d0.engine, ctx: d0.ctx, progress: d0.progress || null }, name, args,
       stripProtocolMeta(p._meta));
   }
 
-  // Not a meta-tool, not promoted, not exposed -> let the protocol return its clean unknown-tool error.
-  return wrapProtocolResult(await protocol.dispatch(name, args || {}));
+  // Not a meta-tool, not promoted, not exposed -> the clean unknown-tool error with its next step,
+  // naming only the meta-tools this client can see.
+  return { content: [{ type: 'text', text: unknownToolText(name, funnelListing) }], isError: true };
 }
 
 /**
@@ -1028,7 +1082,7 @@ async function runCuratedDirect(aggregator, deps, name, args, meta) {
   // isExposed() check and here only if the expose set mutated mid-call; guard for null.
   let resolution = null;
   try {
-    resolution = aggregator.resolveExposedExecution(name, args, meta);
+    resolution = aggregator.resolveExposedExecution(name, args, meta, d.progress || undefined);
   } catch (err) {
     return {
       content: [{ type: 'text', text: `curated tool "${name}" failed to resolve: ${(err && err.message) || String(err)}` }],
@@ -1075,7 +1129,7 @@ async function runCuratedDirect(aggregator, deps, name, args, meta) {
   // Success: result.output IS the upstream's own tools/call envelope ({ content, isError }).
   // Pass it THROUGH transparently so the client receives the upstream's real content blocks
   // (text / image / etc.) AND its isError flag - rather than the whole envelope JSON-stringified
-  // into one text block (which also used to swallow the upstream's isError). runCuratedDirect only
+  // into one text block (which would also swallow the upstream's isError). runCuratedDirect only
   // ever runs FORWARDED upstream tools, so result.output is always an MCP envelope here.
   const out = result.output;
   if (out && typeof out === 'object' && Array.isArray(out.content)) {
@@ -1110,7 +1164,7 @@ async function runHotUpstreamDirect(aggregator, deps, name, args, meta) {
   let resolution = null;
   try {
     if (aggregator && typeof aggregator.resolveRawExecution === 'function') {
-      resolution = aggregator.resolveRawExecution(name, args, meta);
+      resolution = aggregator.resolveRawExecution(name, args, meta, undefined, d.progress || undefined);
     }
   } catch (err) {
     return {
@@ -1120,7 +1174,7 @@ async function runHotUpstreamDirect(aggregator, deps, name, args, meta) {
   }
   if (!resolution || typeof resolution.execute !== 'function') {
     // Raced away (tools changed / upstream dropped) - clean unknown-tool error, never a silent run.
-    return { content: [{ type: 'text', text: `Unknown tool "${name}".` }], isError: true };
+    return { content: [{ type: 'text', text: unknownToolText(name, false) }], isError: true };
   }
   let result;
   try {
@@ -1201,7 +1255,7 @@ async function runLeanForward(aggregator, deps, surfaced, args, opts) {
   };
   let resolution = null;
   try {
-    resolution = aggregator.resolveRawExecution(surfaced, args, o.meta, track);
+    resolution = aggregator.resolveRawExecution(surfaced, args, o.meta, track, o.progress || undefined);
   } catch (_err) {
     return { content: [{ type: 'text', text: `tool "${called}" failed` }], isError: true };
   }
@@ -1289,7 +1343,7 @@ async function runLeanForward(aggregator, deps, surfaced, args, opts) {
 }
 
 /**
- * The wrap error-relay sentinel (0.7.0). A raw JSON-RPC error from the WRAPPED upstream
+ * The wrap error-relay sentinel. A raw JSON-RPC error from the WRAPPED upstream
  * must reach the caller as a JSON-RPC ERROR (README: identity, tools, results, ERRORS,
  * notifications - byte-for-byte), never a flattened `tool "X" failed` result. The tools/call
  * handlers return result ENVELOPES, so the verbatim error rides this sentinel to the dispatch
@@ -1364,10 +1418,10 @@ function wrapProtocolResult(result) {
     payload = result && result.output; // undefined -> stringifyContent guards it to a string
   }
 
-  return {
-    content: [{ type: 'text', text: stringifyContent(payload) }],
-    isError,
-  };
+  const out = { content: [{ type: 'text', text: stringifyContent(payload) }], isError };
+  // A held tool change refused on the lean route carries the same structured refusal as the others.
+  if (isError && result && result.error && result.error.withheld) out.structuredContent = result.error.withheld;
+  return out;
 }
 
 /** Return the first argument that is a non-empty string (used to pick the best error message). */
@@ -1464,7 +1518,7 @@ function normaliseBuild(arg) {
 // THROUGH the PreToolUse gate.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 /**
- * handleBatch - process a JSON-RPC batch (0.7.0). Batching exists ONLY in the
+ * handleBatch - process a JSON-RPC batch. Batching exists ONLY in the
  * 2025-03-26 revision (added there, removed again in 2025-06-18), so the CALLER owns the gate:
  * stdio admits a batch iff the session negotiated 2025-03-26 (build.negotiatedLegacyVersion);
  * HTTP admits on header discipline (absent-or-2025-03-26 MCP-Protocol-Version - the header
@@ -1479,9 +1533,9 @@ async function handleBatch(build, arr, connKey) {
   if (!Array.isArray(arr) || arr.length === 0) {
     return makeError(null, ERR.INVALID_REQUEST, 'Invalid Request: empty batch');
   }
-  // Enforced HERE so BOTH transports are covered by one rule (0.7.0):
+  // Enforced HERE so BOTH transports are covered by one rule:
   //  - a MODERN-shaped member is illegal in a batch at all (batching is 2025-03-26 only, which
-  //    predates the modern era), and admitting one skipped the modern header contract entirely;
+  //    predates the modern era), and admitting one would skip the modern header contract entirely;
   //  - members are executed SEQUENTIALLY with a gated tool call possible in every slot, so an
   //    uncapped array is unbounded work bought with one message.
   if (arr.length > MAX_BATCH_MEMBERS) {
@@ -1500,7 +1554,10 @@ async function handleBatch(build, arr, connKey) {
   return out.length ? out : null;
 }
 
-async function handleMessage(build, msg, connKey) {
+async function handleMessage(build, msg, connKey, opts) {
+  // opts.progress: the TRANSPORT's per-request progress sink - stdio writes the
+  // notification to its one client, HTTP to this request's own response stream. Absent = no relay.
+  const progress = opts && typeof opts.progress === 'function' ? opts.progress : null;
   // connKey: OPTIONAL stable per-connection identity from the transport. stdio (one client per
   // process) passes a constant; HTTP passes nothing - each POST is a fresh connection, so no
   // cross-POST identity exists in the modern (sessionless) era. Cancel translation under a wrap
@@ -1619,12 +1676,15 @@ async function handleMessage(build, msg, connKey) {
     if (method !== 'initialize' && modern.isModernRequest(msg)) {
       return await handleModernMessage(
         { protocol, aggregator, engine, ctx, registry, toolStatePath },
-        msg, hasId, id, method, wrapId, connKey
+        msg, hasId, id, method, wrapId, connKey, progress
       );
     }
 
     switch (method) {
       case 'initialize': {
+        // A notification (no id) MUST NOT get a reply (JSON-RPC 2.0) - the modern dispatcher's
+        // rule, applied here per case.
+        if (!hasId) return null;
         // CLIENT IDENTITY MIRRORING (wrap, STDIO only - HTTP is sessionless/multi-client, the
         // configured identity applies there). Capture the real downstream client's clientInfo;
         // if the live wrapped connection introduced itself differently, reconnect it INLINE -
@@ -1677,6 +1737,7 @@ async function handleMessage(build, msg, connKey) {
         return null;
 
       case 'tools/list':
+        if (!hasId) return null; // notification: no reply (see initialize)
         // 6.1, era-scoped: an unrecognised cursor answers -32602 on every cursor-AWARE revision
         // (2025-03-26+; our list is single-page so ANY present cursor is unknown). ONLY the
         // exempt 2024-11-05 keeps the frozen ignore. Scoped to STDIO sessions - the negotiated
@@ -1697,11 +1758,12 @@ async function handleMessage(build, msg, connKey) {
         const result = await handleToolsCall(protocol, aggregator,
           // clientCapabilities EXPLICITLY null (5.1): a legacy caller declares nothing
           // per-request and can never receive a backwards request.
-          { engine, ctx, registry, toolStatePath, cancelKey, modernCaller: false, clientCapabilities: null }, msg.params);
+          { engine, ctx, registry, toolStatePath, cancelKey, modernCaller: false, clientCapabilities: null, progress }, msg.params);
         // Observability (in-memory counters; never throws). Count every tools/call by name + whether
         // it errored (an isError envelope = a tool failure OR a PreToolUse denial). Single chokepoint
         // -> covers stdio AND the HTTP transport, which both route through handleMessage.
         metrics.record({ tool: (msg.params && msg.params.name) || 'unknown', ok: !(result && (result.isError === true || result.__tfRpcError)) });
+        if (!hasId) return null; // notification-shaped call: executed (side effects), but never replied to
         // Relayed upstream error: a LEGACY caller gets the wrapped upstream's own
         // JSON-RPC error VERBATIM - code, message, data.
         if (result && result.__tfRpcError) return relayedRpcError(id, result, false);
@@ -1709,6 +1771,7 @@ async function handleMessage(build, msg, connKey) {
       }
 
       case 'ping':
+        if (!hasId) return null; // notification: no reply (see initialize)
         // MCP keep-alive: empty result.
         return makeResult(id, {});
 
@@ -1851,7 +1914,7 @@ function handleUpstreamServerRequest(build, upstreamId, msg, client) {
     if (!msg || msg.id === undefined || msg.id === null) return;
     if (msg.method === 'ping') {
       // A server-initiated ping is a keepalive, not a capability - answer it (an error reply
-      // could read as a FAILED ping and kill a session that used to survive).
+      // could read as a FAILED ping and kill an otherwise healthy session).
       client.respondToServer(msg.id, {});
       return;
     }
@@ -2056,6 +2119,86 @@ function suspendForElicit(elicit, executePromise, upstreamId, calledName, rpcId)
   };
 }
 
+// ── Asking to accept a held tool change (MRTR) ─────────────────────────────────────────────────
+// The tool-change refusal, for a caller that can answer: one form question naming the tool and the
+// changed fields (never the new text), and a single-use requestState that remembers WHICH change
+// (by hash) the user was asked about, so a server that changes the tool again is asked about anew.
+
+const approvalAsks = new Map(); // requestState -> { name, upstream, tool, hash, timer }
+
+/** The input_required asking to accept a held tool change, or null when `result` is not that
+ *  refusal or this caller cannot answer a form question. */
+function askToAccept(result, deps, name) {
+  const w = result && result.isError === true && result.structuredContent;
+  if (!w || w.toolfunnel !== 'tool-change-withheld' || typeof w.hash !== 'string') return null;
+  if (deps.modernCaller !== true || !callerAcceptsElicit(deps.clientCapabilities, { mode: 'form' })) return null;
+  const token = require('node:crypto').randomBytes(16).toString('base64url');
+  const timer = setTimeout(() => approvalAsks.delete(token), ELICIT_TTL_MS);
+  if (typeof timer.unref === 'function') timer.unref();
+  approvalAsks.set(token, { name, upstream: w.upstream, tool: w.tool, hash: w.hash, timer });
+  const what = w.reason === 'new' ? 'is new since its server was approved' : `changed since it was approved (changed: ${w.changed.join(', ')})`;
+  return {
+    resultType: 'input_required',
+    inputRequests: {
+      r0: {
+        method: 'elicitation/create',
+        params: {
+          mode: 'form',
+          message: `ToolFunnel is holding back the tool ${JSON.stringify(w.tool)} on upstream ${JSON.stringify(w.upstream)}: it ${what}. ` +
+            'Review the new text with `toolfunnel changes` or in the ToolFunnel UI. Accept the change and run this call?',
+          requestedSchema: {
+            type: 'object',
+            properties: { accept: { type: 'boolean', title: 'Accept the change', default: false } },
+            required: ['accept'],
+          },
+        },
+      },
+    },
+    requestState: token,
+  };
+}
+
+/** Take (single use) the ask a requestState names, or null. */
+function takeApprovalAsk(token) {
+  const ask = approvalAsks.get(token);
+  if (!ask) return null;
+  approvalAsks.delete(token);
+  clearTimeout(ask.timer);
+  return ask;
+}
+
+/**
+ * Apply the user's answer and return null to run the call, or the result that stops it. A yes is
+ * an accept like any other agent-side one: it passes the PreToolUse gate as tf_accept_change, so
+ * a hook that denies agent accepts denies this one too. Only the asked change is accepted - one
+ * that moved on is simply refused, and asked about, again; one accepted meanwhile just runs.
+ * NEVER throws.
+ */
+async function answerApprovalAsk(aggregator, deps, ask, inputResponses) {
+  const stop = (text) => ({ content: [{ type: 'text', text }], isError: true });
+  const what = `the tool ${JSON.stringify(ask.tool)} on upstream ${JSON.stringify(ask.upstream)}`;
+  const held = (aggregator.toolChanges().pending || []).find((c) => c.upstream === ask.upstream && c.tool === ask.tool);
+  const r = inputResponses && typeof inputResponses === 'object' && !Array.isArray(inputResponses) ? inputResponses.r0 : null;
+  if (!(r && r.action === 'accept' && r.content && r.content.accept === true)) {
+    return stop(held ? `The change to ${what} was not accepted; it stays withheld.`
+      : `The call was not run. (The change to ${what} had already been accepted.)`);
+  }
+  if (!held || held.hash !== ask.hash) return null;
+  const res = await gatedRun({
+    engine: deps.engine,
+    ctx: deps.ctx,
+    toolName: 'tf_accept_change',
+    args: { upstream: ask.upstream, tool: ask.tool, hash: ask.hash },
+    execute: async () => aggregator.acceptChange(ask.upstream, ask.tool, ask.hash),
+  });
+  if (res.blocked) return stop(`ToolFunnel did not accept the change to ${what}: ${res.reason || 'a PreToolUse hook blocked it'}`);
+  if (!res.ok || !res.output.accepted.length) {
+    return stop(`ToolFunnel could not record the acceptance of ${what}` +
+      (res.ok ? ': the approvals file does not hold this change (see the gateway log - it may not be writable).' : `: ${(res.error && res.error.message) || res.error}`));
+  }
+  return null;
+}
+
 /**
  * armWrapChatter - sync the aggregator's wrapChatterUpstream from the on-disk wrap state.
  * handleMessage re-arms per message, but three paths bypass it: startup (notifications before the
@@ -2161,8 +2304,8 @@ async function forwardWrapped(aggregator, ptId, msg, hasId, id, wrapId, connKey)
   }
   let raw;
   // Track the forward's upstream rpc id LIVE (the setter fires synchronously at issue time inside
-  // McpClient._request) so a concurrent notifications/cancelled can be translated (N1). Keyed by
-  // (connection, client id) - raw client ids collide across connections (focused review).
+  // McpClient._request) so a concurrent notifications/cancelled can be translated. Keyed by
+  // (connection, client id) - raw client ids collide across connections.
   const mapKey = connKey !== undefined ? `${connKey}:${id}` : null;
   const track = mapKey === null ? undefined : { set rpcId(v) { inflightForwards.set(mapKey, v); } };
   inflightRawForwards.set(ptId, (inflightRawForwards.get(ptId) || 0) + 1); // elicitation-bridge binding invariant
@@ -2211,7 +2354,7 @@ async function forwardWrapped(aggregator, ptId, msg, hasId, id, wrapId, connKey)
  * modern revision removed (ping, logging/setLevel, the initialized notification) fall through
  * to method-not-found / ignored, per spec. NEVER throws (the caller's try/catch backstops it).
  */
-async function handleModernMessage(build, msg, hasId, id, method, wrapId, connKey) {
+async function handleModernMessage(build, msg, hasId, id, method, wrapId, connKey, progress) {
   const { protocol, aggregator, engine, ctx, registry, toolStatePath } = build;
 
   const vErr = modern.validateModernRequest(msg);
@@ -2251,7 +2394,7 @@ async function handleModernMessage(build, msg, hasId, id, method, wrapId, connKe
         // receive an elicitation is decided by what THIS request declared.
         { engine, ctx, registry, toolStatePath, modernCaller: true,
           clientCapabilities: (modern.getMeta(msg) || {})[modern.META_KEYS.CLIENT_CAPABILITIES] || null,
-          cancelKey: (connKey !== undefined && hasId) ? `${connKey}:${id}` : null },
+          cancelKey: (connKey !== undefined && hasId) ? `${connKey}:${id}` : null, progress: progress || null },
         msg.params
       );
       // Same observability chokepoint as the legacy path - both eras count in one place.
@@ -2334,7 +2477,7 @@ async function reloadExpose(build, send) {
   if (!build || typeof build !== 'object') return;
   let store;
   try {
-    store = loadExposeStore(EXPOSE_PATH);
+    store = loadExposeStore(EXPOSE_PATH, { warnUnknown: warnConfigField });
   } catch (err) {
     logErr('reloadExpose: cannot read expose.json (keeping current upstreams):', (err && err.message) || String(err));
     return;
@@ -2554,10 +2697,28 @@ function startConfigWatchers(buildArg, send) {
     if (stateTimer && typeof stateTimer.unref === 'function') stateTimer.unref();
   }
 
+  // Tool descriptor approvals: an accept written by the UI, the CLI or a management script
+  // re-applies to the cached listings - no reconnect (reloadApprovals signals list_changed itself
+  // when a served surface changed). The gateway's own writes land here too and change nothing.
+  let approvalsTimer = null;
+  function scheduleApprovals() {
+    if (approvalsTimer) clearTimeout(approvalsTimer);
+    approvalsTimer = setTimeout(() => {
+      approvalsTimer = null;
+      try {
+        const b = getBuild();
+        const agg = b && b.aggregator;
+        if (agg && typeof agg.reloadApprovals === 'function') agg.reloadApprovals();
+      } catch (_e) { /* reloadApprovals never throws; guard anyway */ }
+    }, DEBOUNCE_MS);
+    if (approvalsTimer && typeof approvalsTimer.unref === 'function') approvalsTimer.unref();
+  }
+
   try {
     const w = fs.watch(mcpDir, (_event, filename) => {
       // null filename (some platforms don't report it) -> reload to be safe; else only expose.json.
       if (!filename || path.basename(String(filename)) === 'expose.json') scheduleExpose();
+      if (!filename || path.basename(String(filename)) === 'tool-approvals.json') scheduleApprovals();
     });
     // unref so an FSWatcher never keeps the process alive after the client closes stdin - the
     // gateway must still exit naturally when its transport closes (it did before this feature).
@@ -2621,6 +2782,7 @@ function startConfigWatchers(buildArg, send) {
     }
   };
   pollWatch(EXPOSE_PATH, scheduleExpose);
+  pollWatch(path.join(mcpDir, 'tool-approvals.json'), scheduleApprovals);
   pollWatch(MANIFEST_PATH, scheduleHooks);
   pollWatch(path.join(hooksDir, 'hooks.state.json'), scheduleHooks);
   pollWatch(REGISTER_PATH, scheduleRegister);
@@ -2634,7 +2796,7 @@ function startConfigWatchers(buildArg, send) {
     // Clear any PENDING debounced reload so a change caught just before teardown can't fire a
     // reload against a torn-down build after the caller has moved on. (It would be a caught no-op,
     // but a truly-stopped watcher must not schedule work.)
-    for (const t of [exposeTimer, hooksTimer, registerTimer, stateTimer]) {
+    for (const t of [exposeTimer, hooksTimer, registerTimer, stateTimer, approvalsTimer]) {
       if (t) { try { clearTimeout(t); } catch (_e) { /* ignore */ } }
     }
     for (const w of openWatchers) {
@@ -2831,7 +2993,10 @@ function createStdioLoop(build) {
         }
         // 'stdio' - the pipe has exactly ONE client for the process lifetime, so a constant
         // connection key is a true identity (enables safe cancel translation under a wrap).
-        const response = await handleMessage(build, msg, 'stdio');
+        // The per-request progress sink: upstream beats for THIS request go to the one
+        // client with its own token - and stop once it is cancelled (it gets nothing more for that id).
+        const progress = (params) => { if (!(reg && reg.cancelled)) send({ jsonrpc: '2.0', method: 'notifications/progress', params }); };
+        const response = await handleMessage(build, msg, 'stdio', { progress });
         // Cancelled while in flight -> the client gets NO response for that id (spec); whatever
         // settled - the upstream's late result or our timeout envelope - is dropped here
         if (reg && reg.cancelled) return;
@@ -2978,6 +3143,37 @@ function createStdioLoop(build) {
   return { send, notify };
 }
 
+/**
+ * Stdio-mode interrupt handling. Without it, SIGINT / SIGTERM ends a stdio gateway without
+ * closing its upstream clients: once any hook or tool has spawned a child, child-reaper's own
+ * handler exits 130 on the spot (it exits only when it is the sole listener), so McpClient.close()
+ * never runs, and on POSIX an upstream that ignores stdin EOF outlives the gateway. With it, the
+ * first signal closes every upstream (tree-kill), then exits 130 (SIGINT) or 143 (SIGTERM); a
+ * second signal exits at once; a close that hangs is cut off after `graceMs`. With this listener
+ * present the reaper still sweeps its children but leaves the exit to us.
+ * stdio-shutdown.test.js pins it.
+ * @param {() => object|null} getBuild  the live build (its aggregator is closed)
+ * @param {{ graceMs?: number }} [opts]
+ */
+function installStdioShutdown(getBuild, opts) {
+  const graceMs = (opts && Number.isFinite(opts.graceMs) && opts.graceMs > 0) ? opts.graceMs : 5000;
+  let stopping = false;
+  const onSignal = (sig) => {
+    const code = sig === 'SIGTERM' ? 143 : 130;
+    if (stopping) { process.exit(code); return; } // a second signal: the user means it
+    stopping = true;
+    let agg = null;
+    try { const b = getBuild(); agg = b && b.aggregator; } catch (_e) { agg = null; }
+    const cutoff = setTimeout(() => process.exit(code), graceMs); // never hang on a stuck close
+    Promise.resolve()
+      .then(() => (agg && typeof agg.closeAll === 'function' ? agg.closeAll() : null))
+      .catch((err) => { logErr('shutdown: closing upstreams failed:', (err && err.message) || String(err)); })
+      .then(() => { clearTimeout(cutoff); process.exit(code); });
+  };
+  process.on('SIGINT', () => onSignal('SIGINT'));
+  process.on('SIGTERM', () => onSignal('SIGTERM'));
+}
+
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // Entry point.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -3000,6 +3196,11 @@ async function main() {
     });
     build = { protocol, aggregator: null, engine: null, ctx: null };
   }
+
+  // Interrupts close every upstream before exiting (installed before the first connect, so a
+  // Ctrl-C during startup closes what has already started). Reads `build` live: a hot reload
+  // swaps its aggregator.
+  installStdioShutdown(() => build);
 
   // Connect every ENABLED upstream BEFORE the loop starts so tools/list advertises the curated
   // surface from the first request. connectAll() NEVER throws (per-upstream failures land in
@@ -3034,7 +3235,7 @@ async function main() {
   // Bridge an upstream's server-initiated change-notifications (resources/prompts/tools list_changed,
   // resources/updated) to the era-aware notify path - so a modern client's subscriptions/listen
   // stream receives them, tagged + filtered. This is what makes wrapping a resource/prompt-bearing
-  // legacy MCP transparent for a modern client (2026-07-16).
+  // legacy MCP transparent for a modern client.
   if (build.aggregator) build.aggregator.onUpstreamNotification = (uid, n) => {
     // Under a wrap, ONLY the wrapped upstream's notifications reach the client - another attached
     // upstream's events are ones the impersonated server would never emit: a transparency tell
@@ -3049,8 +3250,8 @@ async function main() {
     (uid, m, c) => handleUpstreamServerRequest(build, uid, m, c);
 
   // Hot-reload: pick up expose.json / hook changes written by the tf_* tools or the UI (a separate
-  // process) with NO restart and NO user intervention - the missing primitive that previously made
-  // a live MCP attach or a hook change need a bounce. Auto is the default; the meta-tools/UI button
+  // process) with NO restart and NO user intervention, so a live MCP attach or a hook change
+  // needs no bounce. Auto is the default; the meta-tools/UI button
   // are just optional manual levers on top of this.
   startConfigWatchers(build, loop.notify);
 
@@ -3086,6 +3287,10 @@ module.exports = {
   armWrapChatter,
   // Elicitation bridge: the HTTP transport wires this as the aggregator's onUpstreamServerRequest handler.
   handleUpstreamServerRequest,
+  // Stdio interrupt handling (closes upstreams, then exits 130/143) - stdio-shutdown.test.js.
+  installStdioShutdown,
+  // The unknown-tool error with its recovery hint - recovery-hints.test.js.
+  unknownToolText,
   // Matrix helpers (exported for unit tests / reuse).
   localHotDefinitions,
   localToolDefinition,

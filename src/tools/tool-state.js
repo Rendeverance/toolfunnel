@@ -24,7 +24,7 @@
  *
  * Shape of tools.state.json:  { "<id>": { "enabled": false, "hidden": true, "hot": true }, ... }
  *
- * PASSTHROUGH (0.6.0): one RESERVED top-level key, `"passthrough": "<upstreamId>"` (a STRING,
+ * PASSTHROUGH: one RESERVED top-level key, `"passthrough": "<upstreamId>"` (a STRING,
  * unambiguous against the per-tool object entries). When set, the gateway becomes a transparent
  * wrapper for that one upstream: its tools ARE the advertised surface (real schemas, implicitly
  * hot), the meta-tools and everything else are hidden and uncallable, and every call still fires

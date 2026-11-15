@@ -16,10 +16,10 @@
  *     swallowed silently.
  *
  * Paths are resolved against the config home, and the resolved path MUST stay inside
- * <home>/logs/ (0.7.0; logging.test.js step 5 is the acceptance). The log path is
+ * <home>/logs/. The log path is
  * settable from the tf_log tool surface and the UI's POST /api/logs/config, and every
  * other file-writing path in the repo is confined to its root (hook-loader's scripts-dir
- * assert, registry.writeScript, sendStatic) - this one now matches. setConfig REFUSES an
+ * assert, registry.writeScript, sendStatic), and so is this one. setConfig REFUSES an
  * out-of-home path loudly; getConfig treats one already in the file as unset (default),
  * so log() and tail() stay in-home even against a hand-edited config. An operator who
  * wants the log on another disk can make <home>/logs a symlink/junction - containment is
@@ -28,7 +28,7 @@
  * Config file: <root>/logs/log.config.json
  *   { "enabled": false, "path": "logs/toolfunnel.log.jsonl" }
  *
- * Both paths are BOUNDED (0.7.0, log-rotation.test.js): the live file rotates to `<path>.1`
+ * Both paths are BOUNDED: the live file rotates to `<path>.1`
  * at MAX_LOG_BYTES (one older generation kept), and tail(n) reads a trailing slice rather
  * than the whole file - with a whole-file fallback so bounding never changes an answer.
  *
@@ -41,6 +41,7 @@ const path = require('node:path');
 /** The CONFIG HOME (TOOLFUNNEL_HOME / --config-dir; defaults to the package root - see
  *  config-home.js). Logs + their toggle are user-state, so they live with the home. */
 const { resolveConfigHome } = require('./config-home');
+const { atomicWriteJson } = require('./atomic-write'); // THE atomic writer, shared by every store
 const ROOT = resolveConfigHome();
 
 /** The toggle/config file. NOT created until setConfig() writes it. */
@@ -190,10 +191,7 @@ function setConfig(patch) {
   };
 
   fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true });
-  // Atomic write: write a unique temp file, then rename over the target.
-  const tmp = CONFIG_PATH + '.' + process.pid + '.' + Date.now() + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify(next, null, 2) + '\n');
-  fs.renameSync(tmp, CONFIG_PATH);
+  atomicWriteJson(CONFIG_PATH, next); // temp + fsync + rename, failure-path unlink, stale sweep
 
   return next;
 }

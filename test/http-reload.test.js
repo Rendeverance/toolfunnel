@@ -15,11 +15,11 @@
 const assert = require('node:assert');
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
 
 const ROOT = path.resolve(__dirname, '..');
+const { makeTempHome } = require('./helpers/temp-home');
 const PORT = 9931;
 const DANGER = ['r', 'm'].join('') + ' -' + 'rf /'; // destructive pattern, not a source literal
 
@@ -50,12 +50,11 @@ const isBlocked = (r) => { const t = JSON.stringify(r).toLowerCase(); return t.i
   ok('reloadExpose(null|undefined) is a caught no-op (does not throw)', true);
 
   // ── 2 + 3. HTTP host hot-reload end to end ────────────────────────────────────────────────────
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'tf-httpreload-'));
-  for (const d of ['tools', 'hooks', 'mcp']) {
-    // fs.cpSync, not xcopy: args-array + shell:true trips Node's DEP0190 (a hard error in a
-    // future Node), and cpSync is cross-platform anyway.
-    fs.cpSync(path.join(ROOT, d), path.join(home, d), { recursive: true });
-  }
+  // A scratch home seeded from the SHIPPED defaults (register, scripts, hooks tree, mock upstreams) -
+  // never a copy of the repo's live mcp/ tree, whose expose.json would attach the developer's real
+  // upstreams to this host.
+  const homeT = makeTempHome({ prefix: 'tf-httpreload-', seed: true, manifest: 'shipped' }); // the test toggles a SHIPPED example hook
+  const home = homeT.home;
   const child = spawn(process.execPath, [path.join(ROOT, 'bin', 'toolfunnel.js'), '--http', '--port', String(PORT), '--config-dir', home], { cwd: ROOT, stdio: 'ignore' });
 
   try {

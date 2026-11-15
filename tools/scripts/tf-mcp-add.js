@@ -44,6 +44,7 @@ const path = require('node:path');
 // Shared HOME/engine resolution (see tf-env.js): config beside us, engine from the package.
 const { HOME, srcRequire } = require('./tf-env');
 const { loadExposeStore } = srcRequire('mcp/expose-store');
+const { snapshotForStoreFile, restoreSnapshot } = srcRequire('core/rename-migration');
 
 const ROOT = HOME;
 
@@ -73,31 +74,43 @@ function run() {
   const args = parseArgs();
   const store = loadExposeStore(EXPOSE_PATH);
 
-  // The store's normaliseUpstream already defaults transport/enabled/args/env, but
-  // apply the documented defaults explicitly so the intent is visible here too.
+  // Values go to the store RAW: it defaults what is absent and REFUSES what is wrong-typed,
+  // naming the field. Coercing here - `enabled: "false"` to true - would hide exactly the
+  // mistake the store reports.
   const upstream = store.addUpstream({
     id: args.id,
     command: args.command,
     args: args.args,
     env: args.env,
-    transport: typeof args.transport === 'string' ? args.transport : 'stdio',
-    enabled: typeof args.enabled === 'boolean' ? args.enabled : true,
+    transport: args.transport,
+    enabled: args.enabled,
     description: args.description,
   });
 
+  // addUpstream has persisted; a later expose item can still be refused. A reply of ok:false must
+  // not keep half the add - the natural retry would die as a duplicate id. Unwind the whole add, as
+  // the UI's /api/mcp/add does: removeUpstream cascades this id's expose entries, and the snapshot
+  // puts back the gate matchers / state keys an ENABLED aliased item migrated as it landed.
+  const snap = snapshotForStoreFile(EXPOSE_PATH);
   const exposed = [];
   const exposeList = Array.isArray(args.expose) ? args.expose : [];
-  for (const item of exposeList) {
-    const e = item && typeof item === 'object' && !Array.isArray(item) ? item : {};
-    exposed.push(
-      store.addExpose({
-        upstream: upstream.id,
-        tool: e.tool,
-        as: e.as,
-        category: e.category,
-        enabled: typeof e.enabled === 'boolean' ? e.enabled : true,
-      })
-    );
+  try {
+    for (const item of exposeList) {
+      const e = item && typeof item === 'object' && !Array.isArray(item) ? item : {};
+      exposed.push(
+        store.addExpose({
+          upstream: upstream.id,
+          tool: e.tool,
+          as: e.as,
+          category: e.category,
+          enabled: e.enabled,
+        })
+      );
+    }
+  } catch (err) {
+    try { store.removeUpstream(upstream.id); } catch (_e) { /* best-effort; the real error is reported below */ }
+    restoreSnapshot(snap);
+    throw err;
   }
 
   return { ok: true, upstream, exposed };

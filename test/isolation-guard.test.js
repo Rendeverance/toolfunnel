@@ -27,6 +27,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
+const { useTempHome } = require('./helpers/temp-home');
+useTempHome({ prefix: 'tf-isolation-guard-' }); // scratch config home, so the src/ modules below never resolve the repo's
 const { defaultClientFactory } = require('../src/mcp/aggregator');
 
 let fails = 0;

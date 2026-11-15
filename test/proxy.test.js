@@ -13,7 +13,7 @@
  *                      call is BLOCKED (isError, no "pong"), while a NON-matched forwarded tool
  *                      (mockproxy_add) still runs - proving the gate is per-tool and fails closed.
  *
- * NON-DESTRUCTIVE: mcp/expose.json and hooks/hooks.manifest.json are snapshotted up front and
+ * NON-DESTRUCTIVE (every store named below lives in a scratch config home, never the repo's): mcp/expose.json and hooks/hooks.manifest.json are snapshotted up front and
  * restored byte-for-byte (or re-absent) in `finally` - the live config is left exactly as found.
  * Paths are DERIVED from this file's location (no hardcoded drive/root). Node built-ins only.
  *
@@ -27,9 +27,14 @@ const { spawn } = require('node:child_process');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const ENTRY = path.join(REPO_ROOT, 'bin', 'toolfunnel.js');
-const EXPOSE_PATH = path.join(REPO_ROOT, 'mcp', 'expose.json');
-const MANIFEST_PATH = path.join(REPO_ROOT, 'hooks', 'hooks.manifest.json');
-const MOCK_SERVER = path.join(REPO_ROOT, 'mcp', 'servers', 'mock-upstream', 'server.js');
+const { makeTempHome } = require('./helpers/temp-home');
+// Every gateway here runs against a scratch config home (pre-seeded so the shipped mock upstream is
+// inside it - the isolation guard requires that), never the repo's own stores.
+const HOME = makeTempHome({ prefix: 'tf-proxy-', seed: true });
+process.on('exit', () => HOME.cleanup());
+const EXPOSE_PATH = HOME.expose;
+const MANIFEST_PATH = HOME.manifest;
+const MOCK_SERVER = path.join(HOME.mockDir, 'mock-upstream', 'server.js');
 const DENY_HOOK = path.join(REPO_ROOT, 'test', 'fixtures', 'scripts', 'deny-hook.js');
 
 const REQUEST_TIMEOUT_MS = 45000; // a CEILING, not a wait - generous so a loaded CI box cannot flake it
@@ -106,6 +111,7 @@ function makeClient(child) {
 async function withGateway(fn) {
   const child = spawn(process.execPath, [ENTRY], {
     cwd: REPO_ROOT,
+    env: HOME.env(),
     stdio: ['pipe', 'pipe', 'pipe'],
     windowsHide: true,
   });

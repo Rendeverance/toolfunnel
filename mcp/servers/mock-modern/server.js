@@ -21,7 +21,7 @@
  * Tools (real upstream names): ping -> "pong", add {a,b} -> a+b, echo {text} -> text.
  *
  * JSON-RPC 2.0 over stdio, newline-delimited (one compact JSON object per line). Node built-ins
- * only, CommonJS. Built to the RC spec (locked 2026-05-21); reconcile minor final deltas 28 July.
+ * only, CommonJS.
  */
 
 const MODERN_VERSION = '2026-07-28';

@@ -27,6 +27,8 @@ const path = require('node:path');
 const assert = require('node:assert');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
+const { useTempHome } = require('./helpers/temp-home');
+useTempHome({ prefix: 'tf-connect-all-' }); // scratch config home, so the src/ modules below never resolve the repo's
 const { Aggregator } = require(path.join(REPO_ROOT, 'src', 'mcp', 'aggregator.js'));
 
 const results = [];
@@ -178,11 +180,36 @@ function makeSlowClient(id, delayMs, log, failConnect) {
     await agg.closeAll();
   }
 
+  // F - a concurrent ensureConnected(id) DURING the startup batch must JOIN the in-flight connect.
+  //     _connectOne caches the client BEFORE its handshake completes; a caller that inspects the cache
+  //     instead of joining reads it as stale (connected:false), discards it mid-handshake and connects
+  //     a second time - both the batch and the caller then race over one id.
+  {
+    const log = [];
+    const agg = new Aggregator({
+      store: makeStore([{ id: 'boot', command: 'x', args: [], env: {}, enabled: true }]),
+      clientFactory: (u) => makeSlowClient(u.id, 200, log, false),
+    });
+    const batch = agg.connectAll();
+    await sleep(30); // in flight: client cached, handshake still pending
+    let joined = null; let joinErr = null;
+    try { joined = await agg.ensureConnected('boot'); } catch (e) { joinErr = e; }
+    const res = await batch;
+    check('F: ensureConnected during connectAll JOINS the in-flight connect (one connect, no discard)', () => {
+      assert.ok(!joinErr, 'ensureConnected failed: ' + (joinErr && joinErr.message));
+      assert.deepStrictEqual(res.connected, ['boot'], 'batch result: ' + JSON.stringify(res));
+      assert.strictEqual(log.filter((l) => l === 'boot:connect').length, 1, 'connected more than once: ' + log.join('|'));
+      assert.ok(!log.includes('boot:close'), 'the in-flight client was discarded: ' + log.join('|'));
+      assert.ok(joined && joined.connected === true, 'the joiner did not receive the live client');
+    });
+    await agg.closeAll();
+  }
+
   const passed = results.filter((r) => r.ok).length;
   for (const r of results) console.log(`${r.ok ? 'ok  ' : 'FAIL'} - ${r.name}${r.ok ? '' : '\n       ' + r.detail}`);
   if (passed !== results.length) {
     console.error(`\nFAIL: connect-all-concurrency - ${passed}/${results.length} checks passed`);
     process.exit(1);
   }
-  console.log(`\nPASS: connect-all-concurrency test - ${passed}/${results.length} checks passed (concurrency, accounting, order, cache, self-heal)`);
+  console.log(`\nPASS: connect-all-concurrency test - ${passed}/${results.length} checks passed (concurrency, accounting, order, cache, self-heal, join)`);
 })().catch((err) => { console.error('FATAL:', err); process.exit(1); });

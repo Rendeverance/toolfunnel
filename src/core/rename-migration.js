@@ -1,13 +1,12 @@
 'use strict';
 
 /**
- * rename-migration.js - keep gates and per-tool state attached across a SURFACED-NAME change
- * (0.7.0; the rename-safety.test.js invariants are the acceptance).
+ * rename-migration.js - keep gates and per-tool state attached across a SURFACED-NAME change.
  *
  * A tool's SURFACED name is the string the PreToolUse gate matches and the tools.state.json
- * key is written against. 0.6.0 let that name change (an expose `as` edit, an enabled flip, a
- * local display-name edit) while the gate matcher and the state key silently kept the OLD
- * string - a deny gate stopped firing and a disabled tool resurrected. The policy here,
+ * key is written against. When that name changes (an expose `as` edit, an enabled flip, a
+ * local display-name edit) and the gate matcher and the state key keep the OLD string, a deny
+ * gate stops firing and a disabled tool comes back. The policy here,
  * MATCHER-MIGRATE-ON-RENAME:
  *
  *   - A WILDCARD matcher ('', '*', unset) fires for every tool name - it already covers the
@@ -36,21 +35,9 @@ function escapeRegex(str) {
   return String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-/** Copied exactly from registry.js::atomicWriteJson - crash leaves old file or new, never half. */
-function atomicWriteJson(targetPath, obj) {
-  const dir = path.dirname(targetPath);
-  const base = path.basename(targetPath);
-  const tmp = path.join(dir, `.${base}.${process.pid}.${Date.now()}.tmp`);
-  const data = JSON.stringify(obj, null, 2) + '\n';
-  const fd = fs.openSync(tmp, 'w');
-  try {
-    fs.writeSync(fd, data, 0, 'utf8');
-    fs.fsyncSync(fd);
-  } finally {
-    fs.closeSync(fd);
-  }
-  fs.renameSync(tmp, targetPath);
-}
+// THE atomic writer (temp + fsync + rename, failure-path unlink, stale sweep) - shared by every store.
+// This file's own copy had neither the unlink nor the sweep.
+const { atomicWriteJson, atomicWriteText } = require('./atomic-write');
 
 function readJsonIfPresent(p) {
   try {
@@ -160,4 +147,32 @@ function migrateForStoreFile(storeFilePath, oldName, newName, opts) {
   });
 }
 
-module.exports = { migrateSurfacedName, migrateForStoreFile, escapeRegex };
+/**
+ * The sibling config files a migration may write, derived as migrateForStoreFile does (the store's
+ * grandparent is the config-home root). Exported so a caller can snapshot them BEFORE a migration and
+ * restore them if the write that follows fails - re-running a migration in reverse is not an unwind:
+ * it re-validates, and a pattern hook that matches the NEW name refuses it, leaving the manifest
+ * naming a surface the store does not (rename-rollback.test.js, case A2).
+ */
+function snapshotForStoreFile(storeFilePath) {
+  const root = path.dirname(path.dirname(storeFilePath));
+  const files = [path.join(root, 'hooks', 'hooks.manifest.json'), path.join(root, 'tools', 'tools.state.json')];
+  const snap = [];
+  for (const f of files) {
+    let bytes = null;
+    try { bytes = fs.readFileSync(f); } catch (_e) { bytes = null; } // absent stays absent
+    snap.push({ path: f, bytes });
+  }
+  return snap;
+}
+
+/** Put the snapshotted bytes back exactly (absent files are removed again). Best-effort, never throws. */
+function restoreSnapshot(snap) {
+  for (const { path: f, bytes } of snap || []) {
+    try {
+      if (bytes == null) { if (fs.existsSync(f)) fs.unlinkSync(f); } else { atomicWriteText(f, bytes); }
+    } catch (_e) { /* best-effort - the caller's own error is the story */ }
+  }
+}
+
+module.exports = { migrateSurfacedName, migrateForStoreFile, escapeRegex, snapshotForStoreFile, restoreSnapshot };

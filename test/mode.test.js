@@ -40,12 +40,14 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 
+const { useTempHome } = require('./helpers/temp-home');
+const HOME = useTempHome({ prefix: 'tf-mode-' }); // scratch config home, claimed BEFORE any src/ module captures the repo's
 const { buildProtocol } = require(path.join(__dirname, '..', 'src', 'mcp', 'server.js'));
 const { loadRegistry } = require(path.join(__dirname, '..', 'src', 'tools', 'registry.js'));
 
 const ROOT = path.resolve(__dirname, '..');
-const REGISTER = path.join(ROOT, 'tools', 'tools.register.json');
-const SCRIPTS_DIR = path.join(ROOT, 'tools', 'scripts');
+const REGISTER = HOME.register;
+const SCRIPTS_DIR = HOME.scriptsDir;
 const SPY_SCRIPT = path.join(SCRIPTS_DIR, '__tf_test_spy.js');
 const SPY_MARKER = path.join(SCRIPTS_DIR, '__tf_test_spy.marker');
 

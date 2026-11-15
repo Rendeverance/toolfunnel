@@ -20,7 +20,7 @@
  *   G - NOT PROMOTED: empty state -> tools/call{echo} (a real local tool, not hot) -> isError (unknown tool):
  *                   the advertised surface == the callable surface (no silent run of a non-promoted tool).
  *
- * NON-DESTRUCTIVE: mcp/expose.json, hooks/hooks.manifest.json and tools/tools.state.json are
+ * NON-DESTRUCTIVE (every store named below lives in a scratch config home, never the repo's): mcp/expose.json, hooks/hooks.manifest.json and tools/tools.state.json are
  * snapshotted and restored (or re-absent). Node built-ins only.
  *
  * Run:  node test/matrix.test.js     (exit 0 = pass, non-zero = fail)
@@ -30,14 +30,20 @@ const path = require('node:path');
 const fs = require('node:fs');
 const assert = require('node:assert');
 const { spawn } = require('node:child_process');
+const { META_TOOLS } = require(path.join(__dirname, '..', 'src', 'mcp', 'protocol.js'));
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const ENTRY = path.join(REPO_ROOT, 'bin', 'toolfunnel.js');
-const EXPOSE_PATH = path.join(REPO_ROOT, 'mcp', 'expose.json');
-const MANIFEST_PATH = path.join(REPO_ROOT, 'hooks', 'hooks.manifest.json');
-const STATE_PATH = path.join(REPO_ROOT, 'tools', 'tools.state.json');
-const REGISTER_PATH = path.join(REPO_ROOT, 'tools', 'tools.register.json');
-const MOCK_SERVER = path.join(REPO_ROOT, 'mcp', 'servers', 'mock-upstream', 'server.js');
+const { makeTempHome } = require('./helpers/temp-home');
+// Every gateway here runs against a scratch config home (pre-seeded: shipped register, scripts,
+// hooks tree and mock upstreams inside it), never the repo's own stores.
+const HOME = makeTempHome({ prefix: 'tf-matrix-', seed: true });
+process.on('exit', () => HOME.cleanup());
+const EXPOSE_PATH = HOME.expose;
+const MANIFEST_PATH = HOME.manifest;
+const STATE_PATH = HOME.state;
+const REGISTER_PATH = HOME.register;
+const MOCK_SERVER = path.join(HOME.mockDir, 'mock-upstream', 'server.js');
 
 // A sacrificial REFERENCE-mode tool injected into the register for phase H (a reference tool executes
 // nothing server-side; toolfunnel_run_tool / a direct hot call hands back its instructions).
@@ -45,7 +51,7 @@ const REF_ID = 'matrix_ref_demo';
 const REF_INSTRUCTIONS = 'Perform this in your own environment: matrix reference demo instructions.';
 
 const REQUEST_TIMEOUT_MS = 45000; // a CEILING, not a wait - generous so a loaded CI box cannot flake it
-const META = ['toolfunnel_list_tools', 'toolfunnel_tool_instructions', 'toolfunnel_run_tool', 'toolfunnel_howto'];
+const META = Object.values(META_TOOLS); // the one definition, never a hand-typed copy
 const UUID_V4 = /[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/i;
 
 const results = [];
@@ -179,7 +185,7 @@ function injectReferenceTool(cleanRegister) {
     fs.writeFileSync(MANIFEST_PATH, JSON.stringify({ version: 1, hooks: [] }, null, 2) + '\n');
     writeState({});
 
-    child = spawn(process.execPath, [ENTRY], { cwd: REPO_ROOT, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+    child = spawn(process.execPath, [ENTRY], { cwd: REPO_ROOT, env: HOME.env(), stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
     const client = makeClient(child);
     child.on('error', (err) => client.rejectAll(new Error('child error: ' + ((err && err.message) || err))));
     await client.request('initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'matrix.test.js', version: '0.0.0' } });

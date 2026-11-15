@@ -54,6 +54,8 @@ const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
 
+const { useTempHome } = require('./helpers/temp-home');
+const HOME = useTempHome({ prefix: 'tf-logging-' }); // scratch config home, claimed BEFORE any src/ module captures the repo's
 const logger = require('../src/core/logger');
 const { createUiServer } = require('../src/ui/server');
 const { buildProtocol } = require('../src/mcp/server');
@@ -64,7 +66,7 @@ const { gatedRun } = require('../src/mcp/gated-run');
 const ROOT = path.resolve(__dirname, '..');
 
 // The logger's config file (the toggle). setConfig is the ONLY thing that creates it.
-const LOGS_DIR = path.join(ROOT, 'logs');
+const LOGS_DIR = HOME.logsDir;
 const CONFIG_PATH = path.join(LOGS_DIR, 'log.config.json');
 
 // A fresh, unique log file INSIDE the config home's logs/ dir. It has to live in-home: the log
@@ -76,7 +78,7 @@ const TEMP_LOG = path.join(LOGS_DIR, `__tf_test_logging-${process.pid}-${crypto.
 // checks. OUT_OF_HOME_LOG is only ever asserted ABSENT (or pre-written by the rig, then removed);
 // nothing is ever logged to it.
 const DEFAULT_LOG_PATH = 'logs/toolfunnel.log.jsonl';
-const DEFAULT_LOG_ABS = path.join(ROOT, DEFAULT_LOG_PATH);
+const DEFAULT_LOG_ABS = path.join(HOME.home, DEFAULT_LOG_PATH);
 const OUT_OF_HOME_LOG = path.join(os.tmpdir(), `toolfunnel-out-of-home-${process.pid}-${crypto.randomUUID()}.jsonl`);
 
 // Fixture (NEVER the shipped manifest): a PreToolUse deny hook matching 'echo'. Authored under

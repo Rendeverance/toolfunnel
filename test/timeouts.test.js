@@ -35,6 +35,8 @@ const path = require('node:path');
 const assert = require('node:assert');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
+const { useTempHome } = require('./helpers/temp-home');
+useTempHome({ prefix: 'tf-timeouts-' }); // scratch config home, so the src/ modules below never resolve the repo's
 const { McpClient } = require(path.join(REPO_ROOT, 'src', 'mcp', 'mcp-client.js'));
 const { Aggregator } = require(path.join(REPO_ROOT, 'src', 'mcp', 'aggregator.js'));
 

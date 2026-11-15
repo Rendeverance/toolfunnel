@@ -9,7 +9,7 @@ self-documented, a package is just a folder that lists its units and carries the
 
 ## 0. The WHOLE-SETUP path - `tf_pack` (start here)
 
-Since 0.4.0 the fastest way to ship is not per-unit packaging but the **whole setup**: your entire
+The fastest way to ship is not per-unit packaging but the **whole setup**: your entire
 config home (tools + scripts, hot/hidden curation, upstream references, policy hooks, identity) is
 already the product. One call packages it into a deployment-ready artifact under `<home>/dist/`:
 

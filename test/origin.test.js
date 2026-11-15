@@ -33,6 +33,8 @@ const http = require('node:http');
 const path = require('node:path');
 
 const ROOT = path.resolve(__dirname, '..');
+const { useTempHome } = require('./helpers/temp-home');
+const HOME = useTempHome({ prefix: 'tf-origin-' }); // scratch config home, claimed BEFORE any src/ module captures the repo's
 const { createHttpMcpServer } = require(path.join(ROOT, 'src', 'mcp', 'http-transport.js'));
 const authConfig = require(path.join(ROOT, 'src', 'auth', 'config.js'));
 const CONFIG_PATH = authConfig.CONFIG_PATH;

@@ -16,7 +16,7 @@
  *                  activity log records the full cycle: {type:mcp,event:disconnect,reason:died}
  *                  then {type:mcp,event:reconnect}.
  *
- * NON-DESTRUCTIVE: mcp/expose.json, hooks/hooks.manifest.json and logs/log.config.json are
+ * NON-DESTRUCTIVE (every store named below lives in a scratch config home, never the repo's): mcp/expose.json, hooks/hooks.manifest.json and logs/log.config.json are
  * snapshotted and restored (or re-absent); the dedicated test log is removed. Node built-ins only.
  *
  * Run:  node test/reconnect.test.js     (exit 0 = pass, non-zero = fail)
@@ -29,12 +29,17 @@ const { spawn } = require('node:child_process');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const ENTRY = path.join(REPO_ROOT, 'bin', 'toolfunnel.js');
-const EXPOSE_PATH = path.join(REPO_ROOT, 'mcp', 'expose.json');
-const MANIFEST_PATH = path.join(REPO_ROOT, 'hooks', 'hooks.manifest.json');
-const MOCK_SERVER = path.join(REPO_ROOT, 'mcp', 'servers', 'mock-upstream', 'server.js');
-const LOG_CONFIG_PATH = path.join(REPO_ROOT, 'logs', 'log.config.json');
+const { makeTempHome } = require('./helpers/temp-home');
+// Every gateway here runs against a scratch config home (pre-seeded: shipped register, scripts,
+// hooks tree and mock upstreams inside it), never the repo's own stores.
+const HOME = makeTempHome({ prefix: 'tf-reconnect-', seed: true });
+process.on('exit', () => HOME.cleanup());
+const EXPOSE_PATH = HOME.expose;
+const MANIFEST_PATH = HOME.manifest;
+const MOCK_SERVER = path.join(HOME.mockDir, 'mock-upstream', 'server.js');
+const LOG_CONFIG_PATH = HOME.logConfig;
 const TEST_LOG_REL = 'logs/test-reconnect.' + process.pid + '.jsonl';
-const TEST_LOG_PATH = path.join(REPO_ROOT, TEST_LOG_REL);
+const TEST_LOG_PATH = path.join(HOME.home, TEST_LOG_REL); // the logger resolves log paths against the config home
 
 const REQUEST_TIMEOUT_MS = 45000; // a CEILING, not a wait - generous so a loaded CI box cannot flake it
 const RECOVER_BUDGET_MS = 15000; // first backoff is ~1s; allow for spawn+initialize+list + slack
@@ -125,7 +130,7 @@ function exposeConfig() {
     fs.writeFileSync(EXPOSE_PATH, exposeConfig());
     fs.writeFileSync(MANIFEST_PATH, JSON.stringify({ version: 1, hooks: [] }, null, 2) + '\n');
 
-    child = spawn(process.execPath, [ENTRY], { cwd: REPO_ROOT, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+    child = spawn(process.execPath, [ENTRY], { cwd: REPO_ROOT, env: HOME.env(), stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
     const client = makeClient(child);
     child.on('error', (err) => client.rejectAll(new Error('child error: ' + ((err && err.message) || err))));
     await client.request('initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'reconnect.test.js', version: '0.0.0' } });

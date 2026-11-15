@@ -70,6 +70,7 @@ function handle(msg) {
           { name: 'splitheader', inputSchema: { type: 'object' } },
           { name: 'big', inputSchema: { type: 'object' } },
           { name: 'flood', inputSchema: { type: 'object' } },
+          { name: 'sized', inputSchema: { type: 'object' } },
           { name: 'ping', inputSchema: { type: 'object' } },
         ],
       },
@@ -106,6 +107,17 @@ function handle(msg) {
         jsonrpc: '2.0', id: msg.id,
         result: { content: [{ type: 'text', text: 'x'.repeat(OVERSIZE) }] },
       });
+      process.stdout.write('Content-Length: ' + Buffer.byteLength(body, 'utf8') + '\r\n\r\n' + body);
+      return;
+    }
+    if (name === 'sized') {
+      // One valid CL-framed reply whose declared body is EXACTLY args.bodyBytes long (the boundary
+      // case: at the cap, not over it). The text is padded so the serialised body hits the target.
+      const args = (msg.params && msg.params.arguments) || {};
+      const target = Number.isInteger(args.bodyBytes) ? args.bodyBytes : 1024;
+      const mk = (t) => JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { content: [{ type: 'text', text: t }] } });
+      const overhead = Buffer.byteLength(mk(''), 'utf8');
+      const body = mk('x'.repeat(Math.max(0, target - overhead)));
       process.stdout.write('Content-Length: ' + Buffer.byteLength(body, 'utf8') + '\r\n\r\n' + body);
       return;
     }

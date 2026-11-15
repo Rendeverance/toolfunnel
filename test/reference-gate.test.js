@@ -33,6 +33,8 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 
+const { useTempHome } = require('./helpers/temp-home');
+const HOME = useTempHome({ prefix: 'tf-reference-gate-' }); // scratch config home, claimed BEFORE any src/ module captures the repo's
 const { makeProtocol } = require(path.join(__dirname, '..', 'src', 'mcp', 'protocol.js'));
 const { makeRegistryAdapter } = require(path.join(__dirname, '..', 'src', 'mcp', 'server.js'));
 const { gatedRun } = require(path.join(__dirname, '..', 'src', 'mcp', 'gated-run.js'));
@@ -42,8 +44,8 @@ const { HookEngine } = require(path.join(__dirname, '..', 'src', 'core', 'hook-e
 const { howto } = require(path.join(__dirname, '..', 'src', 'extend', 'howto.js'));
 
 const ROOT = path.resolve(__dirname, '..');
-const REGISTER = path.join(ROOT, 'tools', 'tools.register.json');
-const SCRIPTS_DIR = path.join(ROOT, 'tools', 'scripts');
+const REGISTER = HOME.register;
+const SCRIPTS_DIR = HOME.scriptsDir;
 const SPY_SCRIPT = path.join(SCRIPTS_DIR, '__tf_test_ref_gate_spy.js');
 const SPY_MARKER = path.join(SCRIPTS_DIR, '__tf_test_ref_gate_spy.marker');
 

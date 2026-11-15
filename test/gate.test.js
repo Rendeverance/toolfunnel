@@ -33,6 +33,8 @@ const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
 
+const { useTempHome } = require('./helpers/temp-home');
+useTempHome({ prefix: 'tf-gate-' }); // scratch config home, so the src/ modules below never resolve the repo's
 const { loadManifest } = require('../src/core/hook-loader');
 const { HookEngine } = require('../src/core/hook-engine');
 const { gatedRun } = require('../src/mcp/gated-run');

@@ -17,7 +17,7 @@
  * `server/discover`, the `subscriptions/listen` message shapes and the modern error codes - and
  * executes nothing. `server.js` (stdio) and `http-transport.js` bind it to their wires.
  *
- * Spec sources (RC, locked 2026-05-21; re-verify against the FINAL spec before release):
+ * Spec sources:
  *   - modelcontextprotocol.io/specification/draft/changelog
  *   - .../draft/basic/transports/streamable-http   (headers, validation, error examples)
  *   - .../draft/basic/versioning                   (era model, compatibility matrix)
@@ -64,12 +64,15 @@ const CACHE_HINTS = Object.freeze({
   discover: Object.freeze({ ttlMs: 3600000, cacheScope: 'private' }),
 });
 
-/** The methods whose Mcp-Name header must mirror params.name / params.uri. */
-const NAMED_METHODS = Object.freeze({
+/** The methods whose Mcp-Name header must mirror params.name / params.uri. Null-prototype: the
+ *  lookup is keyed by the CLIENT's method string, and a plain literal answered 'toString' /
+ *  'constructor' / 'valueOf' with an inherited function (truthy), demanding an Mcp-Name header for
+ *  a method the table does not name. */
+const NAMED_METHODS = Object.freeze(Object.assign(Object.create(null), {
   'tools/call': 'name',
   'resources/read': 'uri',
   'prompts/get': 'name',
-});
+}));
 
 /** Safely pull params._meta from a parsed JSON-RPC message. Returns null when absent/malformed. */
 function getMeta(msg) {
@@ -216,8 +219,8 @@ function validateModernHeaders(headers, msg) {
 
 /** The protocol versions this dual-era server speaks (modern first; legacy negotiated via
  *  initialize). Kept as a function so the legacy set is injected once by the server, not
- *  duplicated here. server.js seeds it via setLegacyVersion() - a LIST since 0.7.0
- *  (a single string is still accepted for compatibility). */
+ *  duplicated here. server.js seeds it via setLegacyVersion() with a LIST
+ *  (a single string is also accepted). */
 let _legacyVersions = [];
 function setLegacyVersion(v) {
   if (typeof v === 'string' && v.length > 0) _legacyVersions = [v];

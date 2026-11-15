@@ -36,8 +36,10 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const { loadRegistry, atomicWriteJson, resolveMode } = require('../tools/registry');
+const { snapshotForStoreFile, restoreSnapshot } = require('../core/rename-migration');
 const { loadToolState, isToolEnabled, isToolHidden, isToolHot, setToolEnabled, setToolHidden, setToolHot, clearToolState, getPassthrough, setPassthrough } = require('../tools/tool-state');
 const { loadExposeStore } = require('../mcp/expose-store');
+const approvals = require('../mcp/tool-approvals');
 const { Aggregator } = require('../mcp/aggregator');
 const { loadManifest, normalizeState } = require('../core/hook-loader');
 const { matches } = require('../core/matcher');
@@ -68,6 +70,12 @@ const CONTENT_TYPES = Object.freeze({
   '.ico': 'image/x-icon',
   '.webp': 'image/webp',
 });
+
+/** A host as it appears in a URL: a literal IPv6 address is bracketed (`[::1]`), anything else verbatim. */
+function urlHost(h) {
+  const v = String(h == null ? '' : h);
+  return v.includes(':') && !v.startsWith('[') ? '[' + v + ']' : v;
+}
 
 /**
  * Is the Host header loopback? We bind 127.0.0.1 only, but a forwarded/rebound
@@ -168,6 +176,7 @@ const CONFIG_EVENTS = {
   '/api/hooks/state': (b) => ({ event: 'hook_state', id: b.id, action: b.action }),
   '/api/mcp/add': (b) => ({ event: 'mcp_add', id: b.upstream && b.upstream.id }),
   '/api/mcp/state': (b) => ({ event: 'mcp_state', id: b.id, action: b.action }),
+  '/api/tool-changes/accept': (b) => ({ event: 'tool_change_accept', upstream: b.upstream, tool: b.tool || null }),
   '/api/wrap': (b) => ({ event: 'wrap', upstream: (b && b.upstream) || null }),
   '/api/identity': () => ({ event: 'identity_config' }),
   '/api/auth/config': (b) => ({ event: 'auth_config', enabled: b.enabled, issuer: b.issuer }),
@@ -219,6 +228,7 @@ function createUiServer(opts = {}) {
   const REGISTER_PATH = path.join(root, 'tools', 'tools.register.json');
   const TOOL_STATE_PATH = path.join(root, 'tools', 'tools.state.json');
   const EXPOSE_PATH = path.join(root, 'mcp', 'expose.json');
+  const APPROVALS_PATH = path.join(root, 'mcp', 'tool-approvals.json');
   const MANIFEST_PATH = path.join(root, 'hooks', 'hooks.manifest.json');
   const HOOK_STATE_PATH = path.join(root, 'hooks', 'hooks.state.json');
   const SCRIPTS_ROOT = path.join(root, 'tools', 'scripts');
@@ -236,7 +246,7 @@ function createUiServer(opts = {}) {
   let started = false;
 
   function currentUrl() {
-    return boundPort == null ? null : `http://${host}:${boundPort}`;
+    return boundPort == null ? null : `http://${urlHost(host)}:${boundPort}`;
   }
 
   // ── Store-backed config reads (FRESH per call so external edits show immediately) ──────────────
@@ -455,10 +465,10 @@ function createUiServer(opts = {}) {
     const gateName = gateNameFor(registry.getEntry(id));
 
     // The id becomes a FILENAME and is interpolated into a manifest command that hook-runner
-    // spawns with shell:true, so it must be filename-safe (0.7.0). The register only requires a
-    // non-empty string, and an id carrying a quote produced a command that either could not run -
-    // while the UI still reported "Pre gate enabled", i.e. a dead gate presented as a live one -
-    // or carried arbitrary shell text into a file the operator reads as policy. Same character
+    // spawns with shell:true, so it must be filename-safe. The register only requires a
+    // non-empty string, and an id carrying a quote would produce a command that either cannot run -
+    // while the UI still reports "Pre gate enabled", i.e. a dead gate presented as a live one -
+    // or carries arbitrary shell text into a file the operator reads as policy. Same character
     // class deriveHookScriptRel already accepts.
     if (!/^[A-Za-z0-9._-]+$/.test(id)) {
       return {
@@ -515,7 +525,7 @@ function createUiServer(opts = {}) {
       && h.command !== ourCommand;
 
     if (on) {
-      // GATE IDENTITY MUST BE UNAMBIGUOUS (0.7.0). gateNameFor is `name || id` and the register
+      // GATE IDENTITY MUST BE UNAMBIGUOUS. gateNameFor is `name || id` and the register
       // never constrains `name`, so two DIFFERENT tools can resolve to ONE matcher, and ON would
       // hand the second tool a gate it does not own. Ownership resolves by ID, which the register
       // guarantees unique: the tool whose *id* IS the gate name is the canonical owner and keeps
@@ -624,7 +634,7 @@ function createUiServer(opts = {}) {
     }
 
     // OFF: drop ONLY the per-tool LITERAL entry the ON branch authors - never a hook that
-    // merely ALSO fires for this tool (0.7.0 deleted the global wildcard gate here).
+    // merely ALSO fires for this tool (such as a global wildcard gate).
     const next = hooks.filter((h) => !isOwnLiteral(h));
     const removed = hooks.length - next.length;
     if (removed > 0) {
@@ -651,13 +661,45 @@ function createUiServer(opts = {}) {
     return { status: 200, json };
   }
 
+  // GET /api/tool-changes -> tool descriptor changes held back for acceptance, read from the
+  // approvals file the gateway writes. An unreadable file is REPORTED (ok:false) - it must never look
+  // like "nothing waiting", because the gateway is withholding that upstream's tools meanwhile.
+  function apiToolChanges() {
+    try {
+      const doc = approvals.loadApprovals(APPROVALS_PATH);
+      return { ok: true, pending: approvals.listPending(doc), upgraded: approvals.listUpgrades(doc, 10) };
+    } catch (err) {
+      return { ok: false, pending: [], upgraded: [], error: (err && err.message) || String(err) };
+    }
+  }
+
+  // POST /api/tool-changes/accept {upstream, tool?, hash?} -> the engine accept every route shares
+  // (acceptInFile). The page sends the hash it listed, so a server that changed the tool again in
+  // between is not approved sight unseen. A running gateway applies it from the next call.
+  function apiToolChangeAccept(body) {
+    const b = body && typeof body === 'object' && !Array.isArray(body) ? body : {};
+    const bad = (error) => ({ status: 400, json: { ok: false, error } });
+    if (typeof b.upstream !== 'string' || b.upstream.length === 0) return bad('"upstream" (the upstream id) is required');
+    if (b.tool !== undefined && (typeof b.tool !== 'string' || b.tool.length === 0)) return bad('"tool" must be a non-empty string when given');
+    if (b.hash !== undefined && (typeof b.hash !== 'string' || b.hash.length === 0)) return bad('"hash" must be a non-empty string when given');
+    let res;
+    try {
+      res = approvals.acceptInFile(APPROVALS_PATH, b.upstream, b.tool, b.hash);
+    } catch (err) {
+      return { status: 500, json: { ok: false, error: (err && err.message) || 'accept failed' } };
+    }
+    const why = approvals.acceptFailure(res, b.upstream, b.tool);
+    if (why) return bad(res.stale ? why + ' - reload to see the current one' : why);
+    return { status: 200, json: { ok: true, accepted: res.accepted, pending: res.pending } };
+  }
+
   // GET /api/upstreams -> { upstreams:[...], expose:[...] } (READ-ONLY for v1).
   function apiUpstreams() {
     const store = loadExposeStore(EXPOSE_PATH);
     return {
       upstreams: store.listUpstreams(),
       expose: store.listExposed(),
-      // The active passthrough wrap (0.6.0) - null when the normal funnel surface is live.
+      // The active passthrough wrap - null when the normal funnel surface is live.
       wrapping: getPassthrough(loadToolState(TOOL_STATE_PATH)),
     };
   }
@@ -917,8 +959,8 @@ function createUiServer(opts = {}) {
   // POST /api/oauth/install -> install the single optional dependency (jose@PIN) on demand. Async +
   // potentially slow (it shells out to npm); installJose() owns a hard timeout and never throws.
   //
-  // NOT on the POST mutation chain (0.7.0): this writes node_modules/, not the config files that
-  // chain exists to serialise, so queueing it there put a multi-minute npm run in front of every
+  // NOT on the POST mutation chain: this writes node_modules/, not the config files that
+  // chain exists to serialise, so queueing it there would put a multi-minute npm run in front of every
   // other POST - one click and the whole panel stops answering. It still must not overlap ITSELF,
   // so it keeps a single-flight latch of its own: concurrent callers COALESCE onto the running
   // install and get its result rather than starting a second npm.
@@ -1072,15 +1114,30 @@ function createUiServer(opts = {}) {
     if (!registry.has(id)) {
       return { status: 404, json: { ok: false, error: `unknown tool id "${id}"` } };
     }
+    // The script slot's prior body, so a refused register update can put it back exactly (absent
+    // stays absent, an overwritten body returns) - apiToolAdd's snapshot, same reason: without it
+    // the 400 reply left the NEW body on disk under an UNCHANGED entry.
+    let slot = null;
+    let priorBody = null;
     try {
       // Author the script body first (if provided) so the file matches the (possibly updated) invoke.
       if (typeof body.scriptText === 'string') {
         const inv = (patch.invoke && patch.invoke.type) ? patch.invoke : registry.getEntry(id).invoke;
-        if (inv && inv.type === 'script' && inv.path) registry.writeScript(inv.path, body.scriptText);
+        if (inv && inv.type === 'script' && inv.path) {
+          slot = path.resolve(SCRIPTS_ROOT, path.basename(inv.path));
+          priorBody = fs.existsSync(slot) ? fs.readFileSync(slot) : null;
+          registry.writeScript(inv.path, body.scriptText);
+        }
       }
       const updated = registry.update(id, patch);
       return { status: 200, json: { ok: true, entry: updated } };
     } catch (err) {
+      if (slot) {
+        try {
+          if (priorBody != null) fs.writeFileSync(slot, priorBody);
+          else fs.unlinkSync(slot);
+        } catch (_e) { /* best-effort - the 400 below still reports the update failure */ }
+      }
       return { status: 400, json: { ok: false, error: (err && err.message) || 'tool update failed' } };
     }
   }
@@ -1205,8 +1262,12 @@ function createUiServer(opts = {}) {
       return { status: 400, json: { ok: false, error: 'upstream (object) is required' } };
     }
     const store = loadExposeStore(EXPOSE_PATH);
+    let added = null;
+    // Each ENABLED aliased item migrates gate matchers / state keys as it lands; removeUpstream alone
+    // would not put those back. Snapshot the migration's files up front and restore them on failure.
+    const snap = snapshotForStoreFile(EXPOSE_PATH);
     try {
-      const added = store.addUpstream(upstream);
+      added = store.addUpstream(upstream);
       const items = Array.isArray(body && body.expose) ? body.expose : [];
       const exposed = [];
       for (const item of items) {
@@ -1214,6 +1275,14 @@ function createUiServer(opts = {}) {
       }
       return { status: 200, json: { ok: true, upstream: added, expose: exposed } };
     } catch (err) {
+      // The upstream (and any earlier expose items) persisted before a later item was refused. A
+      // reply that reports failure must not keep half the add - without the unwind, the natural
+      // retry died on its own first attempt as a duplicate id (apiHookAdd's catch, same symptom).
+      // removeUpstream cascades this id's expose entries, so the unwind is one call.
+      if (added) {
+        try { store.removeUpstream(added.id); } catch (_e) { /* best-effort; the 400 below still reports the real error */ }
+        restoreSnapshot(snap);
+      }
       return { status: 400, json: { ok: false, error: (err && err.message) || 'mcp add failed' } };
     }
   }
@@ -1234,7 +1303,7 @@ function createUiServer(opts = {}) {
       if (action === 'remove') {
         store.removeUpstream(id);
       } else if (action === 'pin' || action === 'unpin') {
-        // legacyPin (0.6.0): keep speaking MCP 2024-11-05 to this upstream forever - opt-in,
+        // legacyPin: keep speaking MCP 2024-11-05 to this upstream forever - opt-in,
         // warns at startup and per call. Takes effect on the upstream's NEXT (re)connect.
         store.updateUpstream(id, { legacyPin: action === 'pin' });
         return { status: 200, json: { ok: true, legacyPin: action === 'pin' } };
@@ -1336,6 +1405,7 @@ function createUiServer(opts = {}) {
     '/api/hooks/state': serialise(apiHookState),
     '/api/mcp/add': serialise(apiMcpAdd),
     '/api/mcp/state': serialise(apiMcpState),
+    '/api/tool-changes/accept': serialise(apiToolChangeAccept),
     // discover is a read-only probe - no config write, no need to queue it behind mutations.
     '/api/mcp/discover': apiMcpDiscover,
     '/api/wrap': serialise(apiWrap),
@@ -1349,7 +1419,14 @@ function createUiServer(opts = {}) {
 
   // ── HTTP plumbing ───────────────────────────────────────────────────────────────────────────
 
-  /** Read a request body up to MAX_BODY_BYTES, then JSON.parse. Resolves {} for an empty body. */
+  /**
+   * Read a request body up to MAX_BODY_BYTES, then JSON.parse. Resolves {} for an empty body.
+   * On over-cap it does NOT destroy the request: a destroy sends a TCP RST while request bytes are
+   * still in flight, and on RST Windows discards the peer's receive queue - the 400 the caller then
+   * wrote never reached the client (it saw ECONNRESET). Instead stop BUFFERING (later chunks are
+   * discarded, memory stays bounded) and reject; the caller replies via sendJsonAndClose, which
+   * flushes the body first and closes the socket only after. Mirrors http-transport's readBody.
+   */
   function readJsonBody(req) {
     return new Promise((resolve, reject) => {
       let size = 0;
@@ -1357,10 +1434,10 @@ function createUiServer(opts = {}) {
       let done = false;
       const finish = (fn, val) => { if (!done) { done = true; fn(val); } };
       req.on('data', (chunk) => {
+        if (done) return; // over-cap already signalled - discard, don't buffer
         size += chunk.length;
         if (size > MAX_BODY_BYTES) {
           finish(reject, new Error('request body too large'));
-          try { req.destroy(); } catch (_e) { /* ignore */ }
           return;
         }
         chunks.push(chunk);
@@ -1393,6 +1470,48 @@ function createUiServer(opts = {}) {
       'Cache-Control': 'no-store',
     });
     res.end(bodyStr);
+  }
+
+  /**
+   * Send a JSON response and then CLOSE the connection, draining the unread request body WITHOUT
+   * buffering it - the over-cap reply path. The naive close (req.destroy(), even deferred to the
+   * flush callback) sends a TCP RST whenever request bytes are still in flight, and on RST Windows
+   * discards the peer's receive queue, eating the reply we just flushed. The sequence that holds
+   * (http-transport's sendJsonAndClose is the reference implementation, pinned by http.test.js
+   * step 5; ui-body-cap.test.js pins this one): announce Connection: close, write the full body,
+   * then in the flush callback resume() the request so the rest is discarded, HALF-CLOSE the
+   * socket (the FIN travels in-order after the body), and arm an unref'd hard-destroy backstop.
+   */
+  function sendJsonAndClose(req, res, status, obj) {
+    let bodyStr;
+    try {
+      bodyStr = JSON.stringify(obj);
+    } catch (_e) {
+      bodyStr = '{"ok":false,"error":"failed to serialise response"}';
+      status = 500;
+    }
+    const destroyReq = () => { try { req.destroy(); } catch (_e) { /* the socket may already be gone */ } };
+    try {
+      res.writeHead(status, {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Content-Length': Buffer.byteLength(bodyStr, 'utf8'),
+        'Cache-Control': 'no-store',
+        Connection: 'close',
+      });
+      res.end(bodyStr, () => {
+        try {
+          req.resume(); // discard (never buffer) whatever request body is still arriving
+          if (req.socket && !req.socket.destroyed) req.socket.end(); // FIN, in-order after the body
+        } catch (_e) {
+          return destroyReq();
+        }
+        const t = setTimeout(destroyReq, 10000);
+        if (t && typeof t.unref === 'function') t.unref();
+        if (req.socket) req.socket.once('close', () => clearTimeout(t));
+      });
+    } catch (_e) {
+      destroyReq(); // headers already sent by a racing path - never leave the socket half-open
+    }
   }
 
   /** Serve a static file from PUBLIC_DIR (read FRESH). 404 JSON when absent / outside the dir. */
@@ -1477,6 +1596,9 @@ function createUiServer(opts = {}) {
         const d = apiToolDetail(id);
         return sendJson(res, d.status, d.json);
       }
+      if (method === 'GET' && pathName === '/api/tool-changes') {
+        return sendJson(res, 200, apiToolChanges());
+      }
       if (method === 'GET' && pathName === '/api/upstreams') {
         return sendJson(res, 200, apiUpstreams());
       }
@@ -1507,7 +1629,11 @@ function createUiServer(opts = {}) {
         try {
           body = await readJsonBody(req);
         } catch (err) {
-          return sendJson(res, 400, { ok: false, error: (err && err.message) || 'bad request body' });
+          const msg = (err && err.message) || 'bad request body';
+          // An over-cap body is still arriving: reply first, then close the socket cleanly (see
+          // sendJsonAndClose). Any other body error is a finished request - a plain reply is fine.
+          if (/too large/.test(msg)) return sendJsonAndClose(req, res, 400, { ok: false, error: msg });
+          return sendJson(res, 400, { ok: false, error: msg });
         }
         // Handlers may be sync OR async (apiMcpDiscover connects an upstream) - await covers both.
         const result = await POST_HANDLERS[pathName](body);

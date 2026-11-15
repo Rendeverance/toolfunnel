@@ -22,7 +22,7 @@
  *   K - isLoopbackBindHost is STRICT (empty/whitespace ≠ loopback) where the Host-HEADER check is
  *       deliberately lenient (a missing header defers to the bind address).
  *
- * NON-DESTRUCTIVE: tools/tools.state.json + mcp/expose.json are snapshotted and restored. Node built-ins only.
+ * NON-DESTRUCTIVE (every store named below lives in a scratch config home, never the repo's): tools/tools.state.json + mcp/expose.json are snapshotted and restored. Node built-ins only.
  *
  * Run:  node test/ui-matrix.test.js     (exit 0 = pass, non-zero = fail)
  */
@@ -34,12 +34,14 @@ const assert = require('node:assert');
 const http = require('node:http');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
-const STATE_PATH = path.join(REPO_ROOT, 'tools', 'tools.state.json');
-const EXPOSE_PATH = path.join(REPO_ROOT, 'mcp', 'expose.json');
+const { useTempHome } = require('./helpers/temp-home');
+const HOME = useTempHome({ prefix: 'tf-ui-matrix-' }); // scratch config home (seeded: mock upstream inside it), never the repo's
+const STATE_PATH = HOME.state;
+const EXPOSE_PATH = HOME.expose;
 // Normally ABSENT at the repo root - snapshotted and RE-ABSENTED in finally (a leftover file
 // would flip the gateway's identity and break server-config.test.js's absent-file assumptions).
-const TOOLFUNNEL_JSON = path.join(REPO_ROOT, 'toolfunnel.json');
-const MOCK_SERVER = path.join(REPO_ROOT, 'mcp', 'servers', 'mock-upstream', 'server.js');
+const TOOLFUNNEL_JSON = HOME.serverConfig;
+const MOCK_SERVER = path.join(HOME.mockDir, 'mock-upstream', 'server.js');
 
 const { createUiServer, isLoopbackHost, isLoopbackBindHost } = require('../src/ui/server');
 
@@ -103,7 +105,7 @@ function req(base, method, p, body, extraHeaders) {
     }, null, 2) + '\n');
     writeState({});
 
-    server = createUiServer({ host: '127.0.0.1', port: 0, root: REPO_ROOT });
+    server = createUiServer({ host: '127.0.0.1', port: 0, root: HOME.home });
     const { url } = await server.start();
     const get = (p) => req(url, 'GET', p);
     const post = (p, b) => req(url, 'POST', p, b);
@@ -205,6 +207,43 @@ function req(base, method, p, body, extraHeaders) {
       assert.strictEqual(discBad.status, 404, 'expected 404, got ' + discBad.status);
     });
 
+    // H2 - POST /api/mcp/add persists the upstream BEFORE its expose[] items; a refused item used to
+    // leave the upstream (and any earlier items) behind under a 400 reply, so the natural retry died
+    // as a duplicate id. The store cascades removeUpstream over its expose entries, so the unwind is
+    // one call (apiHookAdd's catch names this exact symptom for hooks).
+    const halfAdd = await post('/api/mcp/add', {
+      upstream: { id: 'half', transport: 'stdio', command: process.execPath, args: [MOCK_SERVER], enabled: false },
+      expose: [{ tool: 'ping' }, { tool: '' }],
+    });
+    const storeAfter = JSON.parse(fs.readFileSync(EXPOSE_PATH, 'utf8'));
+    check('H2: mcp/add with a refused expose item answers 400 and leaves NO half-added upstream behind', () => {
+      assert.strictEqual(halfAdd.status, 400, 'expected 400, got ' + halfAdd.status + ' ' + JSON.stringify(halfAdd.json));
+      assert.ok(!storeAfter.upstreams.some((u) => u && u.id === 'half'), 'upstream "half" persisted despite the 400: ' + JSON.stringify(storeAfter.upstreams.map((u) => u.id)));
+      assert.ok(!storeAfter.expose.some((e) => e && e.upstream === 'half'), 'expose entries for "half" persisted despite the 400');
+    });
+    const retryAdd = await post('/api/mcp/add', {
+      upstream: { id: 'half', transport: 'stdio', command: process.execPath, args: [MOCK_SERVER], enabled: false },
+      expose: [{ tool: 'ping' }],
+    });
+    check('H2: the corrected retry with the same id succeeds (nothing stale blocks it)', () => {
+      assert.strictEqual(retryAdd.status, 200, 'expected 200, got ' + retryAdd.status + ' ' + JSON.stringify(retryAdd.json));
+    });
+    // H2b - an EARLIER item in the same add that is enabled + aliased migrates a gate matcher as it lands;
+    // removing the upstream alone left that rename behind, so the tool the gate guarded ran ungated.
+    const MANIFEST_PATH = path.join(HOME.home, 'hooks', 'hooks.manifest.json');
+    const manifestSnap = fs.existsSync(MANIFEST_PATH) ? fs.readFileSync(MANIFEST_PATH, 'utf8') : null;
+    fs.writeFileSync(MANIFEST_PATH, JSON.stringify({ version: 1, hooks: [{ id: 'g', event: 'PreToolUse', matcher: 'half2_ping', type: 'command', command: 'node x.js', timeout: 5, enabled: true }] }, null, 2) + '\n');
+    const halfAdd2 = await post('/api/mcp/add', {
+      upstream: { id: 'half2', transport: 'stdio', command: process.execPath, args: [MOCK_SERVER], enabled: false },
+      expose: [{ tool: 'ping', as: 'hp', enabled: true }, { tool: '' }],
+    });
+    const matcherAfter = JSON.parse(fs.readFileSync(MANIFEST_PATH, 'utf8')).hooks[0].matcher;
+    if (manifestSnap === null) fs.unlinkSync(MANIFEST_PATH); else fs.writeFileSync(MANIFEST_PATH, manifestSnap);
+    check('H2b: a refused add puts an earlier item\'s gate rename back (matcher unchanged)', () => {
+      assert.strictEqual(halfAdd2.status, 400, 'expected 400, got ' + halfAdd2.status);
+      assert.strictEqual(matcherAfter, 'half2_ping', 'the gate matcher was left renamed to: ' + matcherAfter);
+    });
+
     // I - enabled curated-direct (expose[]) entries are on the every-turn surface too, so /api/surface
     // must COUNT them (else the bloat warning gives a false all-clear). Rewrite expose with 2 enabled
     // entries, empty state -> curatedDirect:2 and promotedTotal includes them.
@@ -289,19 +328,19 @@ function req(base, method, p, body, extraHeaders) {
     // J - the bind guard. The UI can spawn processes and write scripts with no auth whatsoever,
     // so a non-loopback bind must be REFUSED at start(), mirroring the HTTP transport's guard.
     let rejectedAny = null;
-    try { await createUiServer({ host: '0.0.0.0', port: 0, root: REPO_ROOT }).start(); }
+    try { await createUiServer({ host: '0.0.0.0', port: 0, root: HOME.home }).start(); }
     catch (err) { rejectedAny = err; }
     check('J: start() on 0.0.0.0 is hard-refused (unauthenticated UI is loopback-only)', () => {
       assert.ok(rejectedAny, 'start() resolved on 0.0.0.0 - the bind guard is missing');
       assert.ok(/non-loopback/i.test(rejectedAny.message), 'unexpected refusal message: ' + rejectedAny.message);
     });
     let rejectedLan = null;
-    try { await createUiServer({ host: '192.168.1.20', port: 0, root: REPO_ROOT }).start(); }
+    try { await createUiServer({ host: '192.168.1.20', port: 0, root: HOME.home }).start(); }
     catch (err) { rejectedLan = err; }
     check('J: start() on a LAN address is hard-refused too', () => {
       assert.ok(rejectedLan, 'start() resolved on a LAN address - the bind guard is missing');
     });
-    const lhServer = createUiServer({ host: 'localhost', port: 0, root: REPO_ROOT });
+    const lhServer = createUiServer({ host: 'localhost', port: 0, root: HOME.home });
     const lhInfo = await lhServer.start();
     await lhServer.stop();
     check('J: a localhost bind still resolves (127.0.0.1 is proven by the main fixture server)', () => {
@@ -356,7 +395,7 @@ function req(base, method, p, body, extraHeaders) {
   if (fatal) console.log('FATAL: ' + ((fatal && fatal.stack) || fatal));
 
   const passed = results.filter((r) => r.ok).length;
-  const expected = 25;
+  const expected = 28;
   const ok = !fatal && passed === results.length && results.length === expected;
   if (ok) {
     console.log(`\nPASS: ui-matrix test - ${passed}/${expected} assertions passed (hot/hidden axes, surface summary + warnings, live discover, identity settings, legacyPin, wrap notice, loopback bind guard, CSRF guard)`);

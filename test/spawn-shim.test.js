@@ -80,6 +80,27 @@ function writeShim() {
     assert.deepStrictEqual(r.args, ['--flag']);
   });
 
+  // A RELATIVE path (the portable-config shape, `../../x/node.exe`) resolves against the spawn's cwd.
+  // cmd.exe reads a '/' as a switch, so a relative .exe spawns directly and any other path reaches
+  // cmd with backslashes.
+  check('winLaunch: a relative .exe is spawned directly, and a relative shim reaches cmd.exe with backslashes', () => {
+    if (!isWin) { assert.ok(true); return; }
+    assert.deepStrictEqual(winLaunch('../../tools/node.exe', ['a']), { command: '../../tools/node.exe', args: ['a'] });
+    const r = winLaunch('../bin/run.cmd', ['a']);
+    assert.deepStrictEqual(r.args, ['/c', '..\\bin\\run.cmd', 'a']);
+  });
+  const relNode = path.relative(__dirname, NODE).split(path.sep).join('/');
+  const relClient = new McpClient({ id: 'rel-test', command: relNode, args: [MOCK], cwd: __dirname, requestTimeoutMs: 15000 });
+  try {
+    await checkAsync('connect: an MCP whose command is a forward-slash RELATIVE path (' + relNode + ') connects', async () => {
+      await relClient.connect();
+      const tools = await relClient.listTools();
+      assert.ok(tools.some((t) => t && t.name === 'ping'), JSON.stringify(tools.map((t) => t && t.name)));
+    });
+  } finally {
+    try { relClient.close(); } catch (_e) { /* ignore */ }
+  }
+
   // ── 2. real end-to-end: attach the mock upstream THROUGH a shim, full MCP round-trip ───────────
   const { shim, dir } = writeShim();
   const client = new McpClient({ id: 'shim-test', command: shim, args: [], requestTimeoutMs: 15000 });

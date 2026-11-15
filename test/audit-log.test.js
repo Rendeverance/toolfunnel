@@ -37,20 +37,22 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 
 const ROOT = path.resolve(__dirname, '..');
+const { useTempHome } = require('./helpers/temp-home');
+const HOME = useTempHome({ prefix: 'tf-audit-log-' }); // scratch config home, claimed BEFORE any src/ module captures the repo's
 const logger = require(path.join(ROOT, 'src', 'core', 'logger.js'));
 const authConfig = require(path.join(ROOT, 'src', 'auth', 'config.js'));
 const { createHttpMcpServer } = require(path.join(ROOT, 'src', 'mcp', 'http-transport.js'));
 const { createUiServer } = require(path.join(ROOT, 'src', 'ui', 'server.js'));
 
-const LOGS_DIR = path.join(ROOT, 'logs');
+const LOGS_DIR = HOME.logsDir;
 const LOG_CONFIG_PATH = path.join(LOGS_DIR, 'log.config.json');
 const AUTH_CONFIG_PATH = authConfig.CONFIG_PATH;
-const STATE_PATH = path.join(ROOT, 'tools', 'tools.state.json');
+const STATE_PATH = HOME.state;
 
 // A fresh, uniquely named temp log INSIDE the repo's logs/ dir - it has to live in-home, because
 // the log path is confined to <home>/logs (logging.test.js step 5). Deleted in the finally, so
 // logs/ is left holding only what it started with. Guaranteed-absent at start.
-const TEMP_LOG = path.join(ROOT, 'logs', `__tf_test_audit-${process.pid}-${crypto.randomUUID()}.jsonl`);
+const TEMP_LOG = path.join(HOME.logsDir, `__tf_test_audit-${process.pid}-${crypto.randomUUID()}.jsonl`);
 
 const ISSUER = 'https://issuer.test';
 const AUDIENCE = 'https://gateway.test';
@@ -132,7 +134,7 @@ function rawLineCount() {
     // ── 1. CONFIG-CHANGE AUDIT (type:'config', via:'ui') ────────────────────────────────────────
     logger.setConfig({ enabled: true, path: TEMP_LOG });
 
-    uiHost = createUiServer({ host: '127.0.0.1', port: 0, root: ROOT });
+    uiHost = createUiServer({ host: '127.0.0.1', port: 0, root: HOME.home });
     const ui = await uiHost.start();
     const UH = '127.0.0.1';
 

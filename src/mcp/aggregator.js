@@ -50,6 +50,8 @@ const path = require('node:path');
 
 const { McpClient, PROTOCOL_VERSION: LEGACY_UPSTREAM_VERSION } = require('./mcp-client');
 const logger = require('../core/logger');
+const approvals = require('./tool-approvals');
+const crypto = require('node:crypto');
 
 // The sandbox root = the CONFIG HOME (TOOLFUNNEL_HOME / --config-dir; defaults to the package
 // root - see src/core/config-home.js). Used as the isolation boundary the default clientFactory
@@ -57,6 +59,17 @@ const logger = require('../core/logger');
 // A caller may override via opts.gatewayRoot for tests.
 const { resolveConfigHome } = require('../core/config-home');
 const DEFAULT_ROOT = resolveConfigHome();
+
+// The aggregators open in THIS process, by writer id (a config reload replaces one).
+const LIVE_WRITERS = new Set();
+
+/** Is the gateway that wrote a pending entry still running? In this process: that aggregator is
+ *  still open. Elsewhere: its process still exists. An entry with no writer is kept. */
+function writerAlive(by) {
+  if (!by || typeof by.pid !== 'number') return true;
+  if (by.pid === process.pid) return LIVE_WRITERS.has(by.id);
+  try { process.kill(by.pid, 0); return true; } catch (err) { return !!err && err.code === 'EPERM'; }
+}
 
 /** True for a non-empty string. */
 function isNonEmptyString(v) {
@@ -113,10 +126,10 @@ function isDriveRelative(t) {
   return /^[A-Za-z]:(?![\\/])/.test(t);
 }
 
-// Environment variables that make a child load code, whatever its args say (0.7.0). Two classes with two rules. All platforms' vars are checked on all platforms because
+// Environment variables that make a child load code, whatever its args say. Two classes with two rules. All platforms' vars are checked on all platforms because
 // a config is portable and gets run somewhere else, and keys are compared CASE-INSENSITIVELY
 // everywhere because Windows env lookup is case-insensitive - `node_options` reaches the child
-// exactly as `NODE_OPTIONS` does, so an exact-case allowlist was a one-character bypass there.
+// exactly as `NODE_OPTIONS` does, so an exact-case allowlist would be a one-character bypass there.
 //
 // OPTION-STRING vars are a mini command line in the runtime's OWN grammar: quoting, `=` forms,
 // `file:`/`data:` URLs, inspector flags. A path-shaped guard cannot verify them (quoted
@@ -199,6 +212,78 @@ function isInside(root, target) {
  * @param {string} gatewayRoot    the sandbox root the upstream's path-shaped ARGS must stay inside
  * @returns {McpClient}
  */
+// ── permanent connect failures ───────────────────────────────────────────────────────────────
+//
+// Every failed connect arms the background reconnect (1s,2s,4s,8s,16s, then a 30 s keepalive).
+// That is right for a slow-booting server and wrong for one that can NEVER start: a PERMANENT
+// failure runs the same ladder for PERMANENT_RETRY_LIMIT retries, then stops with one stderr line
+// and is listed by stoppedUpstreams() (and /health) until a config reload builds a fresh aggregator
+// or an operator reconnects it. Classified by the error CODE stamped where it is raised - never
+// by message text:
+//   ENOENT              the command does not exist (the client keeps the spawn error's code, and
+//                       on Windows names a command the cmd.exe launch shim hid - commandMissing)
+//   TF_ISOLATION_REFUSED the isolation guard refused the config (deterministic for a given config)
+// Not permanent: a modernOnly refusal - a slow modern server can miss the discover window and
+// look legacy once, so it keeps retrying. Store validation needs no class here: a wrong-typed
+// config is refused at load (fail-loud config) and never reaches a connect.
+const ISOLATION_REFUSED = 'TF_ISOLATION_REFUSED';
+const PERMANENT_ERROR_CODES = new Set(['ENOENT', ISOLATION_REFUSED]);
+// Retries after the failed first attempt: 1+2+4+8+16+30 s, then 8 keepalives at 30 s = 301 s, so
+// about five minutes and 15 attempts in all. Consecutive: a transient failure in between restarts
+// the count (the environment is changing), and any successful connect clears it.
+const PERMANENT_RETRY_LIMIT = 14;
+// The stop line and stoppedUpstreams()[].error keep at most this many characters of the cause.
+const STOPPED_ERROR_MAX = 400;
+
+// ── tool schema validation ──────────────────────────────────────────────────────────────────────
+//
+// One broken tool descriptor must not take its upstream down: validate each listed tool BEFORE it
+// is served and drop only that tool, loudly - degraded, not dead. It runs first at the listing
+// chokepoint, ahead of descriptor approval, so a pathological schema (nesting deep enough to exhaust
+// the stack of every recursive walk after it) is dropped as one tool instead of failing the approval
+// hash for the whole upstream. Structural checks only (zero-dep; not a JSON Schema meta-validator).
+// A MISSING (or null) field stays tolerated - a missing inputSchema is served as { type:"object" },
+// as before; real servers omit it and it is harmless. Present-but-wrong is dropped.
+const MAX_SCHEMA_DEPTH = 64;
+
+/** Does `value` nest deeper than `limit` levels? ITERATIVE on purpose: a hostile schema must not be
+ *  able to exhaust the stack of the very check meant to stop it. */
+function nestingExceeds(value, limit) {
+  const stack = [[value, 1]];
+  while (stack.length) {
+    const [v, depth] = stack.pop();
+    if (v === null || typeof v !== 'object') continue;
+    if (depth > limit) return true;
+    for (const k of Object.keys(v)) stack.push([v[k], depth + 1]);
+  }
+  return false;
+}
+
+/** @returns {string|null} the first structural defect of a listed tool, or null when it may be served. */
+function toolSchemaProblem(t) {
+  const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+  const given = (v) => v !== undefined && v !== null;
+  if (given(t.description) && typeof t.description !== 'string') return '"description" is not a string';
+  if (given(t.title) && typeof t.title !== 'string') return '"title" is not a string';
+  if (given(t.annotations) && !isObj(t.annotations)) return '"annotations" is not an object';
+  for (const f of ['inputSchema', 'outputSchema']) {
+    const s = t[f];
+    if (!given(s)) continue;
+    if (!isObj(s)) return `${f} is not a JSON Schema object`;
+    if (s.type !== undefined && s.type !== 'object') return `${f} "type" must be "object", got ${String(JSON.stringify(s.type)).slice(0, 40)}`;
+    if (s.properties !== undefined && !isObj(s.properties)) return `${f} "properties" is not an object`;
+    if (s.required !== undefined && !(Array.isArray(s.required) && s.required.every((r) => typeof r === 'string'))) {
+      return `${f} "required" is not an array of strings`;
+    }
+    if (nestingExceeds(s, MAX_SCHEMA_DEPTH)) return `${f} is nested deeper than ${MAX_SCHEMA_DEPTH} levels`;
+  }
+  return null;
+}
+
+function isPermanentConnectError(err) {
+  return !!(err && typeof err.code === 'string' && PERMANENT_ERROR_CODES.has(err.code));
+}
+
 function defaultClientFactory(upstream, gatewayRoot, onClose, allowOutsidePaths, clientInfo, eraHint) {
   const id = isNonEmptyString(upstream && upstream.id) ? upstream.id : '(unknown)';
   const args = Array.isArray(upstream && upstream.args) ? upstream.args : [];
@@ -236,7 +321,7 @@ function defaultClientFactory(upstream, gatewayRoot, onClose, allowOutsidePaths,
       }
       return false; // permitted under the wrap, or by this upstream's own opt-out
     }
-    throw new Error(`isolation: upstream ${id} references a path outside the gateway root`);
+    throw Object.assign(new Error(`isolation: upstream ${id} references a path outside the gateway root`), { code: ISOLATION_REFUSED });
   };
 
   for (const arg of args) {
@@ -250,10 +335,9 @@ function defaultClientFactory(upstream, gatewayRoot, onClose, allowOutsidePaths,
     }
   }
 
-  // cwd - the SPAWN BASE (0.7.0). Guarded because it decides where a bare, separator-free arg like
+  // cwd - the SPAWN BASE. Guarded because it decides where a bare, separator-free arg like
   // 'server.js' actually resolves: looksLikePath() is false for such a token so the loop above
-  // never sees it, while the child resolves it against cwd. Until 0.7.0 the comment below claimed
-  // guard-base and spawn-base "agree by construction" - true only while cwd was unset.
+  // never sees it, while the child resolves it against cwd.
   // Drive-relative gets the same outright refusal as everywhere else: 'C:denied' resolves
   // against the child's per-drive current directory, and isInside() judging it against the root
   // is optimistic-and-wrong whenever the root shares the drive.
@@ -262,7 +346,7 @@ function defaultClientFactory(upstream, gatewayRoot, onClose, allowOutsidePaths,
     refuse(`cwd "${upstream.cwd}"`);
   }
 
-  // env - CODE-LOADING variables (0.7.0). A value in any of these loads code
+  // env - CODE-LOADING variables. A value in any of these loads code
   // into the child however clean the args are (reachable in-band: tf_mcp_add forwards env
   // verbatim). Keys are matched CASE-INSENSITIVELY on every platform - Windows env lookup is
   // case-insensitive, so `node_options` is `NODE_OPTIONS` to the child - and every platform's
@@ -304,7 +388,7 @@ function defaultClientFactory(upstream, gatewayRoot, onClose, allowOutsidePaths,
           '(path-list env is within that flag\'s scope). Remove the flag to restore the guard.\n');
         return false;
       }
-      throw new Error(`isolation: upstream ${id} sets code-loading env (${what})`);
+      throw Object.assign(new Error(`isolation: upstream ${id} sets code-loading env (${what})`), { code: ISOLATION_REFUSED });
     };
     // Enumerate EXACTLY as child_process does: `for...in`, which walks own AND INHERITED keys
     // (node's normalizeSpawnArguments: "Prototype values are intentionally included"). An
@@ -370,7 +454,7 @@ function defaultClientFactory(upstream, gatewayRoot, onClose, allowOutsidePaths,
     // resolve them against the SAME base or a guard-passing relative path fails to spawn
     // whenever --config-dir differs from the launch directory (guard-base and spawn-base agree
     // by construction).
-    cwd: isNonEmptyString(upstream && upstream.cwd) ? upstream.cwd : gatewayRoot,
+    cwd: isNonEmptyString(upstream && upstream.cwd) ? path.resolve(gatewayRoot, upstream.cwd) : gatewayRoot,
     // Per-upstream `timeoutMs` config -> the client's PAYLOAD window (tools/call | prompts/get |
     // resources/read; default 120 s).
     toolTimeoutMs: Number.isFinite(upstream && upstream.timeoutMs) && upstream.timeoutMs > 0
@@ -430,6 +514,35 @@ class Aggregator {
     }
     this._store = store;
     this._gatewayRoot = isNonEmptyString(gatewayRoot) ? gatewayRoot : DEFAULT_ROOT;
+    // Tool descriptor approval (tool-approvals.js). _tools holds what may be SERVED
+    // (approved descriptors only); _rawTools the upstream's own listing, so an accept re-applies
+    // without a re-list; _pending the changes that make a call refuse.
+    this._approvalsPath = path.join(this._gatewayRoot, 'mcp', 'tool-approvals.json');
+    /** @type {Map<string, Set<string>>} pending entries ("tool@hash") THIS process wrote, per upstream */
+    this._ownPending = new Map();
+    this._writer = { pid: process.pid, id: crypto.randomBytes(6).toString('hex') };
+    LIVE_WRITERS.add(this._writer.id);
+    /** @type {Map<string, object>} a record whose save FAILED, per upstream: evaluated against until a
+     *  save succeeds, so a file that cannot be written never turns each re-list into a first use */
+    this._unsaved = new Map();
+    /** @type {Set<string>} upstreams whose tools are WITHHELD (approvals unreadable or unhashable): a
+     *  call resolved earlier must refuse, not find an empty pending map and run */
+    this._withheld = new Set();
+    /** @type {Map<string, Array>} upstreamId -> the RAW tools/list result */
+    this._rawTools = new Map();
+    /** @type {Map<string, Map<string, object>>} upstreamId -> toolName -> pending entry */
+    this._pending = new Map();
+    /** @type {Array<object>} recent upgrade / server-changed events for /health (bounded) */
+    this._approvalEvents = [];
+    /** @type {Set<string>} once-per-condition stderr notices already written */
+    this._approvalNoticed = new Set();
+    /** @type {Map<string, Array<{tool:string, problem:string}>>} upstreamId -> tools dropped by schema validation */
+    this._invalid = new Map();
+    // Progress scoping: gateway token -> { upstreamId, originalToken, sink }. The
+    // random prefix means a caller's own token can never be mistaken for a gateway one.
+    this._progressRoutes = new Map();
+    this._progressPrefix = 'tfp-' + crypto.randomBytes(4).toString('hex') + '-';
+    this._progressSeq = 0;
     // Called when the LIVE tool set changes OUT OF BAND (a background reconnect recovers or finally
     // loses an upstream) so the transport can emit notifications/tools/list_changed. Default no-op;
     // the server wires it to emitToolsListChanged(send). Settable so reloadExpose can re-wire the
@@ -487,6 +600,12 @@ class Aggregator {
      * catch owns the next backoff step. Without this, a death DURING an attempt's tools/list re-seeds
      * the 1s floor and the one-timer guard then swallows the escalation - a permanent 1s respawn loop. */
     this._reconnecting = new Set();
+    /** @type {Map<string, number>} upstreamId -> CONSECUTIVE permanent-class connect failures
+     *  (PERMANENT_ERROR_CODES). Cleared by a transient failure or any successful connect. */
+    this._permanentFailures = new Map();
+    /** @type {Map<string, {error:string, attempts:number}>} upstreams that hit
+     *  PERMANENT_RETRY_LIMIT and stopped retrying - stoppedUpstreams() / /health. */
+    this._stopped = new Map();
     /** @type {Map<string, 'modern'|'legacy'>} upstreamId -> era negotiated at the LAST successful
      * connect. A death-driven reconnect passes it to the client as eraHint so a legacy upstream
      * skips the server/discover probe (worst case ~3s against a server that silently drops unknown
@@ -508,12 +627,11 @@ class Aggregator {
    * failure, handshake timeout, listTools failure) is collected into failed[]. An
    * upstream already connected (cached) is treated as connected without reconnecting.
    *
-   * BEHAVIOUR CHANGE (concurrent connect): a startup failure is no longer a one-off failed[]
-   * entry. Every failed upstream is handed to _scheduleReconnect, so a PERMANENT failure (bad
-   * command, isolation refusal) now retries in the background for the whole session -
-   * exponential 1s..16s, then the 30s keepalive indefinitely. That is the same treatment a
-   * mid-session death already got; reconnect_slow is logged once when the slow phase begins,
-   * and failed[] still reports the startup outcome to the caller as before.
+   * A startup failure is not a one-off failed[] entry: every failed upstream is handed to
+   * _scheduleReconnect - exponential 1s..16s, then the 30s keepalive, the same treatment a
+   * mid-session death gets; reconnect_slow is logged once when the slow phase begins, and
+   * failed[] still reports the startup outcome to the caller. A PERMANENT failure (missing
+   * command, isolation refusal) counts toward PERMANENT_RETRY_LIMIT and then stops.
    *
    * @returns {Promise<{ connected: string[], failed: Array<{id:string, error:string}> }>}
    */
@@ -552,16 +670,19 @@ class Aggregator {
       // the moment its connect fails, instead of lingering for the rest of the batch. The rethrow
       // hands the original error to allSettled; a throwing _discard must never mask it.
       //
-      // These startup promises are NOT registered in _connecting. A concurrent ensureConnected(id)
-      // during the batch would find the pre-handshake client _connectOne caches, treat it as stale
-      // and discard it. Nothing can call in during startup today - http-transport awaits
-      // connectAll() before listen() and before the reload swap - so the batch is unobservable.
-      // If a caller is ever added that can race startup, set/delete the _connecting entry around
-      // each task here.
-      const promise = this._connectOne(upstream).catch((err) => {
+      // Registered in _connecting for the life of the task, exactly like ensureConnected's own
+      // connect: _connectOne caches the client BEFORE its handshake completes, so a concurrent
+      // ensureConnected(id) that inspected the cache instead of joining would read it as stale,
+      // discard it mid-handshake and connect a second time. Joiners get the client (same shape as
+      // ensureConnected's promise); the entry clears on settle either way.
+      const promise = (async () => {
+        await this._connectOne(upstream);
+        return this._clients.get(id);
+      })().catch((err) => {
         try { this._discard(id); } catch (_e) { /* cleanup is best-effort; report the real error */ }
         throw err;
-      });
+      }).finally(() => { this._connecting.delete(id); });
+      this._connecting.set(id, promise);
       tasks.push({ id, cached: false, promise });
     }
 
@@ -579,6 +700,7 @@ class Aggregator {
       const error = errMsg(settled[i].reason);
       logger.log({ type: 'mcp', event: 'connect_failed', upstream: id, error });
       failed.push({ id, error });
+      if (this._countConnectFailure(id, settled[i].reason)) continue; // (a limit of 0 would stop here)
       // A STARTUP failure is usually transient - a slow-booting upstream that missed its
       // handshake window while eleven siblings were spawning next to it. Arm the same
       // self-healing backoff a mid-session death gets: without it a startup failure stranded
@@ -609,10 +731,10 @@ class Aggregator {
     }
 
     // Route through ensureConnected: it JOINS an in-flight connect via _connecting instead of
-    // racing it - two concurrent discover() calls used to double-spawn the child and leak the
-    // loser without closing it. ensureConnected also reaps its own failed connects.
-    // allowDisabled: discover is the ONE caller permitted to connect a disabled upstream -
-    // inspecting its tools pre-enable worked before the race fix and stays supported.
+    // racing it, so two concurrent discover() calls cannot double-spawn the child and leak the
+    // loser. ensureConnected also reaps its own failed connects.
+    // allowDisabled: discover is the ONE caller permitted to connect a disabled upstream, so a
+    // disabled upstream's tools can be inspected before enabling it.
     try {
       await this.ensureConnected(upstreamId, { allowDisabled: true });
     } catch (err) {
@@ -721,13 +843,13 @@ class Aggregator {
    * @param {any}    args   structured arguments forwarded verbatim to callTool
    * @returns {{ execute: Function, toolName: string, upstream: string } | null}
    */
-  resolveExposedExecution(name, args, meta) {
+  resolveExposedExecution(name, args, meta, progress) {
     const hit = this._findExposedExecution(name);
     if (!hit) return null;
     const { client, realTool, upstream, exposedName } = hit;
     return {
       // The execute thunk is the seam the server calls AFTER the PreToolUse gate allows it.
-      execute: this._forwardExecutor(client, realTool, args, meta),
+      execute: this._forwardExecutor(client, realTool, args, meta, upstream, progress),
       toolName: exposedName, // downstream name - the gate's matcher target
       upstream,
     };
@@ -752,10 +874,39 @@ class Aggregator {
    * @param {any}    args
    * @returns {() => Promise<any>}
    */
-  _forwardExecutor(client, realTool, args, meta) {
+  _forwardExecutor(client, realTool, args, meta, upstreamId, progress) {
     return () => {
+      // Checked when the call RUNS, not when it resolved: the tool can change while a permission
+      // prompt waits on the user.
+      const refusal = this._approvalRefusal(upstreamId || client.id, realTool, 'curated');
+      if (refusal) return Promise.resolve(refusal.envelope);
       this._warnIfPinned(client.id, realTool);
-      return client.callTool(realTool, args, meta);
+      const scoped = this._scopeProgress(upstreamId || client.id, meta, progress);
+      return Promise.resolve()
+        .then(() => client.callTool(realTool, args, scoped.meta))
+        .finally(scoped.release);
+    };
+  }
+
+  /**
+   * Scope a caller's progressToken to this one call. Client tokens are client-chosen,
+   * so two callers can use the same one over a shared upstream - and the spec says a token "MUST be
+   * unique across all active requests" from its SENDER, which toward the upstream is the gateway.
+   * With a `progress` sink the token is rewritten to a gateway token and that token's beats are
+   * routed back to the sink with the caller's token restored (_forwardUpstreamNotification). Without
+   * a sink the meta goes through unchanged (the token still keeps the upstream's timeout alive).
+   * @returns {{ meta: object|undefined, release: () => void }} release() when the call settles
+   */
+  _scopeProgress(upstreamId, meta, progress) {
+    const tok = meta && typeof meta === 'object' ? meta.progressToken : undefined;
+    if (typeof progress !== 'function' || !((typeof tok === 'string' && tok.length) || Number.isInteger(tok))) {
+      return { meta, release: () => {} };
+    }
+    const gatewayToken = this._progressPrefix + (++this._progressSeq);
+    this._progressRoutes.set(gatewayToken, { upstreamId, originalToken: tok, sink: progress });
+    return {
+      meta: Object.assign({}, meta, { progressToken: gatewayToken }),
+      release: () => { this._progressRoutes.delete(gatewayToken); },
     };
   }
 
@@ -819,9 +970,8 @@ class Aggregator {
       if (!init || typeof init !== 'object') return null;
       const si = init.serverInfo && typeof init.serverInfo === 'object' ? init.serverInfo : {};
       // serverInfo passes VERBATIM minus the two fields some servers wrongly nest inside it
-      // (capabilities/instructions - extracted separately below). A whitelist here ate the spec's
-      // own serverInfo.title (2025-06-18) through the wrap - proven against the real
-      // server-everything (found wire-testing the wrap, 2026-07-17). Blocklist, so future identity fields survive.
+      // (capabilities/instructions - extracted separately below). A blocklist, not a whitelist,
+      // so the spec's serverInfo.title (2025-06-18) and future identity fields survive the wrap.
       const serverInfo = {};
       for (const k of Object.keys(si)) {
         if (k === 'capabilities' || k === 'instructions') continue;
@@ -890,6 +1040,16 @@ class Aggregator {
   setWrapChatterUpstream(v) {
     const next = v == null ? null : v;
     if (next !== this.wrapChatterUpstream && this._subscribedUris instanceof Set) {
+      // Tell the OUTGOING target to drop them first - it was told resources/subscribe for every
+      // one and, forgotten only locally, kept emitting resources/updated for URIs nothing consumed
+      // for the life of its process. releaseResources fans out to the CURRENT wrapChatterUpstream,
+      // so it runs BEFORE the reassignment; the refs are dropped wholesale first because a context
+      // switch releases everything, whatever the listen refcounts said.
+      if (this._subscribedUris.size) {
+        const uris = [...this._subscribedUris];
+        if (this._subscribedRefs instanceof Map) this._subscribedRefs.clear();
+        this.releaseResources(uris);
+      }
       this._subscribedUris.clear();
       if (this._subscribedRefs instanceof Map) this._subscribedRefs.clear(); // 5.4: refs go with the context
     }
@@ -1022,8 +1182,21 @@ class Aggregator {
    */
   _forwardUpstreamNotification(upstreamId, notification) {
     try {
-      if (this._closed) return; // a swapped-out/torn-down aggregator must never fan out (F9)
+      if (this._closed) return; // a swapped-out/torn-down aggregator must never fan out
       if (!notification || typeof notification.method !== 'string') return;
+      // Scoped progress: a beat carrying one of OUR tokens goes to that call's sink,
+      // caller's token restored - only from the upstream the token was issued to - and NOWHERE else:
+      // not a settled call, not another upstream's, never on to a broadcast.
+      if (notification.method === 'notifications/progress') {
+        const tok = notification.params && notification.params.progressToken;
+        if (typeof tok === 'string' && tok.startsWith(this._progressPrefix)) {
+          const route = this._progressRoutes.get(tok);
+          if (route && route.upstreamId === upstreamId) {
+            try { route.sink(Object.assign({}, notification.params, { progressToken: route.originalToken })); } catch (_e) { /* a sink never breaks the read loop */ }
+          }
+          return;
+        }
+      }
       // tasks/status rides the wrap-chatter lane too: the wrap advertises the
       // upstream's `tasks` capability verbatim, so a task started through the wrap owes its
       // status notifications exactly as a direct connection would deliver them (2025-11-25
@@ -1033,7 +1206,7 @@ class Aggregator {
          notification.method === 'notifications/tasks/status');
       if (!Aggregator.BRIDGED_NOTIFICATIONS.has(notification.method) && !isWrapChatter) return;
       // Forward a CLEAN notification only - a misbehaving upstream's stray `id: null` field would
-      // read as a response to downstream parsers (F7).
+      // read as a response to downstream parsers.
       const clean = { jsonrpc: '2.0', method: notification.method };
       if (notification.params !== undefined) clean.params = notification.params;
       const emit = () => {
@@ -1045,7 +1218,7 @@ class Aggregator {
       };
       if (notification.method === 'notifications/tools/list_changed') {
         // A relayed "tools changed" must not point the client at a STALE surface - refresh the
-        // cache FIRST, then relay, so the re-fetch sees the new list (F2/B-M4). onToolsChanged
+        // cache FIRST, then relay, so the re-fetch sees the new list. onToolsChanged
         // fires too so ToolFunnel's own funnel-mode signal stays coherent.
         this._listAndCache(upstreamId)
           .then(() => { try { if (typeof this.onToolsChanged === 'function') this.onToolsChanged(); } catch (_e) { /* ignore */ } })
@@ -1116,7 +1289,17 @@ class Aggregator {
     // (allowConnect:false) still never joins - joining would block the stdio chain.
     if (this._connecting.has(upstreamId)) {
       if (!(opts && opts.allowConnect === false)) return this._connecting.get(upstreamId);
-      throw new Error(`Aggregator.ensureConnected: upstream "${upstreamId}" is not connected (reconnecting in background)`);
+      throw new Error(`Aggregator.ensureConnected: upstream "${upstreamId}" is not connected (reconnecting in background) - retry in a few seconds`);
+    }
+
+    // STOPPED (permanent failure past the ceiling): nothing is reconnecting, so the RUN path must
+    // not say it is - name the cause and the way back. The background path (an operator's
+    // discover) still makes its one attempt below.
+    const stopped = this._stopped.get(upstreamId);
+    if (stopped && !allowConnect) {
+      throw new Error(`Aggregator.ensureConnected: upstream "${upstreamId}" is not connected - stopped retrying after ` +
+        `${stopped.attempts} attempts: ${stopped.error}. Fix the cause, then save expose.json (any change reloads it) ` +
+        'or restart the gateway.');
     }
 
     // Fast path: a live cached client serves BOTH modes immediately.
@@ -1127,14 +1310,14 @@ class Aggregator {
       // Dead cached client. The RUN path fails clean (never (re)connects); the background path drops
       // it and reconnects below.
       if (!allowConnect) {
-        throw new Error(`Aggregator.ensureConnected: upstream "${upstreamId}" disconnected (reconnecting in background)`);
+        throw new Error(`Aggregator.ensureConnected: upstream "${upstreamId}" disconnected (reconnecting in background) - retry in a few seconds`);
       }
       logger.log({ type: 'mcp', event: 'disconnect', upstream: upstreamId, reason: 'stale' });
       this._discard(upstreamId);
     } else if (!allowConnect) {
       // Not connected. The RUN path neither connects NOR joins an in-flight connect - joining would
       // block the stdio chain for the connect+list latency (the head-of-line freeze this mode avoids).
-      throw new Error(`Aggregator.ensureConnected: upstream "${upstreamId}" is not connected (reconnecting in background)`);
+      throw new Error(`Aggregator.ensureConnected: upstream "${upstreamId}" is not connected (reconnecting in background) - retry in a few seconds`);
     }
 
     // Background path only (allowConnect): connect from scratch. In-flight connects were joined
@@ -1175,6 +1358,10 @@ class Aggregator {
     // A MANUAL kick deliberately re-runs the full era negotiation - the operator may have just
     // upgraded the server, and "reconnect" should observe reality, not replay a memo of it.
     this._eraMemo.delete(upstreamId);
+    // ...and it restarts a STOPPED upstream with a fresh retry budget: the operator is saying the
+    // cause may be fixed (the command installed, the path moved inside the root).
+    this._stopped.delete(upstreamId);
+    this._permanentFailures.delete(upstreamId);
     try {
       return await this.ensureConnected(upstreamId);
     } catch (err) {
@@ -1187,7 +1374,7 @@ class Aggregator {
       // retry this path promises.
       const stale = this._reconnectTimers.get(upstreamId);
       if (stale) { clearTimeout(stale); this._reconnectTimers.delete(upstreamId); }
-      this._scheduleReconnect(upstreamId, 0);
+      if (!this._countConnectFailure(upstreamId, err)) this._scheduleReconnect(upstreamId, 0);
       throw err;
     }
   }
@@ -1245,9 +1432,49 @@ class Aggregator {
   }
 
   /**
+   * Count one failed connect toward the permanent-failure ceiling. A PERMANENT-class error adds to
+   * this upstream's consecutive count; any other error resets it. Past PERMANENT_RETRY_LIMIT retries
+   * the upstream is STOPPED: one stderr line, a log event, and stoppedUpstreams() lists it. NEVER throws.
+   * @returns {boolean} true when the upstream is now stopped (the caller must not schedule a retry)
+   */
+  _countConnectFailure(upstreamId, err) {
+    try {
+      if (!isPermanentConnectError(err)) {
+        this._permanentFailures.delete(upstreamId);
+        return false;
+      }
+      const attempts = (this._permanentFailures.get(upstreamId) || 0) + 1;
+      this._permanentFailures.set(upstreamId, attempts);
+      if (attempts <= PERMANENT_RETRY_LIMIT) return false;
+      // ONE bounded line: a real failure carries the upstream's stderr (newlines, possibly pages
+      // of it). The client puts the cause first, so the head is the part worth keeping.
+      const flat = errMsg(err).replace(/\s+/g, ' ').trim();
+      const error = flat.length > STOPPED_ERROR_MAX ? flat.slice(0, STOPPED_ERROR_MAX) + '...' : flat;
+      this._stopped.set(upstreamId, { error, attempts });
+      logger.log({ type: 'mcp', event: 'reconnect_stopped', upstream: upstreamId, attempts, error });
+      try {
+        process.stderr.write(`[toolfunnel] upstream "${upstreamId}" stopped retrying after ${attempts} attempts ` +
+          `(a permanent failure: ${error}). Fix the cause, then save expose.json (any change reloads it) or restart the gateway.\n`);
+      } catch (_e) { /* never let the notice sink the caller */ }
+      return true;
+    } catch (_e) {
+      return false;
+    }
+  }
+
+  /** Upstreams that hit the permanent-failure ceiling and stopped retrying: [{id, error, attempts}]
+   *  (fresh copies). The /health source. Never throws. */
+  stoppedUpstreams() {
+    const out = [];
+    for (const [id, s] of this._stopped) out.push({ id, error: s.error, attempts: s.attempts });
+    return out;
+  }
+
+  /**
    * Schedule ONE background reconnect attempt with exponential backoff: 1s,2s,4s,8s,16s, then capped
-   * at 30s. After the fast phase it does NOT give up - it falls back to a slow 30s keepalive so a long
-   * transient outage still self-heals (a detached/disabled upstream stops it via getUpstream; closeAll
+   * at 30s. After the fast phase it does NOT give up on a transient failure - it falls back to a slow
+   * 30s keepalive so a long transient outage still self-heals; a PERMANENT failure stops at the
+   * ceiling instead (_countConnectFailure) (a detached/disabled upstream stops it via getUpstream; closeAll
    * stops it via _closed). On success the tools are re-listed and a top-level change is signalled. One
    * timer per upstream (no pile-up); the timer is unref'd so it never keeps the process alive. NEVER throws.
    * @param {string} upstreamId
@@ -1256,6 +1483,7 @@ class Aggregator {
   _scheduleReconnect(upstreamId, attempt) {
     if (this._closed) return;
     if (this._reconnectTimers.has(upstreamId)) return; // a reconnect is already pending for this id
+    if (this._stopped.has(upstreamId)) return; // past the permanent-failure ceiling - see _countConnectFailure
     const upstream = this._store.getUpstream(upstreamId);
     if (!upstream || upstream.enabled !== true) return; // detached/disabled - stop trying
     const MAX_FAST_ATTEMPTS = 6; // exponential phase; beyond it, a slow keepalive at the 30s cap
@@ -1280,6 +1508,8 @@ class Aggregator {
         if (attempt + 1 === MAX_FAST_ATTEMPTS) {
           logger.log({ type: 'mcp', event: 'reconnect_slow', upstream: upstreamId, attempts: MAX_FAST_ATTEMPTS });
         }
+        // A PERMANENT failure past the ceiling stops here (one stderr line; stoppedUpstreams()).
+        if (this._countConnectFailure(upstreamId, err)) return;
         // Keep escalating to the cap, then keep retrying slowly (cap the counter so the delay stays
         // at 30s) - never permanently give up while the upstream stays enabled. The escalation is
         // scheduled while still in flight (the guard below checks _reconnectTimers, which is empty
@@ -1351,8 +1581,12 @@ class Aggregator {
    * @param {any}    args
    * @returns {{ execute: () => Promise<any>, toolName: string, upstream: string } | null}
    */
-  resolveLeanExecution(name, args) {
+  resolveLeanExecution(name, args, callOpts) {
     if (!isNonEmptyString(name)) return null;
+    // callOpts: { meta, progress } - the caller's request _meta rides the lean forward as it does
+    // every other route, and progress comes back through the sink.
+    const leanMeta = callOpts && callOpts.meta && typeof callOpts.meta === 'object' ? callOpts.meta : undefined;
+    const leanProgress = callOpts && typeof callOpts.progress === 'function' ? callOpts.progress : undefined;
     for (const [upstreamId, tools] of this._tools) {
       if (!this._clients.has(upstreamId)) continue;
       const upstream = this._store.getUpstream(upstreamId);
@@ -1364,12 +1598,21 @@ class Aggregator {
         const realTool = t.name;
         const self = this;
         const execute = async () => {
+          // A changed descriptor waiting for acceptance refuses here, before any forward.
+          const refusal = self._approvalRefusal(upstreamId, realTool, 'lean');
+          if (refusal) throw Object.assign(new Error(refusal.text), { withheld: refusal.envelope.structuredContent });
           // allowConnect:false - the run path NEVER synchronously (re)connects (that would freeze the
           // stdio loop, starving pings). It uses a live client or joins an in-flight background
           // reconnect, else fails clean; the onClose-driven background reconnect owns recovery.
           const client = await self.ensureConnected(upstreamId, { allowConnect: false });
           self._warnIfPinned(upstreamId, realTool);
-          const envelope = await client.callTool(realTool, args);
+          const scoped = self._scopeProgress(upstreamId, leanMeta, leanProgress);
+          let envelope;
+          try {
+            envelope = await client.callTool(realTool, args, scoped.meta);
+          } finally {
+            scoped.release();
+          }
           // Preserve the upstream's failure signal. callTool RESOLVES even on isError:true, so a
           // failed upstream call must become a THROW -> gatedRun returns { ok:false } -> run_tool
           // surfaces isError:true. Otherwise a failed call would be reported as success - and the
@@ -1400,7 +1643,7 @@ class Aggregator {
    * @param {any}    args
    * @returns {{ execute: () => Promise<any>, toolName: string, upstream: string } | null}
    */
-  resolveRawExecution(name, args, meta, out) {
+  resolveRawExecution(name, args, meta, out, progress) {
     if (!isNonEmptyString(name)) return null;
     for (const [upstreamId, tools] of this._tools) {
       if (!this._clients.has(upstreamId)) continue;
@@ -1413,17 +1656,27 @@ class Aggregator {
         const realTool = t.name;
         const self = this;
         const execute = async () => {
+          // A changed descriptor waiting for acceptance refuses here (the wrap has no meta-tools, so
+          // the result names the UI and CLI routes).
+          const refusal = self._approvalRefusal(upstreamId, realTool, 'raw');
+          if (refusal) return refusal.envelope;
           // allowConnect:false - same freeze-avoidance rule as the lean path.
           const client = await self.ensureConnected(upstreamId, { allowConnect: false });
           self._warnIfPinned(upstreamId, realTool);
           const params = { name: realTool, arguments: args == null ? {} : args };
           // The caller's request-scoped _meta (progressToken, trace keys - already stripped of
           // protocol keys) rides the forward: a direct server would receive it, so the wrapped
-          // one must too - without it the upstream never emits progress for the call.
-          if (meta && typeof meta === 'object' && Object.keys(meta).length) params._meta = meta;
+          // one must too - without it the upstream never emits progress for the call. With a
+          // progress sink the token is scoped to this call (_scopeProgress).
+          const scoped = self._scopeProgress(upstreamId, meta, progress);
+          if (scoped.meta && typeof scoped.meta === 'object' && Object.keys(scoped.meta).length) params._meta = scoped.meta;
           // `out.rpcId` is set synchronously at issue time - the caller's cancel-translation
           // hook (the same contract as forwardRaw's).
-          return await client.request('tools/call', params, out);
+          try {
+            return await client.request('tools/call', params, out);
+          } finally {
+            scoped.release();
+          }
         };
         return { execute, toolName: name, upstream: upstreamId };
       }
@@ -1438,6 +1691,7 @@ class Aggregator {
    */
   async closeAll() {
     this._closed = true; // latch BEFORE teardown so any in-flight execute thunk refuses to re-spawn
+    LIVE_WRITERS.delete(this._writer.id);
     for (const [, timer] of this._reconnectTimers) {
       try { clearTimeout(timer); } catch (_e) { /* ignore */ }
     }
@@ -1455,6 +1709,11 @@ class Aggregator {
     }
     this._clients.clear();
     this._tools.clear();
+    this._rawTools.clear();
+    this._pending.clear();
+    this._withheld.clear();
+    this._invalid.clear();
+    this._progressRoutes.clear();
   }
 
   // ── internals ──────────────────────────────────────────────────────────────
@@ -1524,6 +1783,9 @@ class Aggregator {
       command: upstream.command,
       tools: (this._tools.get(upstream.id) || []).length,
     });
+    // A connect that worked ends any permanent-failure count or stop (every connect path runs here).
+    this._permanentFailures.delete(upstream.id);
+    this._stopped.delete(upstream.id);
     // Legacy shim STARTUP warning (the pin's contract: warn at startup AND per call, naming the
     // version). stderr, so the operator sees it without the client's content ever growing.
     if (upstream.legacyPin === true) {
@@ -1537,14 +1799,270 @@ class Aggregator {
     }
   }
 
-  /** tools/list one connected upstream and cache the result; returns a clone. */
+  /** tools/list one connected upstream and cache the result; returns a clone of what is SERVED. */
   async _listAndCache(upstreamId) {
     const client = this._clients.get(upstreamId);
     if (!client) throw new Error(`no connected client for "${upstreamId}"`);
     const tools = await client.listTools();
     const safe = Array.isArray(tools) ? tools.filter((t) => t && isNonEmptyString(t.name)) : [];
-    this._tools.set(upstreamId, safe);
-    return cloneTools(safe);
+    // Every descriptor enters here (connect, discover, list_changed). Drop structurally broken tools
+    // FIRST (one bad tool never takes the upstream down), then keep the RAW listing and SERVE only
+    // approved descriptors: every listing reads _tools, so none can show unapproved text.
+    this._rawTools.set(upstreamId, this._dropInvalidTools(upstreamId, safe));
+    this._applyApprovals(upstreamId, { fresh: true });
+    return cloneTools(this._tools.get(upstreamId) || []);
+  }
+
+  /** Split a listing into servable tools and dropped ones (toolSchemaProblem); record the dropped
+   *  for invalidTools() and name each once on stderr. NEVER throws. */
+  _dropInvalidTools(upstreamId, tools) {
+    const keep = [];
+    const dropped = [];
+    for (const t of tools) {
+      let problem;
+      try { problem = toolSchemaProblem(t); } catch (err) { problem = `cannot be checked (${errMsg(err)})`; }
+      if (!problem) { keep.push(t); continue; }
+      dropped.push({ tool: t.name, problem });
+      this._approvalNotice(`invalid:${upstreamId}:${t.name}:${problem}`,
+        `[toolfunnel] upstream "${upstreamId}": dropped tool ${JSON.stringify(t.name)} - ${problem}. ` +
+        'Its other tools are unaffected; the tool returns when the server fixes its descriptor.');
+    }
+    this._invalid.set(upstreamId, dropped);
+    if (dropped.length) logger.log({ type: 'mcp', event: 'tool_dropped', upstream: upstreamId, tools: dropped });
+    return keep;
+  }
+
+  /** Tools dropped by schema validation: [{upstream, tool, problem}] (fresh copies; the /health source). */
+  invalidTools() {
+    const out = [];
+    for (const [upstream, list] of this._invalid) for (const d of list) out.push({ upstream, tool: d.tool, problem: d.problem });
+    return out;
+  }
+
+  // ── tool descriptor approval ────────────────────────────────────────────────────────────────
+
+  /**
+   * Apply the approval rules (tool-approvals.js evaluate) to one upstream's RAW listing: fill _tools
+   * with what may be served and _pending with what must refuse, persist a changed record, report on
+   * stderr. An unreadable approvals file WITHHOLDS the upstream's tools (fail closed): treating it as
+   * empty would approve everything as first use. NEVER throws.
+   *
+   * Only a FRESH listing ({fresh: true}, from _listAndCache) - or a first use, with no record yet -
+   * WRITES the file and reports events. Every other call (the file watcher, a refusal's re-read, an
+   * accept) only re-derives what this process serves: gateways sharing a home each run their own
+   * child of the upstream, and a write from one's cached listing would erase another's pending
+   * entry or reverse its upgrade, each write waking the other's watcher.
+   * A write keeps other processes' pending entries (tool-approvals keepForeignPending).
+   */
+  _applyApprovals(upstreamId, opts) {
+    const fresh = !!(opts && opts.fresh);
+    const raw = this._rawTools.get(upstreamId) || [];
+    const withhold = (key, line) => {
+      this._withheld.add(upstreamId);
+      this._tools.set(upstreamId, []);
+      this._pending.set(upstreamId, new Map());
+      this._approvalNotice(key, line);
+    };
+    let doc;
+    try {
+      doc = approvals.loadApprovals(this._approvalsPath);
+    } catch (err) {
+      withhold(`unreadable:${upstreamId}`, `[toolfunnel] ${errMsg(err)} - the tools of upstream "${upstreamId}" are withheld ` +
+        'until mcp/tool-approvals.json is repaired (or that upstream\'s entry removed from it - removing an entry approves its current tools as first use).');
+      return;
+    }
+    this._approvalNoticed.delete(`unreadable:${upstreamId}`); // readable again: a later breakage reports anew
+    const client = this._clients.get(upstreamId);
+    const serverInfo = (client && client.initializeResult && client.initializeResult.serverInfo) || {};
+    const upstream = this._store.getUpstream(upstreamId);
+    const stored = approvals.getRecord(doc, upstreamId) || this._unsaved.get(upstreamId);
+    const authoritative = fresh || !stored;
+    let r;
+    try {
+      r = approvals.evaluate({
+        record: stored,
+        serverInfo,
+        tools: raw,
+        strict: !!(upstream && upstream.strictApproval === true),
+        writer: this._writer,
+      });
+    } catch (err) {
+      // A descriptor the hash cannot walk (nesting deep enough to exhaust the stack) is not served.
+      withhold(`unhashable:${upstreamId}`, `[toolfunnel] cannot check the tool descriptors of upstream "${upstreamId}" ` +
+        `(${errMsg(err)}) - its tools are withheld.`);
+      return;
+    }
+    const before = this._pending.get(upstreamId);
+    this._withheld.delete(upstreamId);
+    this._tools.set(upstreamId, r.effective);
+    this._pending.set(upstreamId, new Map(r.pending.map((p) => [p.tool, p])));
+    if ((r.changed || this._unsaved.has(upstreamId)) && authoritative) { // an unsaved record retries
+      try {
+        // Read-modify-write the CURRENT file: the UI, the CLI and other gateways write it too.
+        const latest = approvals.loadApprovals(this._approvalsPath);
+        const current = approvals.getRecord(latest, upstreamId);
+        const mine = this._ownPending.get(upstreamId) || new Set();
+        const merged = approvals.keepForeignPending(current, r.record, (n, h) => mine.has(`${n}@${h}`), writerAlive);
+        if (!current || approvals.canonical(current) !== approvals.canonical(merged)) {
+          approvals.setRecord(latest, upstreamId, merged);
+          try {
+            approvals.saveApprovals(this._approvalsPath, latest);
+          } catch (err) {
+            this._unsaved.set(upstreamId, merged);
+            throw err;
+          }
+        }
+        this._unsaved.delete(upstreamId);
+        this._approvalNoticed.delete(`save:${upstreamId}`); // saved again: a later failure reports anew
+        this._ownPending.set(upstreamId, new Set(Object.keys(r.record.pending || {}).map((n) => `${n}@${r.record.pending[n].hash}`)));
+      } catch (err) {
+        if (!this._unsaved.has(upstreamId)) this._unsaved.set(upstreamId, r.record);
+        this._approvalNotice(`save:${upstreamId}`, `[toolfunnel] could not save tool approvals for upstream "${upstreamId}": ` +
+          `${errMsg(err)} - approvals are kept in memory until a save succeeds (changes still wait for acceptance).`);
+      }
+    }
+    // Events (first use, upgrade, server change) are decisions, reported once, when they are made.
+    this._reportApprovals(upstreamId, authoritative ? r : { ...r, events: [] }, before, serverInfo);
+  }
+
+  /** stderr + activity log for what an evaluation did. Pending changes are reported when the SET changes. */
+  _reportApprovals(upstreamId, r, before, serverInfo) {
+    const label = (s) => `${s.name || 'unnamed server'}${s.version ? ' ' + s.version : ''}`;
+    const say = (line) => { try { process.stderr.write(approvals.printable(line) + '\n'); } catch (_e) { /* never sink the caller */ } };
+    for (const e of r.events) {
+      logger.log({ type: 'mcp', event: 'tool_approval', kind: e.kind, upstream: upstreamId, from: e.from, to: e.to, tools: e.tools });
+      if (e.kind === 'first-use') {
+        say(`[toolfunnel] upstream "${upstreamId}": approved ${e.tools.length} tool descriptor(s) on first use (${label(serverInfo)}). ` +
+          'A later change at the same server version will wait for your acceptance.');
+      } else if (e.kind === 'server-changed') {
+        say(`[toolfunnel] upstream "${upstreamId}" now reports a DIFFERENT server ("${e.from}" -> "${e.to}"): approved the new ` +
+          'descriptor(s) of ' + e.tools.map((t) => `${t.tool} (${t.reason})`).join(', ') +
+          '. If you did not change this upstream\'s command, check it (strictApproval holds such changes for acceptance).');
+        this._recordApprovalEvent({ upstream: upstreamId, kind: 'server-changed', from: e.from, to: e.to, tools: e.tools });
+      } else if (e.kind === 'upgrade') {
+        say(`[toolfunnel] upstream "${upstreamId}" upgraded from ${e.from} to ${e.to}: approved the new descriptor(s) of ` +
+          e.tools.map((t) => `${t.tool} (${t.reason})`).join(', ') + '.');
+        this._recordApprovalEvent({ upstream: upstreamId, kind: 'upgrade', from: e.from, to: e.to, tools: e.tools });
+      }
+    }
+    const sig = (list) => list.map((p) => `${p.tool}@${p.hash}`).sort().join('|');
+    const now = sig(r.pending);
+    if (r.pending.length && now !== sig(before ? [...before.values()] : [])) {
+      const version = serverInfo && serverInfo.version;
+      const stayed = !version || (r.record && r.record.server && r.record.server.version === version);
+      say(`[toolfunnel] upstream "${upstreamId}": ${r.pending.length} tool(s) changed ` +
+        (stayed ? `while the server version stayed ${version || '(not reported)'}` : `with the server upgrade to ${version} (strictApproval)`) +
+        ' - withheld until accepted: ' + r.pending.map((p) => `${p.tool} (${p.reason})`).join(', ') +
+        `. Review, then accept with the tf_accept_change tool, the UI, or: toolfunnel accept ${upstreamId}`);
+      logger.log({ type: 'mcp', event: 'tool_approval', kind: 'pending', upstream: upstreamId, tools: r.pending.map((p) => ({ tool: p.tool, reason: p.reason })) });
+    }
+  }
+
+  _recordApprovalEvent(e) {
+    this._approvalEvents.push(Object.assign({ at: new Date().toISOString() }, e));
+    if (this._approvalEvents.length > 50) this._approvalEvents.splice(0, this._approvalEvents.length - 50);
+  }
+
+  _approvalNotice(key, line) {
+    if (this._approvalNoticed.has(key)) return;
+    this._approvalNoticed.add(key);
+    try { process.stderr.write(approvals.printable(line) + '\n'); } catch (_e) { /* never sink the caller */ }
+  }
+
+  /**
+   * The refusal for a call to a tool whose changed descriptor waits for acceptance, or null.
+   * `route`: 'lean' (text for a thrown error), 'curated' / 'raw' (an isError envelope). The wrap
+   * ('raw') has no meta-tools, so it names only the UI and CLI routes.
+   * @returns {{ text: string, envelope: object } | null}
+   */
+  _approvalRefusal(upstreamId, realTool, route) {
+    const waiting = this._pending.get(upstreamId);
+    // Fast path: nothing waits for this tool AND the upstream is not withheld. A withheld upstream
+    // has an EMPTY pending map, so without the flag a call resolved while its tool was pending (one
+    // held at a permission prompt) would run once the watcher withheld it.
+    if (!this._withheld.has(upstreamId) && (!waiting || !waiting.has(realTool))) return null;
+    // The rare path, so re-read the approvals file first: an accept written by the UI, the CLI or a
+    // management script (another process) counts from the very NEXT call, not from whenever the
+    // file watcher fires.
+    if (this._rawTools.has(upstreamId)) {
+      const before = safeStringify(this._tools.get(upstreamId) || []);
+      this._applyApprovals(upstreamId);
+      if (safeStringify(this._tools.get(upstreamId) || []) !== before) this._signalToolsChanged(upstreamId);
+    }
+    const m = this._pending.get(upstreamId);
+    const p = m && m.get(realTool);
+    if (!p) {
+      // Released by the re-read - unless it is no longer SERVED at all (the file turned unreadable,
+      // which withholds the upstream, or the tool left the listing). Never fail open on that.
+      if ((this._tools.get(upstreamId) || []).some((t) => t && t.name === realTool)) return null;
+      const text = `ToolFunnel withheld this call: the tool ${JSON.stringify(realTool)} on upstream ${JSON.stringify(upstreamId)} ` +
+        'is not approved right now (its approvals could not be read, or the server no longer lists it). See the gateway log.';
+      return { text, envelope: { content: [{ type: 'text', text }], structuredContent: { toolfunnel: 'tool-withheld', upstream: upstreamId, tool: realTool }, isError: true } };
+    }
+    const arg = (s) => (/^[A-Za-z0-9_.:@/-]+$/.test(s) ? s : JSON.stringify(s));
+    const client = this._clients.get(upstreamId);
+    const version = client && client.initializeResult && client.initializeResult.serverInfo && client.initializeResult.serverInfo.version;
+    const cli = `toolfunnel accept ${arg(upstreamId)} ${arg(realTool)} --hash ${p.hash}`;
+    const acceptArgs = { upstream: upstreamId, tool: realTool, hash: p.hash };
+    // The new text is never quoted here: an unapproved description is the attack, so it must not
+    // reach the model's context through the refusal either. The user reviews it in the CLI or UI.
+    const text = [
+      `ToolFunnel withheld this call: the tool ${JSON.stringify(realTool)} on upstream ${JSON.stringify(upstreamId)} ` +
+        `${p.reason === 'new' ? 'is new since its server was approved' : 'changed since it was approved'} (server version ${version || 'not reported'}).`,
+      'That can be a legitimate update or a tampered server. Ask the user before accepting it.',
+      `Changed: ${p.changed.join(', ')}. The user can review the new text with \`toolfunnel changes\` or in the ToolFunnel UI.`,
+      // The agent route is a MANAGEMENT tool run through toolfunnel_run_tool, not a fifth meta-tool:
+      // the public surface stays at four.
+      route === 'raw'
+        ? `To accept it after the user agrees: the ToolFunnel UI, or run: ${cli}`
+        : 'To accept it after the user agrees: run the tool tf_accept_change - toolfunnel_run_tool with ' +
+          `${JSON.stringify({ name: 'tf_accept_change', args: acceptArgs })} - or use the ToolFunnel UI, or run: ${cli}`,
+    ].join('\n');
+    const structuredContent = {
+      toolfunnel: 'tool-change-withheld',
+      upstream: upstreamId,
+      tool: realTool,
+      reason: p.reason,
+      serverVersion: version || null,
+      changed: p.changed,
+      hash: p.hash,
+      accept: route === 'raw' ? { cli } : { tool: 'tf_accept_change', via: 'toolfunnel_run_tool', arguments: acceptArgs, cli },
+    };
+    return { text, envelope: { content: [{ type: 'text', text }], structuredContent, isError: true } };
+  }
+
+  /** Accept one held change, only while it is still the one at `expectHash`, and re-apply it here.
+   *  The MRTR route - the UI, the CLI and tf_accept_change write the file from their own process.
+   *  @returns the acceptInFile result. Throws on an unreadable approvals file. */
+  acceptChange(upstreamId, toolName, expectHash) {
+    const res = approvals.acceptInFile(this._approvalsPath, upstreamId, toolName, expectHash);
+    if (res.accepted.length) {
+      logger.log({ type: 'mcp', event: 'tool_approval', kind: 'accepted', upstream: upstreamId, tools: res.accepted });
+      try { process.stderr.write(approvals.printable(`[toolfunnel] accepted the changed descriptor(s) of upstream "${upstreamId}": ${res.accepted.join(', ')}.`) + '\n'); } catch (_e) { /* ignore */ }
+      this.reloadApprovals();
+    }
+    return res;
+  }
+
+  /** Re-apply approvals to every listed upstream (the approvals file changed on disk - a UI or CLI
+   *  accept). Signals a surface change for each upstream whose served tools changed. NEVER throws. */
+  reloadApprovals() {
+    for (const upstreamId of [...this._rawTools.keys()]) {
+      try {
+        const before = safeStringify(this._tools.get(upstreamId) || []);
+        this._applyApprovals(upstreamId);
+        if (safeStringify(this._tools.get(upstreamId) || []) !== before) this._signalToolsChanged(upstreamId);
+      } catch (_e) { /* one upstream never blocks the rest */ }
+    }
+  }
+
+  /** What waits for acceptance, and recent upgrades - the /health, CLI and UI source. Fresh copies. */
+  toolChanges() {
+    const pending = [];
+    for (const [upstream, m] of this._pending) {
+      for (const p of m.values()) pending.push({ upstream, tool: p.tool, reason: p.reason, changed: p.changed, hash: p.hash });
+    }
+    return { pending, upgraded: this._approvalEvents.map((e) => JSON.parse(JSON.stringify(e))) };
   }
 
   /** Tear down + forget a cached client (used on a failed connect). Never throws. */
@@ -1555,6 +2073,10 @@ class Aggregator {
     }
     this._clients.delete(upstreamId);
     this._tools.delete(upstreamId);
+    this._rawTools.delete(upstreamId);
+    this._pending.delete(upstreamId);
+    this._withheld.delete(upstreamId);
+    this._invalid.delete(upstreamId);
   }
 
   /**
@@ -1650,8 +2172,8 @@ function withForwardedToolMeta(def, raw) {
 const XMCP_TCHAR = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 
 /**
- * Strip INVALID `x-mcp-header` annotations from an advertised inputSchema, in place (0.7.0
- * ingest hygiene). The spec makes a single malformed annotation invalidate the WHOLE tool -
+ * Strip INVALID `x-mcp-header` annotations from an advertised inputSchema, in place (ingest
+ * hygiene). The spec makes a single malformed annotation invalidate the WHOLE tool -
  * conforming Streamable-HTTP clients MUST drop it from tools/list - so forwarding a broken
  * upstream annotation verbatim makes the tool vanish client-side. Valid = on a pure
  * `properties` chain from the root, a non-empty tchar token, on a string/integer/boolean
@@ -1701,6 +2223,13 @@ module.exports = {
   Aggregator,
   // exported for unit tests / reuse
   defaultClientFactory,
+  // The documented permanent-failure ceiling and its classifier.
+  PERMANENT_RETRY_LIMIT,
+  PERMANENT_ERROR_CODES,
+  isPermanentConnectError,
+  // Structural tool schema validation (drop one tool, never the upstream).
+  toolSchemaProblem,
+  MAX_SCHEMA_DEPTH,
   looksLikePath,
   isInside,
   unwrapEnvelope,

@@ -19,7 +19,8 @@ TOOLFUNNEL_HOME=D:\my-setup toolfunnel  # env var
 An empty home is **seeded** on first use from the shipped defaults (the register + management
 scripts, an empty `mcp/expose.json`, the default hooks manifest) and is **never overwritten**
 afterwards - which is the point: with the home outside the package, `npm update toolfunnel`
-can never eat your tools.
+can never eat your tools. The one thing an update adds is a tool new in that release, appended
+to your register once; a shipped tool you removed is never put back.
 
 ```
 <home>/

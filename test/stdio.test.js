@@ -38,13 +38,13 @@ const { spawn } = require('node:child_process');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const ENTRY = path.join(REPO_ROOT, 'bin', 'toolfunnel.js');
+const { META_TOOLS } = require(path.join(REPO_ROOT, 'src', 'mcp', 'protocol.js'));
+const { makeTempHome } = require('./helpers/temp-home');
 
-// The exact tool names tools/list must advertise (the lean meta-tools the model sees).
-const REQUIRED_META_TOOLS = [
-  'toolfunnel_list_tools',
-  'toolfunnel_tool_instructions',
-  'toolfunnel_howto',
-];
+// The exact tool names tools/list must advertise (the lean meta-tools the model sees) - derived
+// from the one definition in protocol.js, so a meta-tool added or renamed there is asserted here
+// without a hand-typed copy drifting (three copies had silently dropped toolfunnel_run_tool).
+const REQUIRED_META_TOOLS = Object.values(META_TOOLS);
 
 // The 7 first-party demo tools the register ships (ids returned by toolfunnel_list_tools).
 const EXPECTED_DEMO_IDS = [
@@ -141,9 +141,13 @@ function makeClient(child) {
     }
   };
 
-  // Spawn the gateway exactly as a host would: `node bin/toolfunnel.js` with NO args = stdio mode.
+  // Spawn the gateway exactly as a host would: `node bin/toolfunnel.js` with NO args = stdio mode -
+  // against a scratch config home (the seeded register supplies the demo tools), never the repo's.
+  const home = makeTempHome({ prefix: 'tf-stdio-' });
+  process.on('exit', () => home.cleanup());
   const child = spawn(process.execPath, [ENTRY], {
     cwd: REPO_ROOT,
+    env: home.env(),
     stdio: ['pipe', 'pipe', 'pipe'],
     windowsHide: true,
   });

@@ -19,11 +19,19 @@
  * CommonJS only.
  */
 
+// Distinct byTool entries are CAPPED: the key is the tools/call name exactly as the client sent it,
+// including names that never existed, so an unbounded map let a client spraying fresh names grow
+// the gateway's memory for the life of the process. Names seen before the cap keep their own
+// counters; everything after lands in one overflow bucket. Totals stay exact either way.
+const MAX_DISTINCT_TOOLS = 1000;
+const OVERFLOW_KEY = '(other)';
+
 const state = {
   startedAt: new Date().toISOString(),
   calls: 0,
   errors: 0,
   byTool: Object.create(null), // name -> { calls, errors }
+  distinct: 0, // entries in byTool (the overflow bucket counts as one)
 };
 
 /**
@@ -38,9 +46,13 @@ function record(ev) {
     state.calls += 1;
     if (!ok) state.errors += 1;
     let t = state.byTool[tool];
-    if (!t) {
+    if (!t && state.distinct >= MAX_DISTINCT_TOOLS && tool !== OVERFLOW_KEY) {
+      t = state.byTool[OVERFLOW_KEY]; // at the cap: an unseen name counts under the overflow bucket
+      if (!t) { t = { calls: 0, errors: 0 }; state.byTool[OVERFLOW_KEY] = t; state.distinct += 1; }
+    } else if (!t) {
       t = { calls: 0, errors: 0 };
       state.byTool[tool] = t;
+      state.distinct += 1;
     }
     t.calls += 1;
     if (!ok) t.errors += 1;
@@ -55,7 +67,9 @@ function record(ev) {
  */
 function snapshot() {
   try {
-    const byTool = {};
+    // Null-prototype like the source: into a plain {} a key of "__proto__" sets the PROTOTYPE
+    // instead of a property, so that tool's counter silently vanished from /health and the UI.
+    const byTool = Object.create(null);
     for (const k of Object.keys(state.byTool)) {
       byTool[k] = { calls: state.byTool[k].calls, errors: state.byTool[k].errors };
     }
@@ -70,6 +84,7 @@ function reset() {
   state.calls = 0;
   state.errors = 0;
   state.byTool = Object.create(null);
+  state.distinct = 0;
 }
 
 module.exports = { record, snapshot, reset };

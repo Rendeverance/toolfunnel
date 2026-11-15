@@ -165,6 +165,8 @@ function post(port, urlPath, body) {
 
 (async () => {
   const home = makeHome();
+  const { useTempHome } = require('./helpers/temp-home');
+  useTempHome({ prefix: 'tf-ui-hook-toggle-' }); // scratch config home, so the src/ modules below never resolve the repo's
   const { createUiServer } = require(path.join(REPO_ROOT, 'src', 'ui', 'server.js'));
   let handle = null;
   try {

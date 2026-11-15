@@ -27,8 +27,10 @@ const os = require('node:os');
 const assert = require('node:assert');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
-const DIST = path.join(REPO_ROOT, 'dist');
 
+const { useTempHome } = require('./helpers/temp-home');
+const HOME = useTempHome({ prefix: 'tf-pack-' }); // scratch config home, claimed BEFORE any src/ module captures the repo's
+const DIST = path.join(HOME.home, 'dist'); // tf_pack writes under the config home
 const { buildProtocol } = require(path.join(REPO_ROOT, 'src', 'mcp', 'server.js'));
 const { parseVersion, compareVersions, checkRequires } = require(path.join(REPO_ROOT, 'src', 'core', 'requires.js'));
 

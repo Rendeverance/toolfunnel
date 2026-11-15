@@ -28,6 +28,8 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
+const { useTempHome } = require('./helpers/temp-home');
+useTempHome({ prefix: 'tf-http-status-map-' }); // scratch config home, claimed BEFORE any src/ module captures the repo's
 const s = require(path.join(REPO_ROOT, 'src', 'mcp', 'server.js'));
 const { createHttpMcpServer } = require(path.join(REPO_ROOT, 'src', 'mcp', 'http-transport.js'));
 const authConfig = require(path.join(REPO_ROOT, 'src', 'auth', 'config.js'));

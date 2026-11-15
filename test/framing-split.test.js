@@ -27,6 +27,7 @@ const { spawn } = require('node:child_process');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const ENTRY = path.join(REPO_ROOT, 'bin', 'toolfunnel.js');
+const { makeTempHome } = require('./helpers/temp-home');
 const FIXTURE = path.join(__dirname, 'fixtures', 'servers', 'framing-upstream.js');
 const { McpClient } = require(path.join(REPO_ROOT, 'src', 'mcp', 'mcp-client.js'));
 
@@ -132,8 +133,11 @@ function makeGatewayClient(child) {
   }
 
   // ── C3 + C4: the SERVER side (the stdio loop reading a CL-framing downstream client) ────────
+  const home = makeTempHome({ prefix: 'tf-framing-split-' }); // scratch config home, never the repo's
+  process.on('exit', () => home.cleanup());
   const child = spawn(process.execPath, [ENTRY], {
     cwd: REPO_ROOT,
+    env: home.env(),
     stdio: ['pipe', 'pipe', 'pipe'],
     windowsHide: true,
   });

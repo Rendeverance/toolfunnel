@@ -22,8 +22,11 @@ const assert = require('node:assert');
 const http = require('node:http');
 const path = require('node:path');
 
+const { useTempHome } = require('./helpers/temp-home');
+useTempHome({ prefix: 'tf-http-' }); // scratch config home, claimed BEFORE any src/ module captures the repo's
 const { createHttpMcpServer } = require(path.join(__dirname, '..', 'src', 'mcp', 'http-transport.js'));
 const authConfig = require(path.join(__dirname, '..', 'src', 'auth', 'config.js'));
+const { META_TOOLS } = require(path.join(__dirname, '..', 'src', 'mcp', 'protocol.js'));
 
 // This test drives the HTTP transport WITHOUT a bearer token and asserts 200s. If a prior suite run
 // was hard-killed mid-test and left auth/auth.config.json ENABLED, every request here would 401.
@@ -129,7 +132,7 @@ function rpc(host, port, message) {
     assert.strictEqual(list.status, 200, 'POST /mcp tools/list status is 200 (got ' + list.status + ')');
     assert.ok(list.json && list.json.result && Array.isArray(list.json.result.tools), 'tools/list returned a tools array');
     const toolNames = list.json.result.tools.map((t) => t && t.name);
-    const metas = ['toolfunnel_list_tools', 'toolfunnel_tool_instructions', 'toolfunnel_howto'];
+    const metas = Object.values(META_TOOLS); // the one definition, never a hand-typed copy
     for (const m of metas) {
       assert.ok(toolNames.includes(m), 'tools/list advertises meta-tool "' + m + '" (got ' + JSON.stringify(toolNames) + ')');
     }

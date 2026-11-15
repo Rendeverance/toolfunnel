@@ -19,7 +19,7 @@
  *
  * Assertions (the task contract):
  *   1. tools/list (protocol.toolDefinitions) includes toolfunnel_run_tool;
- *      toolfunnel_list_tools({category:'management'}) returns all 10 management tools.
+ *      toolfunnel_list_tools({category:'management'}) returns all 11 management tools.
  *   2. TOOLS  : tf_tool_add -> list shows it -> disable hides it -> enable shows it -> remove drops it.
  *   3. MCP    : tf_mcp_add -> list shows it -> disable -> enable -> remove (config only; nothing spawned).
  *   4. HOOKS  : tf_hook_add (PostToolUse) -> list shows it -> disable -> enable -> remove.
@@ -43,6 +43,8 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 
+const { useTempHome } = require('./helpers/temp-home');
+const HOME = useTempHome({ prefix: 'tf-management-' }); // scratch config home, claimed BEFORE any src/ module captures the repo's
 const { buildProtocol } = require(path.join(__dirname, '..', 'src', 'mcp', 'server.js'));
 
 const ROOT = path.resolve(__dirname, '..');
@@ -51,19 +53,19 @@ const ROOT = path.resolve(__dirname, '..');
 // up front - it is created the first time a hook is toggled - so it is snapshotted
 // as "absent" and DELETED again on restore.
 const CONFIG_FILES = [
-  path.join(ROOT, 'tools', 'tools.register.json'),
-  path.join(ROOT, 'tools', 'tools.state.json'),
-  path.join(ROOT, 'mcp', 'expose.json'),
-  path.join(ROOT, 'hooks', 'hooks.manifest.json'),
-  path.join(ROOT, 'hooks', 'hooks.state.json'),
+  path.join(HOME.home, 'tools', 'tools.register.json'),
+  path.join(HOME.home, 'tools', 'tools.state.json'),
+  path.join(HOME.home, 'mcp', 'expose.json'),
+  path.join(HOME.home, 'hooks', 'hooks.manifest.json'),
+  path.join(HOME.home, 'hooks', 'hooks.state.json'),
 ];
 
 // Any sacrificial hook script the gate proof authors under hooks/scripts - cleaned
 // up alongside the config restore (snapshot/restore covers JSON, not script files).
-const DENY_SCRIPT = path.join(ROOT, 'hooks', 'scripts', '__tf_test_deny.js');
+const DENY_SCRIPT = path.join(HOME.home, 'hooks', 'scripts', '__tf_test_deny.js');
 
 // The nine management register ids (category "management").
-const MGMT_IDS = ['tf_tool_add', 'tf_tool_set', 'tf_mcp_add', 'tf_mcp_set', 'tf_hook_add', 'tf_hook_set', 'tf_list', 'tf_log', 'tf_pack', 'tf_wrap'];
+const MGMT_IDS = ['tf_tool_add', 'tf_tool_set', 'tf_mcp_add', 'tf_mcp_set', 'tf_hook_add', 'tf_hook_set', 'tf_list', 'tf_log', 'tf_pack', 'tf_wrap', 'tf_accept_change'];
 
 // A self-denying PreToolUse hook body (mirrors test/fixtures/scripts/deny-hook.js):
 // reads stdin, prints the JSON protocol permissionDecision:"deny" on exit 0.
@@ -181,7 +183,7 @@ const ids = (arr) => (Array.isArray(arr) ? arr.map((x) => x && x.id) : []);
 
       const mgmt = await listMeta({ category: 'management' });
       const mgmtIds = ids(mgmt).sort();
-      check('META: toolfunnel_list_tools({category:"management"}) returns all 10', () => {
+      check('META: toolfunnel_list_tools({category:"management"}) returns all 11', () => {
         assert.deepStrictEqual(mgmtIds, MGMT_IDS.slice().sort(),
           'management ids = ' + JSON.stringify(mgmtIds));
       });
@@ -379,7 +381,7 @@ const ids = (arr) => (Array.isArray(arr) ? arr.map((x) => x && x.id) : []);
     {
       const GATE_ID = '__tf_test_gate';
       const VICTIM_ID = '__tf_test_gate_tool';
-      const REGISTER = path.join(ROOT, 'tools', 'tools.register.json');
+      const REGISTER = HOME.register; // the store the management tools actually write
 
       // Add a PreToolUse deny hook that matches the management tool tf_tool_add. Its
       // script is authored under hooks/scripts via scriptText; command uses ${HOOKS_DIR}.

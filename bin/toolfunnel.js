@@ -23,11 +23,9 @@
 const args = process.argv.slice(2);
 
 /**
- * Read a flag's value, accepting BOTH `--flag value` and `--flag=value` (0.7.0). Only the
- * space-separated form was handled, so `--config-dir=/my/home` was silently ignored and the config
- * home fell back to the package root - exactly the class of quiet misconfiguration the resolved-home
- * stderr line and the positional parsing below exist to prevent. The `=` form is what most people
- * type first, and getting it wrong wrote config somewhere they were not looking.
+ * Read a flag's value, accepting BOTH `--flag value` and `--flag=value`. The `=` form is what most
+ * people type first; ignoring it would silently fall back to the package root as the config home,
+ * writing config somewhere they were not looking.
  */
 function flagValue(name, fallback) {
   // ONE left-to-right scan, LAST occurrence wins whichever form it uses. Scanning the = form
@@ -48,25 +46,31 @@ function flagValue(name, fallback) {
         process.exit(2);
       }
       value = v;
-    } else if (a === name && i + 1 < args.length) {
-      value = args[i + 1];
+    } else if (a === name) {
+      // The space form needs a value too: a following FLAG, or nothing at all, is not one. Reading
+      // the next flag as the value made `--config-dir --port 0` a config home named "--port", and
+      // a trailing bare flag a silent fallback to the package root.
+      const v = i + 1 < args.length ? args[i + 1] : undefined;
+      if (typeof v !== 'string' || v.length === 0 || v[0] === '-') {
+        process.stderr.write(`toolfunnel: ${name} requires a value (write ${name}=<value> or ${name} <value>)\n`);
+        process.exit(2);
+      }
+      value = v;
     }
   }
   return value;
 }
 
 // POSITIONAL arguments - the subcommand and its target - recognised regardless of where global
-// flags sit. `toolfunnel --config-dir X wrap Y` used to silently start a normal server: args[0]
-// was the flag, the wrap branch never matched, and the user got a running gateway instead of a
-// wrap with zero feedback (cold-start field test, 2026-07-18). Value-taking flags are skipped
-// WITH their value; any other -/-- token is skipped alone.
-const VALUE_FLAGS = new Set(['--config-dir', '--port', '--host', '--as']);
+// flags sit, so `toolfunnel --config-dir X wrap Y` wraps Y instead of reading args[0] as the
+// command. Value-taking flags are skipped WITH their value; any other -/-- token is skipped alone.
+const VALUE_FLAGS = new Set(['--config-dir', '--port', '--host', '--as', '--hash']);
 const positionals = [];
 for (let i = 0; i < args.length; i++) {
   const a = args[i];
   // `--flag value` consumes the next token; `--flag=value` is self-contained and is skipped by the
   // generic leading-dash rule below, so it must NOT also eat the following token.
-  if (VALUE_FLAGS.has(a)) { i++; continue; }
+  if (VALUE_FLAGS.has(a)) { if (typeof args[i + 1] === 'string' && args[i + 1][0] !== '-') i++; continue; } // a following flag is not its value
   if (typeof a === 'string' && a.length && a[0] === '-') continue;
   positionals.push(a);
 }
@@ -92,6 +96,10 @@ if (args.includes('--help') || args.includes('-h')) {
       '                                surface (meta-tools hidden), every call still gated. The',
       '                                gateway answers both MCP eras, so a legacy-only MCP keeps',
       '                                working with modern clients. `wrap --off` restores normal.',
+      '  toolfunnel changes            List tool description changes held back for acceptance',
+      '  toolfunnel accept <upstream> [tool] [--hash <h>]',
+      '                                Accept a held change (every one of that upstream without',
+      '                                a tool). --hash: only if it is still the change you saw.',
       '  toolfunnel install-oauth      Install the optional OAuth 2.1 dependency (jose)',
       '  toolfunnel --config-dir <dir> Use <dir> as the CONFIG HOME (see below)',
       '  toolfunnel --version          Print the version',
@@ -101,7 +109,8 @@ if (args.includes('--help') || args.includes('-h')) {
       'the config home - by default the package root (a git clone works as before), or the value',
       'of --config-dir / the TOOLFUNNEL_HOME env var. An empty home is seeded from the shipped',
       'defaults on first use and is NEVER overwritten after - so an npm update cannot eat your',
-      'tools. This is also how a wrapped MCP ships its own bundled setup.',
+      'tools. (A tool new in a release is added to your register once; nothing else changes.)',
+      'This is also how a wrapped MCP ships its own bundled setup.',
       '',
       'Identity + port defaults can be set in an OPTIONAL toolfunnel.json in the config home:',
       '  { "serverName": "my-mcp", "serverVersion": "1.0.0", "httpPort": 9998, "uiPort": 9777 }',
@@ -117,18 +126,18 @@ if (args.includes('--help') || args.includes('-h')) {
 // same resolved home. Precedence: --config-dir > TOOLFUNNEL_HOME env > the package root.
 // Whether the user EXPLICITLY placed the home must be captured BEFORE init: initConfigHome
 // exports the resolved home into process.env.TOOLFUNNEL_HOME for the child tools it spawns,
-// so reading the env afterwards is always-true and the hint branch was dead (0.7.0).
+// so reading the env afterwards would always be true.
 const explicitHome = !!(flagValue('--config-dir', '') || process.env.TOOLFUNNEL_HOME);
 const { initConfigHome } = require('../src/core/config-home');
-const configHome = initConfigHome({ dir: flagValue('--config-dir', '') }).home;
+const { home: configHome, added: addedTools } = initConfigHome({ dir: flagValue('--config-dir', '') });
 
-// One honest stderr line so nobody discovers the config home by accident - before this, a bare
-// `git status` after running from a clone was the discovery mechanism. Defaulted homes get
-// the relocation hint.
+// One stderr line so nobody discovers the config home by accident. Defaulted homes get the
+// relocation hint.
 process.stderr.write('[toolfunnel] config home: ' + configHome +
   (explicitHome
     ? '\n'
     : ' (default: the package root - use --config-dir <dir> or TOOLFUNNEL_HOME to relocate)\n'));
+if (addedTools.length) process.stderr.write('[toolfunnel] added tool(s) new in this release to the register: ' + addedTools.join(', ') + '\n');
 
 // Advisory runtime preflight: the home's toolfunnel.json may declare `requires` (python, git, ...)
 // for the tools it ships. A missing/old runtime breaks only the tools that need it, so each
@@ -285,8 +294,14 @@ if (positionals[0] === 'wrap') {
           const versions = disc && Array.isArray(disc.supportedVersions) ? disc.supportedVersions : [];
           const who = (disc && disc._meta && disc._meta['io.modelcontextprotocol/serverInfo'] &&
             disc._meta['io.modelcontextprotocol/serverInfo'].name) || target;
-          const legacyCapable = versions.some((v) => typeof v === 'string' && v < '2026-07-28');
-          if (legacyCapable) {
+          const { MODERN_PROTOCOL_VERSION } = require('../src/mcp/modern');
+          const legacyCapable = versions.some((v) => typeof v === 'string' && v < MODERN_PROTOCOL_VERSION);
+          if (versions.length === 0) {
+            // An answered discover with NO version list is neither dual-era nor modern-only: say so
+            // instead of reporting "MODERN-ONLY (speaks )".
+            process.stderr.write('[toolfunnel] era probe: "' + who + '" answered server/discover without a supportedVersions list - ' +
+              'treating it as MODERN (it answered the modern probe); check the server if that is unexpected.\n');
+          } else if (legacyCapable) {
             process.stderr.write('[toolfunnel] era probe: "' + who + '" is DUAL-ERA (speaks ' + versions.join(', ') +
               ') - it already survives the 2026-07-28 cutover on its own; the wrap still curates + gates it.\n');
           } else {
@@ -371,6 +386,71 @@ if (positionals[0] === 'wrap') {
     process.stderr.write('[toolfunnel] wrap failed: ' + ((err && err.message) || err) + '\n');
     process.exit(1);
   });
+} else if (positionals[0] === 'changes') {
+  // Tool descriptor approval: what waits for acceptance, straight from the approvals file
+  // (the gateway writes pending entries there), plus recent upgrade approvals. Read-only.
+  const path = require('node:path');
+  const approvals = require('../src/mcp/tool-approvals');
+  const file = path.join(configHome, 'mcp', 'tool-approvals.json');
+  let doc;
+  try {
+    doc = approvals.loadApprovals(file);
+  } catch (err) {
+    process.stderr.write('[toolfunnel] ' + ((err && err.message) || err) + '\n');
+    process.exit(1);
+  }
+  const arg = (s) => (/^[A-Za-z0-9_.:@/-]+$/.test(s) ? s : JSON.stringify(s));
+  const lines = [];
+  for (const p of approvals.listPending(doc)) {
+    lines.push(`  ${p.upstream} / ${p.tool}  (${p.reason}, waiting since ${p.since || 'unknown'})`);
+    lines.push(`    approved:     ${p.approvedDescription == null ? '(none - a new tool)' : (p.approvedDescription || '(no description)')}`);
+    lines.push(`    new:          ${p.newDescription || '(no description)'}`);
+    lines.push(`    changed:      ${p.changed.join(', ')}`);
+    for (const [f, v] of Object.entries(p.fields)) {
+      lines.push(`    ${f} approved: ${JSON.stringify(v.approved)}`);
+      lines.push(`    ${f} new:      ${JSON.stringify(v.new)}`);
+    }
+    lines.push(`    accept:       toolfunnel accept ${arg(p.upstream)} ${arg(p.tool)} --hash ${p.hash}`);
+  }
+  const upgrades = approvals.listUpgrades(doc, 10);
+  if (lines.length) {
+    process.stdout.write('Tool changes waiting for acceptance (the server version did not change, or strictApproval is on):\n' + lines.map(approvals.printable).join('\n') + '\n');
+  } else {
+    process.stdout.write('No tool changes are waiting.\n');
+  }
+  if (upgrades.length) {
+    process.stdout.write('Approved automatically on a server version upgrade (latest first):\n' +
+      upgrades.map((u) => approvals.printable(`  ${u.upstream} / ${u.tool}  (${u.at || 'unknown'})`)).join('\n') + '\n');
+  }
+  process.exit(0);
+} else if (positionals[0] === 'accept') {
+  // Accept a held tool change through the same engine function every route uses (acceptInFile).
+  // A running gateway applies it from the next call.
+  const path = require('node:path');
+  const approvals = require('../src/mcp/tool-approvals');
+  const upstream = positionals[1];
+  const tool = positionals[2];
+  if (!upstream) {
+    process.stderr.write('Usage: toolfunnel accept <upstream> [tool] [--hash <sha256:...>]\n');
+    process.exit(1);
+  }
+  const hash = flagValue('--hash', undefined);
+  let res;
+  try {
+    res = approvals.acceptInFile(path.join(configHome, 'mcp', 'tool-approvals.json'), upstream, tool, hash);
+  } catch (err) {
+    process.stderr.write('[toolfunnel] ' + ((err && err.message) || err) + '\n');
+    process.exit(1);
+  }
+  const why = approvals.acceptFailure(res, upstream, tool);
+  if (why) {
+    process.stderr.write(approvals.printable('[toolfunnel] ' + why + (res.stale ? '. Run `toolfunnel changes` to see the current one.' : '')) + '\n');
+    process.exit(1);
+  }
+  process.stdout.write(approvals.printable('Accepted: ' + res.accepted.join(', ') + '.' +
+    (res.pending.length ? ' Still waiting: ' + res.pending.join(', ') + '.' : '') +
+    ' A running gateway applies this from the next call.') + '\n');
+  process.exit(0);
 } else if (positionals[0] === 'install-oauth') {
   // Opt-in OAuth: pull the single audited dependency (jose) on demand. Keeps the default install
   // at zero runtime dependencies - you only ever fetch jose if you decide you need OAuth.
@@ -392,9 +472,8 @@ if (positionals[0] === 'wrap') {
       process.exit(1);
     });
 } else if (positionals.length) {
-  // An unrecognised COMMAND word must refuse loudly - starting the default server instead left
-  // a mistyped/misplaced subcommand running a gateway the user never asked for, with zero
-  // feedback (cold-start field test, 2026-07-18).
+  // An unrecognised COMMAND word must refuse loudly - starting the default server instead would
+  // leave a mistyped/misplaced subcommand running a gateway the user never asked for.
   process.stderr.write('[toolfunnel] unknown command "' + positionals[0] + '" - nothing started. See toolfunnel --help.\n');
   process.exit(1);
 } else if (args.includes('--ui')) {

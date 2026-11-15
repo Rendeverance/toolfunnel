@@ -35,6 +35,15 @@
     return node;
   }
 
+  // A server's text shown with its control and bidi characters visible, so it cannot reorder a line.
+  // Same escapes as the engine's printable(): a newline HTML would collapse stays visible.
+  var NAMED_ESCAPES = { '\n': '\\n', '\r': '\\r', '\t': '\\t' };
+  function printable(s) {
+    return String(s).replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, function (c) {
+      return NAMED_ESCAPES[c] || '\\u' + ('000' + c.charCodeAt(0).toString(16)).slice(-4);
+    });
+  }
+
   // ── fetch wrappers ──────────────────────────────────────────────────────────
   function getJson(url) {
     return fetch(url, { headers: { Accept: 'application/json' } }).then(function (r) { return r.json(); });
@@ -503,7 +512,7 @@
         function () { input.checked = !want; });
     });
 
-    // legacyPin (0.6.0): keep speaking MCP 2024-11-05 to this upstream forever - never auto-
+    // legacyPin: keep speaking MCP 2024-11-05 to this upstream forever - never auto-
     // upgrades, warns at startup and per call. Opt-in; takes effect on the next (re)connect.
     var pinSwitch = makeSwitch(u.legacyPin === true, true, function (input) {
       var want = input.checked;
@@ -656,7 +665,57 @@
     list.parentNode.insertBefore(banner, list);
   }
 
+  // Tool descriptor changes held back for acceptance. Descriptions are the SERVER's own,
+  // unverified text: rendered with textContent only (el's `text`), never as HTML.
+  function renderToolChanges(data) {
+    var existing = document.getElementById('tool-changes');
+    if (existing) existing.remove();
+    var list = $('#mcp-list');
+    if (!list || !list.parentNode) return;
+    if (data && data.ok === false) {
+      list.parentNode.insertBefore(el('div', { id: 'tool-changes', class: 'row' }, [
+        el('p', { text: 'TOOL APPROVALS UNREADABLE: ' + (data.error || 'unknown error') + ' - the gateway withholds the ' +
+          'affected tools until the file is repaired (removing it, or an upstream\'s entry, approves the current tools as first use).' }),
+      ]), list);
+      return;
+    }
+    var pending = (data && Array.isArray(data.pending)) ? data.pending : [];
+    if (!pending.length) return;
+    var box = el('div', { id: 'tool-changes' }, [
+      el('p', { text: pending.length + ' tool change(s) held back: the server changed what these tools say without ' +
+        'changing its version (or strictApproval is on). Until you accept, the gateway keeps showing the approved text ' +
+        'and refuses calls to them. Accept only if you recognise the change.' }),
+    ]);
+    pending.forEach(function (p) {
+      var acceptBtn = el('button', { class: 'btn btn-sm', type: 'button' }, ['Accept']);
+      acceptBtn.addEventListener('click', function () {
+        acceptBtn.disabled = true;
+        postJson('/api/tool-changes/accept', { upstream: p.upstream, tool: p.tool, hash: p.hash }).then(function (res) {
+          acceptBtn.disabled = false;
+          if (!res || res.ok !== true) { toast((res && res.error) || 'Accept failed', 'error'); loadToolChanges(); return; }
+          toast('Accepted ' + p.upstream + ' / ' + printable(p.tool), 'good');
+          loadToolChanges();
+        }).catch(function (e) { acceptBtn.disabled = false; toast('Request failed: ' + errText(e), 'error'); });
+      });
+      box.appendChild(el('div', { class: 'row' }, [
+        el('p', { text: p.upstream + ' / ' + printable(p.tool) + ' (' + (p.reason === 'new' ? 'new tool' : 'changed: ' + p.changed.join(', ')) + ')' }),
+        el('p', { class: 'muted', text: 'Approved: ' + (p.approvedDescription == null ? '(none - a new tool)' : printable(p.approvedDescription)) }),
+        el('p', { text: 'New (the server\'s text): ' + (p.newDescription == null ? '(no description)' : printable(p.newDescription)) }),
+        el('div', {}, Object.keys(p.fields || {}).map(function (f) {
+          return el('p', { style: 'font-family: var(--mono)', text: 'New ' + f + ': ' + printable(JSON.stringify(p.fields[f].new)) });
+        })),
+        acceptBtn,
+      ]));
+    });
+    list.parentNode.insertBefore(box, list);
+  }
+
+  function loadToolChanges() {
+    return getJson('/api/tool-changes').then(renderToolChanges).catch(function () { /* the list below still loads */ });
+  }
+
   function loadMcps() {
+    loadToolChanges();
     return getJson('/api/upstreams').then(function (data) {
       upstreams = (data && Array.isArray(data.upstreams)) ? data.upstreams : [];
       var expose = (data && Array.isArray(data.expose)) ? data.expose : [];

@@ -25,7 +25,7 @@
  *     contributes a synthetic BLOCKING result (its command never runs) - an unreadable gate is
  *     never permission, mirroring the runner's unreadable-decision rule. Authoring surfaces
  *     refuse such a matcher up front (hook-loader.addEntry), so this only fires for a
- *     hand-edited manifest. (0.7.0; matcher-compile.test.js is the acceptance.)
+ *     hand-edited manifest.
  *   - Build the stdin payload once via events.buildPayload(event, ctx, extra).
  *   - Run selected hooks CONCURRENTLY (they are independent) with a global concurrency cap
  *     (default 8) so a big event cannot fork-bomb, but return results in MANIFEST ORDER.
@@ -48,56 +48,22 @@ const hookRunner = require('./hook-runner');
 
 const DEFAULT_CONCURRENCY = 8;
 
-/**
- * Resolve the matcher function from matcher.js regardless of whether it is the default or
- * a named export, so we interlock with the contract's `matches(matcher, toolName)`.
- * @returns {(m: string|undefined, toolName: string) => boolean}
- */
-function getMatchesFn() {
-  if (typeof matcher === 'function') return matcher;
-  if (matcher && typeof matcher.matches === 'function') return matcher.matches;
-  // Defensive fallback: if matcher.js is unavailable, fire everything (never crash).
-  return () => true;
+// The engine's dependencies, bound directly, with no stand-ins: firing every hook, reading every
+// matcher as valid or building a payload by hand would change what a gate means, and the one case
+// that reaches them (a broken or mismatched install) is exactly when it must not. Refuse to LOAD
+// instead, naming what is missing
+// (hook-engine-requires.test.js).
+function required(mod, name, from) {
+  const fn = mod && mod[name];
+  if (typeof fn !== 'function') {
+    throw new Error(`hook-engine: ${from} must export ${name}() - refusing to load without it`);
+  }
+  return fn;
 }
-
-/**
- * Resolve matcherError from matcher.js (named export). Falls back to "no problem" so an older
- * matcher module degrades to the previous behaviour rather than crashing the engine.
- * @returns {(m: string|undefined) => (string|null)}
- */
-function getMatcherErrorFn() {
-  if (matcher && typeof matcher.matcherError === 'function') return matcher.matcherError;
-  return () => null;
-}
-
-/**
- * Resolve buildPayload from events.js (named export per contract).
- * @returns {(event: string, ctx: object, extra: object) => object}
- */
-function getBuildPayloadFn() {
-  if (events && typeof events.buildPayload === 'function') return events.buildPayload;
-  // Defensive fallback: assemble a minimal common payload.
-  return (event, ctx, extra) =>
-    Object.assign(
-      {
-        session_id: (ctx && ctx.session_id) || '',
-        transcript_path: (ctx && ctx.transcript_path) || '',
-        cwd: (ctx && ctx.cwd) || process.cwd(),
-        hook_event_name: event,
-      },
-      extra || {}
-    );
-}
-
-/**
- * Resolve runHook from hook-runner.js (named export per contract).
- * @returns {(spec: object, payload: object, opts: object) => Promise<object>}
- */
-function getRunHookFn() {
-  if (hookRunner && typeof hookRunner.runHook === 'function') return hookRunner.runHook;
-  if (typeof hookRunner === 'function') return hookRunner;
-  throw new Error('hook-engine: hook-runner.runHook is unavailable');
-}
+const matchesFn = required(matcher, 'matches', './matcher');
+const matcherErrorFn = required(matcher, 'matcherError', './matcher');
+const buildPayloadFn = required(events, 'buildPayload', './events');
+const runHookFn = required(hookRunner, 'runHook', './hook-runner');
 
 /**
  * Build a synthetic "failed" result matching the runner's result shape, used when the runner rejects
@@ -180,10 +146,10 @@ class HookEngine {
     this.env = opts.env || null;
 
     // Resolve contract functions once.
-    this._matches = getMatchesFn();
-    this._matcherError = getMatcherErrorFn();
-    this._buildPayload = getBuildPayloadFn();
-    this._runHook = getRunHookFn();
+    this._matches = matchesFn;
+    this._matcherError = matcherErrorFn;
+    this._buildPayload = buildPayloadFn;
+    this._runHook = runHookFn;
   }
 
   /**
@@ -224,6 +190,15 @@ class HookEngine {
     const runCwd = (payload && payload.cwd) || this.cwd;
     const runOpts = { cwd: runCwd };
     if (this.env) runOpts.env = this.env;
+    // The home the hooks were loaded from, so the runner sets HOOKS_DIR for the child from THIS
+    // tree (a relocated --config-dir home) rather than its package default - the same value the
+    // engine already uses for the child cwd above. CLAUDE_PROJECT_DIR: a value INHERITED from the
+    // gateway's own environment (a host's project - hooks ported from Claude Code read it that way)
+    // wins; the home is the fallback when nothing set it.
+    if (this.loader.hooksDir) {
+      runOpts.hooksDir = this.loader.hooksDir;
+      runOpts.projectDir = process.env.CLAUDE_PROJECT_DIR || path.dirname(this.loader.hooksDir);
+    }
 
     // Select enabled hooks for this event and build task factories, in MANIFEST ORDER.
     //

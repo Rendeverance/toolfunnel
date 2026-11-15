@@ -26,7 +26,7 @@
  * Exit codes: 0 = all invariants hold; 1 = invariant violated (EXPECTED on 0.6.0);
  *             2 = a BASELINE broke (the harness is wrong, not the code - fix the test).
  *
- * NON-DESTRUCTIVE: expose.json, hooks.manifest.json, tools.state.json, tools.register.json are
+ * NON-DESTRUCTIVE (every store named below lives in a scratch config home, never the repo's): expose.json, hooks.manifest.json, tools.state.json, tools.register.json are
  * snapshotted up front and restored byte-for-byte (or re-absent) in `finally`, with the restore
  * ASSERTED. Modelled on test/proxy.test.js via dev/round4/repro-naming-0.6.0.js.
  * CommonJS only. Node built-ins only.
@@ -38,11 +38,16 @@ const { spawn } = require('node:child_process');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const ENTRY = path.join(REPO_ROOT, 'bin', 'toolfunnel.js');
-const EXPOSE_PATH = path.join(REPO_ROOT, 'mcp', 'expose.json');
-const MANIFEST_PATH = path.join(REPO_ROOT, 'hooks', 'hooks.manifest.json');
-const STATE_PATH = path.join(REPO_ROOT, 'tools', 'tools.state.json');
-const REGISTER_PATH = path.join(REPO_ROOT, 'tools', 'tools.register.json');
-const MOCK_SERVER = path.join(REPO_ROOT, 'mcp', 'servers', 'mock-upstream', 'server.js');
+const { makeTempHome } = require('./helpers/temp-home');
+// Every gateway here runs against a scratch config home (pre-seeded: shipped register, scripts,
+// hooks tree and mock upstreams inside it), never the repo's own stores.
+const HOME = makeTempHome({ prefix: 'tf-rename-safety-', seed: true });
+process.on('exit', () => HOME.cleanup());
+const EXPOSE_PATH = HOME.expose;
+const MANIFEST_PATH = HOME.manifest;
+const STATE_PATH = HOME.state;
+const REGISTER_PATH = HOME.register;
+const MOCK_SERVER = path.join(HOME.mockDir, 'mock-upstream', 'server.js');
 const DENY_HOOK = path.join(REPO_ROOT, 'test', 'fixtures', 'scripts', 'deny-hook.js');
 
 const { loadExposeStore } = require(path.join(REPO_ROOT, 'src', 'mcp', 'expose-store.js'));
@@ -102,7 +107,7 @@ function makeClient(child) {
 
 async function withGateway(fn) {
   const child = spawn(process.execPath, [ENTRY], {
-    cwd: REPO_ROOT, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
+    cwd: REPO_ROOT, env: HOME.env(), stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
   });
   const client = makeClient(child);
   let exited = false;

@@ -5,8 +5,8 @@
  * MCP SDK client (the canonical "real external client" we did NOT write). Proves interop with the
  * reference implementation end to end: connect (initialize) -> tools/list -> tools/call.
  *
- * Complements the stdio path, which is already proven against a real client (this very Claude Code
- * session reaches ToolFunnel over stdio). This closes the same gap for the HTTP transport.
+ * Complements the stdio path, which real clients such as Claude Code already use. This closes the same gap
+ * for the HTTP transport.
  *
  * GATED: uses the @modelcontextprotocol/sdk devDependency. Set TF_INTEGRATION=1 to run; otherwise it
  * SKIPS and exits 0 so the offline suite stays self-contained.
@@ -21,6 +21,8 @@ if (process.env.TF_INTEGRATION !== '1') {
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { useTempHome } = require('./helpers/temp-home');
+const HOME = useTempHome({ prefix: 'tf-integration-http-' }); // scratch config home, claimed BEFORE any src/ module captures the repo's
 const authConfig = require(path.join(__dirname, '..', 'src', 'auth', 'config.js'));
 const { createHttpMcpServer } = require(path.join(__dirname, '..', 'src', 'mcp', 'http-transport.js'));
 const { Client } = require('@modelcontextprotocol/sdk/client/index.js');

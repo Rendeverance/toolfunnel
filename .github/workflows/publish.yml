@@ -17,12 +17,12 @@ jobs:
     name: publish ${{ github.event.release.tag_name }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Trusted publishing needs npm CLI >= 11.5.1 and Node >= 22.14.0 (npm docs). Node 22's bundled
       # npm is older, so upgrade it explicitly.
       - name: Use Node 22
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: '22'
           registry-url: 'https://registry.npmjs.org'

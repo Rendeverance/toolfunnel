@@ -24,6 +24,8 @@
  * CommonJS. Node built-ins only.
  */
 
+const { useTempHome } = require('./helpers/temp-home');
+useTempHome({ prefix: 'tf-negotiation-' }); // scratch config home, claimed BEFORE any src/ module captures the repo's
 const s = require('../src/mcp/server.js');
 const modern = require('../src/mcp/modern.js');
 

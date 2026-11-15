@@ -15,8 +15,7 @@
  *
  * Protocol: JSON-RPC 2.0 over stdio with NEWLINE-DELIMITED framing - one compact JSON object per
  *   line, "\n"-terminated, the MCP stdio transport every real SDK-based server speaks. We read lines
- *   on stdin and answer in kind on stdout. (This fixture used to parse LSP Content-Length framing,
- *   matching an old client bug; both were corrected together so the mock represents a REAL server.)
+ *   on stdin and answer in kind on stdout.
  *
  * Tools exposed (real upstream names):
  *   - ping              -> "pong"
@@ -33,7 +32,7 @@
 
 const PROTOCOL_VERSION = '2024-11-05';
 // `title` is a fidelity fixture: the 2025-06-18 spec added serverInfo.title, and the wrap must
-// deliver it VERBATIM (a whitelist in wrappedIdentity used to eat it - found wire-testing the wrap, 2026-07-17).
+// deliver it VERBATIM.
 const SERVER_INFO = { name: 'mock-upstream', version: '1.0.0', title: 'Mock Upstream Fixture' };
 
 const TOOLS = [
@@ -44,7 +43,7 @@ const TOOLS = [
   },
   {
     // title + annotations are fidelity fixtures: real servers ship them (and newer fields), and a
-    // transparent wrap must advertise the def BYTE-IDENTICAL (a projection used to drop both).
+    // transparent wrap must advertise the def BYTE-IDENTICAL.
     name: 'add',
     title: 'Add Numbers',
     description: 'Add two numbers and return the sum.',

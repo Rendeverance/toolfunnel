@@ -20,6 +20,8 @@ const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
 const REPO_ROOT = path.resolve(__dirname, '..');
+const { useTempHome } = require('./helpers/temp-home');
+useTempHome({ prefix: 'tf-curated-collision-' }); // scratch config home, claimed BEFORE any src/ module captures the repo's
 const s = require(path.join(REPO_ROOT, 'src', 'mcp', 'server.js'));
 
 let fails = 0;

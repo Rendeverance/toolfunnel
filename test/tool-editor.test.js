@@ -25,9 +25,11 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const ROOT = path.resolve(__dirname, '..');
+const { useTempHome } = require('./helpers/temp-home');
+const HOME = useTempHome({ prefix: 'tf-tool-editor-' }); // scratch config home, claimed BEFORE any src/ module captures the repo's
 const { createUiServer } = require(path.join(ROOT, 'src', 'ui', 'server.js'));
 
-const REGISTER_PATH = path.join(ROOT, 'tools', 'tools.register.json');
+const REGISTER_PATH = HOME.register;
 const NEW_SUMMARY = 'EDITED BY tool-editor.test (pid ' + process.pid + ')';
 
 // ── tiny loopback HTTP client (mirrors auth.test.js) ──────────────────────────────────────────────
@@ -67,7 +69,7 @@ function check(name, fn) {
   const registerSnapshot = fs.readFileSync(REGISTER_PATH, 'utf8');
 
   try {
-    uiHost = createUiServer({ host: '127.0.0.1', port: 0, root: ROOT });
+    uiHost = createUiServer({ host: '127.0.0.1', port: 0, root: HOME.home });
     const ui = await uiHost.start();
     const H = '127.0.0.1';
     const P = ui.port;
@@ -111,6 +113,17 @@ function check(name, fn) {
     });
 
     // ── 5. UPDATE: an unknown id is a clean 404. ─────────────────────────────────────────────────
+    // UPDATE (refused): the script body is authored BEFORE the register update; a patch the
+    // register refuses used to leave the new body on disk under a 400 reply, with the entry
+    // unchanged - the same orphan apiToolAdd already guards against with a prior-body snapshot.
+    const bodyBefore = (await request({ host: H, port: P, method: 'GET', path: '/api/tools/detail?id=echo' })).json.scriptText;
+    const updRefused = await request({ host: H, port: P, method: 'POST', path: '/api/tools/update', body: JSON.stringify({ id: 'echo', patch: { name: '' }, scriptText: '// OVERWRITTEN BY A REFUSED UPDATE\n' }) });
+    const bodyAfter = (await request({ host: H, port: P, method: 'GET', path: '/api/tools/detail?id=echo' })).json.scriptText;
+    check('UPDATE (refused): a patch the register rejects answers 400 AND leaves the script body as it was', () => {
+      assert.strictEqual(updRefused.status, 400, 'status = ' + updRefused.status + ' body=' + updRefused.text);
+      assert.strictEqual(bodyAfter, bodyBefore, 'script body changed under a refused update');
+    });
+
     const updMissing = await request({ host: H, port: P, method: 'POST', path: '/api/tools/update', body: JSON.stringify({ id: '__tf_no_such_tool__', patch: { summary: 'x' } }) });
     check('UPDATE: an unknown id -> 404 ok:false', () => {
       assert.strictEqual(updMissing.status, 404, 'status = ' + updMissing.status);

@@ -21,6 +21,8 @@
  */
 
 const http = require('node:http');
+const { useTempHome } = require('./helpers/temp-home');
+useTempHome({ prefix: 'tf-header-enforcement-' }); // scratch config home, claimed BEFORE any src/ module captures the repo's
 const { createHttpMcpServer } = require('../src/mcp/http-transport.js');
 const authConfig = require('../src/auth/config.js');
 

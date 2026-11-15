@@ -27,7 +27,7 @@
     {
       "id": "hash",
       "name": "Hash",
-      "summary": "Compute a cryptographic digest (e.g. sha256) of input text.",
+      "summary": "Compute a sha256, sha1 or md5 digest of input text.",
       "category": "crypto",
       "instructions": "Args: { algo?: \"sha256\"|\"sha1\"|\"md5\" (default \"sha256\"), text: string }. Returns the lowercase hex digest of the UTF-8 text.",
       "invoke": {
@@ -82,7 +82,7 @@
     {
       "id": "tf_tool_add",
       "name": "tf_tool_add",
-      "summary": "Register a new tool entry in the gateway tool register.",
+      "summary": "Register a new tool (a script or a shell command) in the gateway tool register.",
       "category": "management",
       "instructions": "Add a register entry. Args: { id, name, summary?, category?, instructions?, inputSchema?, invoke:{type:'script',path:'scripts/<file>'}|{type:'shell',command}, scriptText? }. inputSchema is a JSON Schema object for the tool's args - a HOT-promoted tool advertises it verbatim in the top-level tools/list, so author it if the tool may be promoted. If scriptText is given for a script invoke, the body is written to tools/scripts/<basename> first. Change is LIVE (no reconnect). Fails if id already exists.",
       "invoke": {
@@ -93,7 +93,7 @@
     {
       "id": "tf_tool_set",
       "name": "tf_tool_set",
-      "summary": "Activate, deactivate, promote (hot), hide, or remove a register tool.",
+      "summary": "Enable, disable, promote (hot), hide, or remove a register tool.",
       "category": "management",
       "instructions": "Args: { id, action:'enable'|'disable'|'hot'|'unhot'|'hide'|'unhide'|'remove' }. enable/disable flips the active overlay (default ON) - disabled tools drop from toolfunnel_list_tools. hot/unhot promote/demote on the TOP-LEVEL every-turn surface (tools/list), making it directly callable (default OFF). hide/unhide declutter the MANAGER views only (tf_list + UI) and do NOT change what the AI sees. The id may be a local tool id, an upstream surfaced name, or a meta-tool name. remove deletes the register entry and purges its state key. All LIVE (no restart).",
       "invoke": {
@@ -124,9 +124,20 @@
       }
     },
     {
+      "id": "tf_accept_change",
+      "name": "tf_accept_change",
+      "summary": "Accept a tool description change ToolFunnel is holding back - ask the user first.",
+      "category": "management",
+      "instructions": "Args: { upstream, tool, hash }, all required - copy them from the refusal. When an upstream's tool changes its description or schema while the server version stays the same, ToolFunnel keeps serving the approved version and refuses calls to it, naming which fields changed; the user reviews the new text with `toolfunnel changes` or in the UI. ASK THE USER before running this. Only the version the user saw is accepted; to accept several changes at once the user runs `toolfunnel accept <upstream>` or uses the UI. Takes effect from the next call.",
+      "invoke": {
+        "type": "script",
+        "path": "scripts/tf-accept-change.js"
+      }
+    },
+    {
       "id": "tf_wrap",
       "name": "tf_wrap",
-      "summary": "Wrap ONE attached upstream MCP: its tools become the entire surface (transparent passthrough).",
+      "summary": "Wrap ONE attached upstream MCP: its tools become the entire surface (transparent passthrough). Also reports or clears the wrap.",
       "category": "management",
       "instructions": "Args: {} reports status ({ wrapping, upstreams }). { off:true } clears the wrap. { upstream:'<id>', confirm:true } sets it: that upstream's tools become the ENTIRE advertised surface under their ORIGINAL names, everything else (meta-tools INCLUDED) is hidden and uncallable, and every call still fires the PreToolUse gate. Because the gateway answers both MCP eras, this keeps a legacy-only MCP working with 2026-07-28-era clients. WARNING (why confirm is required): the wrap hides tf_wrap itself, so YOU cannot undo it in-band afterwards - recovery is the config web UI (--ui) or `toolfunnel wrap --off` on a terminal. A running host applies the change live.",
       "invoke": {
@@ -170,7 +181,7 @@
     {
       "id": "tf_log",
       "name": "tf_log",
-      "summary": "Enable, disable, or check the gateway activity/audit log.",
+      "summary": "Enable, disable, or check the status of the gateway activity/audit log.",
       "category": "management",
       "instructions": "Args: { action:'enable'|'disable'|'status', path? }. Toggles ToolFunnel's JSONL audit log (tool runs + gate allow/deny decisions). Default OFF. 'status' returns {enabled,path} + recent count. Like any tool, tf_log can itself be disabled to revoke logging control.",
       "invoke": {

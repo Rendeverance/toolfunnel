@@ -14,20 +14,34 @@
 
 const { spawn, execFile } = require('node:child_process');
 const reaper = require('./child-reaper');
+const { takeWithinCap } = require('./output-cap');
 const path = require('node:path');
 
-// Default HOOKS_DIR: <root>/src/hooks. __dirname is <root>/src/core, so up one.
-const DEFAULT_HOOKS_DIR = path.resolve(__dirname, '..', 'hooks');
+// Default HOOKS_DIR: <root>/hooks (the shipped hooks tree). __dirname is <root>/src/core, so up two.
+// The engine always passes the loaded home's hooksDir, so only a direct runHook() call without
+// options sees this default.
+const DEFAULT_HOOKS_DIR = path.resolve(__dirname, '..', '..', 'hooks');
 
 // Events whose exit-0 stdout is treated as injected context (the exit-code protocol's injection half).
 const INJECTABLE_EVENTS = new Set(['SessionStart', 'UserPromptSubmit']);
 
-// Returned by tryParseJsonProtocol when stdout was clearly meant to be a protocol object (it opens
-// with '{') but does not parse. This is DISTINCT from null: null means "no protocol was attempted,
+// Returned by tryParseJsonProtocol when stdout clearly carried an ATTEMPTED decision (it opens with
+// '{', or a line-opening '{' block after other output names a protocol key) that does not parse. This is DISTINCT from null: null means "no protocol was attempted,
 // use the exit-code protocol", whereas this means "a decision was attempted but could not be read".
 // The two must be handled differently - an unreadable decision fails closed, the same as output
 // past the cap, so a decision that loses a character is never mistaken for "allow".
 const CORRUPT_PROTOCOL = Symbol('corrupt-protocol');
+
+// A line-opening '{' block that will not parse counts as an ATTEMPTED decision only when it names a
+// protocol key - otherwise it is a diagnostic dump, not an answer.
+// Keys may be double-quoted (JSON), single-quoted (a printed Python dict) or bare (a Node object printed
+// without JSON.stringify) - all three are a hook TRYING to answer, and an unreadable answer is never allow.
+const PROTOCOL_KEY_RE = /(^|[{,\s])(["']?)(continue|decision|reason|hookSpecificOutput|permissionDecision)\2\s*:/;
+// The prefixed scan is BOUNDED: it inspects at most this many line-opening '{' lines from the tail, and
+// tries the block-to-end parse (a pretty-printed decision) only for the last few of them. Unbounded, a
+// hook dumping tens of thousands of object lines stalled the gateway's event loop for seconds per call.
+const MAX_CANDIDATE_LINES = 64;
+const MAX_BLOCK_CANDIDATES = 4;
 
 // Output ceilings. A hook's decision is a small JSON object and its diagnostics are a few lines;
 // anything approaching these is a runaway, and accumulating it unbounded would OOM the gateway
@@ -59,10 +73,24 @@ function isKnownJsonProtocol(parsed) {
 }
 
 /**
- * Try to parse stdout as the JSON protocol. Returns the parsed object if it is
- * valid JSON AND carries known protocol keys; CORRUPT_PROTOCOL if stdout opened
- * with '{' (a protocol object was attempted) but did not parse; otherwise null
- * (no protocol attempt - use the exit-code protocol).
+ * Try to read stdout as the JSON protocol. Returns the parsed decision object when one is found;
+ * CORRUPT_PROTOCOL when a decision was ATTEMPTED but cannot be read; otherwise null (no protocol
+ * attempt - use the exit-code protocol).
+ *
+ * When the whole of stdout is one JSON value, that is the answer (a decision if it names a
+ * protocol key, otherwise none). Otherwise - a startup line before the decision, log lines after
+ * it - the decision is a block that opens with '{' at the start of a line: the block running to
+ * the end of stdout (a pretty-printed decision) or that one line. A block that opens with '{' and
+ * parses as something else (an inspect-style dump, a JSON log line) is not a decision. An
+ * unparseable block that NAMES a protocol key (quoted or bare) AFTER the last readable decision is
+ * an attempted answer -> CORRUPT: the hook's last word could not be read. Unparseable chatter is
+ * chatter; without that narrowing an allow-gate that printed `{ tool: 'x' }` denied every call.
+ *
+ * Two readable decisions that disagree are CORRUPT too: a hook that echoes what it was given (tool
+ * arguments, an audit line) prints text the MODEL controls, and that text must never outvote the
+ * hook's own answer, before or after it. For the same reason a scan cut short by its bound
+ * (MAX_CANDIDATE_LINES, so a hook dumping thousands of object lines cannot stall the event loop)
+ * is CORRUPT when anything it did not read names a protocol key - that could be the real answer.
  *
  * @param {string} stdout
  * @returns {object|symbol|null}
@@ -70,19 +98,42 @@ function isKnownJsonProtocol(parsed) {
 function tryParseJsonProtocol(stdout) {
   const trimmed = (stdout || '').trim();
   if (!trimmed) return null;
-  // Cheap pre-check: protocol output is always a JSON object. Anything not opening with '{' made
-  // no protocol attempt and belongs to the exit-code protocol (arbitrary text a hook prints).
-  if (trimmed[0] !== '{') return null;
-  let parsed;
-  try {
-    parsed = JSON.parse(trimmed);
-  } catch (_e) {
-    // Opened with '{' but is not valid JSON: an attempted decision that could not be read. Signal
-    // CORRUPT (fail closed) rather than null - falling through to exit-code here would let a
-    // truncated or malformed deny be read as "allow".
-    return CORRUPT_PROTOCOL;
+  const asObject = (text) => {
+    let v;
+    try { v = JSON.parse(text); } catch (_e) { return undefined; } // undefined = did not parse
+    return v !== null && typeof v === 'object' && !Array.isArray(v) ? v : null; // null = parsed, not an object
+  };
+  if (trimmed[0] === '{') {
+    const whole = asObject(trimmed);
+    if (whole !== undefined) return whole && isKnownJsonProtocol(whole) ? whole : null;
   }
-  return isKnownJsonProtocol(parsed) ? parsed : null;
+  const lines = trimmed.split('\n');
+  const decisions = [];
+  let attempted = false;
+  let seen = 0;
+  let blocks = 0;
+  let i = lines.length - 1;
+  for (; i >= 0 && seen < MAX_CANDIDATE_LINES; i -= 1) {
+    if (lines[i][0] !== '{') continue;
+    seen += 1;
+    const candidates = blocks < MAX_BLOCK_CANDIDATES ? [lines.slice(i).join('\n'), lines[i]] : [lines[i]];
+    if (blocks < MAX_BLOCK_CANDIDATES) blocks += 1;
+    let readable = false;
+    for (const candidate of candidates) {
+      const obj = asObject(candidate);
+      if (obj === undefined) continue;
+      readable = true;
+      if (obj && isKnownJsonProtocol(obj)) decisions.push(obj);
+      break;
+    }
+    // Scanned from the tail: before any decision is found, an unreadable answer is the LAST word.
+    if (!readable && decisions.length === 0 && PROTOCOL_KEY_RE.test(candidates[0])) attempted = true;
+  }
+  // Cut short by the bound: an unread line that names a protocol key could be the hook's answer.
+  if (attempted || lines.slice(0, i + 1).some((l) => PROTOCOL_KEY_RE.test(l))) return CORRUPT_PROTOCOL;
+  if (decisions.length === 0) return null;
+  const first = JSON.stringify(decisions[0]);
+  return decisions.every((d) => JSON.stringify(d) === first) ? decisions[0] : CORRUPT_PROTOCOL;
 }
 
 /**
@@ -94,7 +145,7 @@ function tryParseJsonProtocol(stdout) {
  * @param {string} [opts.cwd]              child working directory.
  * @param {object} [opts.env]             extra env merged over process.env.
  * @param {string} [opts.projectDir]      value for CLAUDE_PROJECT_DIR.
- * @param {string} [opts.hooksDir]        value for HOOKS_DIR (default <root>/src/hooks).
+ * @param {string} [opts.hooksDir]        value for HOOKS_DIR (default <root>/hooks).
  * @param {AbortSignal} [opts.signal]      external cancellation; aborts the child.
  * @returns {Promise<object>}  the full result shape. Never rejects.
  */
@@ -142,8 +193,9 @@ function runHook(hookSpec, payload, opts = {}) {
       opts.projectDir ||
       (opts.env && opts.env.CLAUDE_PROJECT_DIR) ||
       process.env.CLAUDE_PROJECT_DIR ||
-      // Project root is two levels above the hooks dir (<root>/src/hooks -> <root>).
-      path.resolve(hooksDir, '..', '..');
+      // The project root is the tree the hooks dir sits in (<root>/hooks -> <root>; a config home's
+      // <home>/hooks -> <home>).
+      path.dirname(hooksDir);
 
     const childEnv = Object.assign({}, process.env, opts.env || {}, {
       CLAUDE_PROJECT_DIR: projectDir,
@@ -244,9 +296,9 @@ function runHook(hookSpec, payload, opts = {}) {
     //
     // 'close' fires only when every stdio pipe is closed, and a GRANDCHILD that inherited those
     // pipes keeps them open for its own lifetime even after the shell is dead. Waiting for 'close'
-    // therefore made the timeout unenforceable in exactly the case it exists for: measured
-    // 2026-07-30, a hook whose grandchild slept 60 s resolved at 60 s against a 2.5 s timeout, on
-    // Windows, WITH taskkill /T. The tree kill still matters (it stops us leaking processes), but
+    // would make the timeout unenforceable in exactly the case it exists for: a hook whose
+    // grandchild sleeps 60 s resolves at 60 s against a 2.5 s timeout, on Windows, even WITH
+    // taskkill /T. The tree kill still matters (it stops us leaking processes), but
     // the timeout contract must not depend on it succeeding on any platform.
     const timer = setTimeout(() => {
       timedOut = true;
@@ -309,13 +361,11 @@ function runHook(hookSpec, payload, opts = {}) {
       child.stdout.setEncoding('utf8');
       child.stdout.on('data', (chunk) => {
         if (hrOutBytes >= MAX_STDOUT_BYTES) return;
-        hrOutBytes += Buffer.byteLength(chunk, 'utf8');
-        // Trim the final chunk to the byte budget - streams deliver whole chunks, so appending
-        // before checking retained up to cap+chunkSize (seen: +64KB on win node 18/20, where
-        // chunk boundaries do not align with the cap). Chars trimmed by a byte overshoot can
-        // only under-retain (a char is >= 1 byte), which is the safe side of the ceiling.
-        const outOver = hrOutBytes - MAX_STDOUT_BYTES;
-        stdout += outOver > 0 ? chunk.slice(0, Math.max(0, chunk.length - outOver)) : chunk;
+        // Streams deliver whole chunks (64 KB on Windows), so the chunk that crosses the cap is cut to the bytes
+        // left, at a whole character: never past the cap, never half a character or half a surrogate pair.
+        const kept = takeWithinCap(chunk, hrOutBytes, MAX_STDOUT_BYTES);
+        stdout += kept;
+        hrOutBytes = kept.length < chunk.length ? MAX_STDOUT_BYTES : hrOutBytes + Buffer.byteLength(kept, 'utf8');
         if (hrOutBytes >= MAX_STDOUT_BYTES) {
           outputCapped = 'stdout';
           killChildTree();
@@ -327,9 +377,9 @@ function runHook(hookSpec, payload, opts = {}) {
       child.stderr.setEncoding('utf8');
       child.stderr.on('data', (chunk) => {
         if (hrErrBytes >= MAX_STDERR_BYTES) return;
-        hrErrBytes += Buffer.byteLength(chunk, 'utf8');
-        const errOver = hrErrBytes - MAX_STDERR_BYTES;
-        stderr += errOver > 0 ? chunk.slice(0, Math.max(0, chunk.length - errOver)) : chunk;
+        const kept = takeWithinCap(chunk, hrErrBytes, MAX_STDERR_BYTES);
+        stderr += kept;
+        hrErrBytes = kept.length < chunk.length ? MAX_STDERR_BYTES : hrErrBytes + Buffer.byteLength(kept, 'utf8');
         if (hrErrBytes >= MAX_STDERR_BYTES) {
           stderr += '\n[hook-runner: stderr truncated at cap]';
           if (!outputCapped) outputCapped = 'stderr';
@@ -420,11 +470,11 @@ function runHook(hookSpec, payload, opts = {}) {
       // B) Advanced / JSON protocol - honored only on exit 0.
       const json = r.exitCode === 0 ? tryParseJsonProtocol(stdout) : null;
 
-      // A protocol object that FAILED TO PARSE (stdout opened with '{' but is not valid JSON) is an
-      // unreadable decision. It fails closed - denied - the same as output past the cap: the runner
-      // saw an attempted answer it could not read, and an unreadable answer is never "allow". Only
-      // stdout that made no protocol attempt (no leading '{', or valid JSON that is not a decision)
-      // falls through to the exit-code protocol below.
+      // An ATTEMPTED decision that FAILED TO PARSE (see tryParseJsonProtocol for what counts as an
+      // attempt) is an unreadable decision. It fails closed - denied - the same as output past the
+      // cap: the runner saw an attempted answer it could not read, and an unreadable answer is never
+      // "allow". Only stdout that made no protocol attempt (plain text, valid JSON that is not a
+      // decision) falls through to the exit-code protocol below.
       if (json === CORRUPT_PROTOCOL) {
         r.blocked = true;
         r.reason = `hook-runner: ${event || 'hook'}${id ? ` "${id}"` : ''} emitted a protocol `
@@ -448,8 +498,7 @@ function runHook(hookSpec, payload, opts = {}) {
         // output caps). A key marks an attempt ONLY when it carries a value: `null` is the
         // readable spelling of "no value" - what typed-struct and dataclass serialisers
         // emit for an unset optional field - so a null slot is no decision and falls
-        // through exactly as the absent key does. (0.7.0; gate-semantics.test.js pins
-        // both halves.)
+        // through exactly as the absent key does.
         const permAttempted =
           hso !== null &&
           Object.prototype.hasOwnProperty.call(hso, 'permissionDecision') &&

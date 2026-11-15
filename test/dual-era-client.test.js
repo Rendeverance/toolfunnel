@@ -24,13 +24,17 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { useTempHome } = require('./helpers/temp-home');
+const HOME = useTempHome({ prefix: 'tf-dual-era-client-' }); // scratch config home, so the src/ modules below never resolve the repo's
 const { McpClient } = require('../src/mcp/mcp-client.js');
 const { Aggregator } = require('../src/mcp/aggregator.js');
 const { ExposeStore } = require('../src/mcp/expose-store.js');
 const s = require('../src/mcp/server.js');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
-const MODERN = path.join(REPO_ROOT, 'mcp', 'servers', 'mock-modern', 'server.js');
+// The shipped modern mock, SEEDED into the scratch home: the aggregator's isolation guard judges upstream
+// scripts against the config home, so the repo's copy would be refused.
+const MODERN = path.join(HOME.mockDir, 'mock-modern', 'server.js');
 const LEGACY = path.join(REPO_ROOT, 'mcp', 'servers', 'mock-upstream', 'server.js');
 
 let fails = 0;
@@ -67,7 +71,7 @@ function check(label, cond) {
 
     // 3. Through the Aggregator - a modern upstream connects + surfaces tools + reports its identity.
     const store = new ExposeStore({
-      filePath: path.join(REPO_ROOT, 'test', '.dual-era-client-expose.json'),
+      filePath: path.join(process.env.TOOLFUNNEL_HOME, 'mcp', 'dual-era-client-expose.json'), // in the scratch home, never under test/
       data: { version: 1, upstreams: [{ id: 'modern', transport: 'stdio', command: process.execPath, args: [MODERN], enabled: true }], expose: [] },
     });
     const agg = new Aggregator({ store });

@@ -35,15 +35,19 @@ const fs = require('node:fs');
 const assert = require('node:assert');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
-const MOCK_SERVER = path.join(REPO_ROOT, 'mcp', 'servers', 'mock-upstream', 'server.js');
-const DUAL_SERVER = path.join(REPO_ROOT, 'test', 'fixtures', 'servers', 'dual-era-upstream.js');
-const JOURNAL = path.join(REPO_ROOT, 'logs', 'test-era-memo.' + process.pid + '.log');
-const JOURNAL2 = path.join(REPO_ROOT, 'logs', 'test-era-memo-p5.' + process.pid + '.log');
-const JOURNAL3 = path.join(REPO_ROOT, 'logs', 'test-era-memo-p6.' + process.pid + '.log');
-const JOURNAL4 = path.join(REPO_ROOT, 'logs', 'test-era-memo-p7.' + process.pid + '.log');
-const REFUSE_FLAG = path.join(REPO_ROOT, 'logs', 'test-era-refuse.' + process.pid + '.flag');
-const SLOW_FLAG = path.join(REPO_ROOT, 'logs', 'test-era-slow.' + process.pid + '.flag');
-const LISTFAIL_FLAG = path.join(REPO_ROOT, 'logs', 'test-era-listfail.' + process.pid + '.flag');
+const { useTempHome } = require('./helpers/temp-home');
+// Scratch config home = the aggregators' gatewayRoot: the shipped mock is seeded inside it, the test-only
+// fixture is copied in (the isolation guard wants upstream scripts under the root), journals go to its logs/.
+const HOME = useTempHome({ prefix: 'tf-era-memo-' });
+const MOCK_SERVER = path.join(HOME.mockDir, 'mock-upstream', 'server.js');
+const DUAL_SERVER = HOME.copyIntoMcp(path.join(REPO_ROOT, 'test', 'fixtures', 'servers', 'dual-era-upstream.js'));
+const JOURNAL = path.join(HOME.logsDir, 'test-era-memo.' + process.pid + '.log');
+const JOURNAL2 = path.join(HOME.logsDir, 'test-era-memo-p5.' + process.pid + '.log');
+const JOURNAL3 = path.join(HOME.logsDir, 'test-era-memo-p6.' + process.pid + '.log');
+const JOURNAL4 = path.join(HOME.logsDir, 'test-era-memo-p7.' + process.pid + '.log');
+const REFUSE_FLAG = path.join(HOME.logsDir, 'test-era-refuse.' + process.pid + '.flag');
+const SLOW_FLAG = path.join(HOME.logsDir, 'test-era-slow.' + process.pid + '.flag');
+const LISTFAIL_FLAG = path.join(HOME.logsDir, 'test-era-listfail.' + process.pid + '.flag');
 
 const { Aggregator } = require(path.join(REPO_ROOT, 'src', 'mcp', 'aggregator.js'));
 const { McpClient } = require(path.join(REPO_ROOT, 'src', 'mcp', 'mcp-client.js'));
@@ -93,7 +97,7 @@ async function waitRecovered(agg, id, deadlineMs) {
 }
 
 (async () => {
-  fs.mkdirSync(path.join(REPO_ROOT, 'logs'), { recursive: true });
+  fs.mkdirSync(HOME.logsDir, { recursive: true });
   for (const p of [JOURNAL, JOURNAL2, JOURNAL3, JOURNAL4, REFUSE_FLAG, SLOW_FLAG, LISTFAIL_FLAG]) {
     try { fs.unlinkSync(p); } catch (_e) { /* absent */ }
   }
@@ -103,7 +107,7 @@ async function waitRecovered(agg, id, deadlineMs) {
     env: { TF_MOCK_METHOD_LOG: JOURNAL, TF_MOCK_INIT_REFUSE_FILE: REFUSE_FLAG },
     enabled: true,
   }]);
-  const agg = new Aggregator({ store, gatewayRoot: REPO_ROOT });
+  const agg = new Aggregator({ store, gatewayRoot: HOME.home });
   let agg6 = null;
   let agg7 = null;
   let fatal = null;
@@ -213,7 +217,7 @@ async function waitRecovered(agg, id, deadlineMs) {
       env: { TF_DUAL_METHOD_LOG: JOURNAL3, TF_DUAL_SLOW_FILE: SLOW_FLAG },
       enabled: true,
     }]);
-    agg6 = new Aggregator({ store: store6, gatewayRoot: REPO_ROOT });
+    agg6 = new Aggregator({ store: store6, gatewayRoot: HOME.home });
     const boot6 = await agg6.connectAll();
     check('P6: a dual-era upstream whose discover is SLOW still connects at boot', () => {
       assert.deepStrictEqual(boot6.connected, ['dual'], 'connect failed: ' + JSON.stringify(boot6.failed));
@@ -253,7 +257,7 @@ async function waitRecovered(agg, id, deadlineMs) {
       env: { TF_MOCK_METHOD_LOG: JOURNAL4, TF_MOCK_LIST_FAIL_FILE: LISTFAIL_FLAG },
       enabled: true,
     }]);
-    agg7 = new Aggregator({ store: store7, gatewayRoot: REPO_ROOT });
+    agg7 = new Aggregator({ store: store7, gatewayRoot: HOME.home });
     const boot7 = await agg7.connectAll();
     check('P7: a handshake that succeeds but cannot LIST reports a FAILED connect', () => {
       assert.ok(!boot7.connected.includes('m7'),

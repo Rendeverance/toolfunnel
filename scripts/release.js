@@ -34,7 +34,8 @@ const DRY = argv.includes('--dry-run');
 const NO_NPM = argv.includes('--no-npm');
 const notesIdx = argv.indexOf('--notes');
 const NOTES = notesIdx !== -1 ? (argv[notesIdx + 1] || '') : '';
-const LEVEL = argv.find((a) => ['patch', 'minor', 'major', 'current'].includes(a)) || 'patch';
+// The token after --notes is the notes TEXT, never a level word (`--notes minor` must not bump minor).
+const LEVEL = argv.find((a, i) => (notesIdx === -1 || i !== notesIdx + 1) && ['patch', 'minor', 'major', 'current'].includes(a)) || 'patch';
 
 function log(msg) {
   process.stdout.write(msg + '\n');
