@@ -36,7 +36,7 @@ ToolFunnel is one small MCP server that sits between your agent and everything e
 2. **Forwards other MCP servers - leanly.** Attach an upstream MCP and its tools appear in the same lean register as your own, runnable through the gate. Curate which appear, promote a chosen few to top-level "every-turn" tools, or leave them lean by default.
 3. **Lean register** - the agent sees short tool *briefs*; the full instructions for a tool are fetched on demand, so context stays small. *(This is the token saver.)*
 4. **Server-side policy gate** - every server-side execution path fires your PreToolUse / PostToolUse hooks inside the gateway, so your policy works on any client, not just hosts that support hooks. The gate travels with the gateway, and fails closed.
-5. **Configure by file, UI, or in-band** - plain JSON files, an optional loopback web UI, or ten in-band management functions (`tf_*`) all add / curate / toggle tools, upstreams, and hooks - live, no restart - and package the whole setup for deployment.
+5. **Configure by file, UI, or in-band** - plain JSON files, an optional loopback web UI, or eleven in-band management functions (`tf_*`) all add / curate / toggle tools, upstreams, and hooks - live, no restart - and package the whole setup for deployment.
 6. **Audit when you want it** - a toggleable JSONL log (default off) records tool runs, every gate allow/deny decision, and every upstream connect / disconnect / reconnect.
 7. **Live & self-healing** - attach/curate/toggle on a running gateway with no restart; if an attached MCP's process dies, the gateway detects it and reconnects in the background with backoff.
 8. **Build your own MCP server, no code, no SDK** - assemble scripts and curated upstream tools, switch the meta-tools off, and ToolFunnel *is* your MCP server; `tf_pack` ships it as a `npx`-installable npm package.
@@ -76,7 +76,7 @@ The wrap survives restarts, and the web UI has the same controls (Wrap / Unwrap 
 
 - **Any client, any server, any combination.** Legacy client → modern server, modern client → legacy server, or matched pairs - all four combinations work through the same wrap. The gateway speaks both dialects natively and translates between them.
 - **Invisible from both sides.** The client sees the wrapped server's own identity, tools, results, errors, and notifications - byte-for-byte, verified against real published servers. The server sees a normal client with your client's identity. No renamed tools, no injected prefixes, no "via toolfunnel" tells - the wrap presents the server *as itself*. 
-- **The hard parts are bridged, not dropped.** Mid-call user prompts (elicitation) from a legacy server are translated into the modern retry pattern and back - for modern clients; a legacy client gets a clean decline rather than a hang (the bridge targets the era gap, and legacy-to-legacy relay is on the roadmap). Resource subscriptions survive - and are silently re-established if the wrapped server crashes and reconnects. Progress tokens flow through. Cancellations are translated into the server's own request ids.
+- **The hard parts are bridged, not dropped.** Mid-call user prompts (elicitation) from a legacy server are translated into the modern retry pattern and back - for modern clients; a legacy client gets a clean decline rather than a hang (the bridge targets the era gap, and legacy-to-legacy relay is on the roadmap). Resource subscriptions from a legacy server survive - and are silently re-established if the wrapped server crashes and reconnects (subscriptions from a modern server are not relayed yet). Progress tokens flow through. On stdio, cancellations are translated into the server's own request ids.
 - **Still governable when you want it.** Wrapping doesn't switch off the gate: every call can still pass your PreToolUse hooks, and every tool still has its visibility dials - hide a dangerous tool, and it vanishes from the wrapped surface too. Transparency is the default; the levers are opt-in.
 
 Use it to keep a favourite unmaintained server alive past the cutover, to give a modern-only server to your older tooling, or just to put a policy gate in front of a server you didn't write - without its client ever knowing. 
@@ -125,9 +125,9 @@ The refusal tells the model which tool changed and which fields - never the new 
 
 Hosting tools and proxying other MCP servers is a crowded space - but for my own use case, which is why I rolled my own solution, I wanted something different.
 
-A quick feature comparison as of Aug 2nd 2026 (the tool-approval, protocol and wrap rows re-checked against each project's own docs on Sep 24th 2026):
+A quick feature comparison as of Aug 2nd 2026 (the tool-approval, protocol and wrap rows re-checked against each project's own docs on Sep 24th 2026, and the visibility and protocol rows again on Nov 15th 2026):
 
-| Capability | ToolFunnel | FastMCP | mcpproxy-go | MetaMCP | mcp-anything |
+| Capability | ToolFunnel | FastMCP | mcpproxy-go | MetaMCP (archived Nov 2026) | mcp-anything |
 |---|:--:|:--:|:--:|:--:|:--:|
 | Config-declared polyglot tools (no SDK) | ✓ | ✗ (decorators) | partial (proxy only) | ✗ | ✓ |
 | Lean server-side exposure (briefs + schema on demand) | ✓ | partial | ✓ | ✗ | ✗ |
@@ -135,11 +135,11 @@ A quick feature comparison as of Aug 2nd 2026 (the tool-approval, protocol and w
 | Changed tool descriptions held for your approval | ✓ | ✗ | ✓ | ✗ | ✗ |
 | Live attach / hot-reload, no restart | ✓ | ✗ | partial | partial | ✓ |
 | Non-Docker self-healing reconnect | ✓ | ✗ | partial (Docker) | partial (circuit-breaker) | ✗ |
-| Visibility **matrix** - lean default + per-tool promote-to-every-turn + hide | ✓ | ✗ | filter only | cherry-pick only | ✗ |
+| Visibility **matrix** - lean default + per-tool promote-to-every-turn + hide | ✓ | filter only (3.0) | filter only | cherry-pick only | filter only |
 | Zero runtime dependencies\* | ✓ (Node, no SDK) | ✗ (framework) | ✓ (Go) | ✗ (Docker) | ✓ (Go) |
 | Runtime dependencies (installed / bundled) | **0\*** | many | 40+ (bundled) | many | bundled (Go) |
 | Config web UI | ✓ | ✗ | ✓ | ✓ | ✗ |
-| Dual-era protocol (2026-07-28 + legacy), client & server side | ✓ | ✓ (4.0) | ✗ | ✗ | ✗ |
+| Dual-era protocol (2026-07-28 + legacy), client & server side | ✓ | ✓ (4.0) | partial (0.73: 2026-07-28 list surfaces) | ✗ | ✗ |
 | Transparent single-server wrap (invisible, era-bridging) | ✓ | partial (4.0: era pinning, no bridge) | ✗ | ✗ | ✗ |
 
 Beyond the dependency count, four capability choices set ToolFunnel apart from a pure proxy like mcpproxy-go:
