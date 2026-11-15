@@ -3129,10 +3129,18 @@ function createStdioLoop(build) {
       }
       try { send(modern.listenClose(sub.id)); } catch (_e) { /* pipe may already be gone */ }
     }
+    // The client has gone: a stdio client ends the session by closing stdin. Answer everything it
+    // already asked (the chain), then close every upstream and exit. Before this the gateway lived
+    // on after its client, holding its upstreams open.
+    const stop = () => stopStdio(() => build, 0);
+    chain.then(stop, stop);
   });
   process.stdin.on('error', (err) => {
     logErr('stdin error:', (err && err.message) || String(err));
   });
+  // A stdout that breaks (EPIPE: the client's end is closed) means the same: nobody can read an
+  // answer any more. Without a listener the error became an uncaught exception.
+  process.stdout.on('error', () => stopStdio(() => build, 0));
 
   // Begin reading.
   process.stdin.resume();
@@ -3157,21 +3165,47 @@ function createStdioLoop(build) {
  */
 function installStdioShutdown(getBuild, opts) {
   const graceMs = (opts && Number.isFinite(opts.graceMs) && opts.graceMs > 0) ? opts.graceMs : 5000;
-  let stopping = false;
-  const onSignal = (sig) => {
-    const code = sig === 'SIGTERM' ? 143 : 130;
-    if (stopping) { process.exit(code); return; } // a second signal: the user means it
-    stopping = true;
-    let agg = null;
-    try { const b = getBuild(); agg = b && b.aggregator; } catch (_e) { agg = null; }
-    const cutoff = setTimeout(() => process.exit(code), graceMs); // never hang on a stuck close
-    Promise.resolve()
-      .then(() => (agg && typeof agg.closeAll === 'function' ? agg.closeAll() : null))
-      .catch((err) => { logErr('shutdown: closing upstreams failed:', (err && err.message) || String(err)); })
-      .then(() => { clearTimeout(cutoff); process.exit(code); });
-  };
+  const onSignal = (sig) => stopStdio(getBuild, sig === 'SIGTERM' ? 143 : 130, { graceMs, signal: true });
   process.on('SIGINT', () => onSignal('SIGINT'));
   process.on('SIGTERM', () => onSignal('SIGTERM'));
+}
+
+let stdioStopping = false;
+/**
+ * The one way out of a stdio gateway: close every upstream, let stdout flush, exit with `code`. Used
+ * by the interrupt handler above and by a client that has gone (stdin ended, or stdout broken). A
+ * second SIGNAL while stopping exits at once; any other second call is ignored, so a stop already
+ * under way keeps closing the upstreams. A close that hangs is cut off after `graceMs`.
+ * stdio-shutdown.test.js and stdio-orphan.test.js pin it.
+ * @param {() => object|null} getBuild  the live build (its aggregator is closed)
+ * @param {number} code
+ * @param {{ graceMs?: number, signal?: boolean }} [opts]
+ */
+function stopStdio(getBuild, code, opts) {
+  const o = opts || {};
+  if (stdioStopping) { if (o.signal) process.exit(code); return; } // a second signal: the user means it
+  stdioStopping = true;
+  const graceMs = Number.isFinite(o.graceMs) && o.graceMs > 0 ? o.graceMs : 5000;
+  let agg = null;
+  try { const b = getBuild(); agg = b && b.aggregator; } catch (_e) { agg = null; }
+  const cutoff = setTimeout(() => process.exit(code), graceMs); // never hang on a stuck close
+  Promise.resolve()
+    .then(() => (agg && typeof agg.closeAll === 'function' ? agg.closeAll() : null))
+    .catch((err) => { logErr('shutdown: closing upstreams failed:', (err && err.message) || String(err)); })
+    .then(flushStdout)
+    .then(() => { clearTimeout(cutoff); process.exit(code); });
+}
+
+/** Resolves once everything written to stdout so far has left the process (at once if it cannot). */
+function flushStdout() {
+  return new Promise((resolve) => {
+    try {
+      if (process.stdout.destroyed || !process.stdout.writable) { resolve(); return; }
+      process.stdout.write('', () => resolve());
+    } catch (_e) {
+      resolve();
+    }
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -3221,6 +3255,10 @@ async function main() {
   armWrapChatter(build); // wrap-chatter filter armed from boot - not only from the first client message
 
   // Keep the process alive on the stdio loop; never let an unhandled rejection kill it.
+  // stderr is diagnostics only. When it breaks (its reader has gone) a write fails ASYNCHRONOUSLY, as
+  // an 'error' event; with no listener that became an uncaught exception, whose own log line failed
+  // the same way, round and round at a full core. Its errors are dropped here.
+  process.stderr.on('error', () => { /* nobody is reading diagnostics */ });
   process.on('uncaughtException', (err) => logErr('uncaughtException:', (err && err.stack) || String(err)));
   process.on('unhandledRejection', (err) => logErr('unhandledRejection:', (err && (err.stack || err.message)) || String(err)));
 
