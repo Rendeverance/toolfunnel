@@ -49,7 +49,9 @@ const { HOME, PKG } = require('./tf-env');
 const EXCLUDE_DIRS = new Set(['dist', 'logs', 'auth', 'packages', 'node_modules', '.git', '.idea', '.vscode']);
 
 function parseStructuredArgs() {
-  const raw = process.env.TOOLFUNNEL_TOOL_ARGS;
+  // the arguments: env TOOLFUNNEL_TOOL_ARGS, or stdin when they were too big for the env
+  const raw = process.env.TOOLFUNNEL_TOOL_ARGS
+    ?? (process.env.TOOLFUNNEL_TOOL_ARGS_STDIN === '1' ? require('node:fs').readFileSync(0, 'utf8') : undefined);
   if (raw === undefined || raw === null || raw === '') return { value: {} };
   try {
     return { value: JSON.parse(raw) };
@@ -230,8 +232,8 @@ function main() {
       payload = { ok: false, error: (err && err.message) || String(err) };
     }
   }
-  process.stdout.write(JSON.stringify(payload) + '\n');
-  process.exit(0);
+  // exit once stdout has drained: an exit straight after write cut answers over 64 KB short on Linux and macOS pipes
+  process.stdout.write(JSON.stringify(payload) + '\n', () => process.exit(0));
 }
 
 main();

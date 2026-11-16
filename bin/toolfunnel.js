@@ -253,6 +253,10 @@ if (positionals[0] === 'wrap') {
     setPassthrough(statePath, target);
     process.stderr.write('[toolfunnel] wrapping "' + target + '": its tools are now the ENTIRE surface, under ' +
       'their ORIGINAL names - meta-tools hidden and uncallable, every call still passes the PreToolUse gate.\n');
+    {
+      const note = require('../src/mcp/expose-store').wrapIgnoresNote(store, target);
+      if (note) process.stderr.write('[toolfunnel] wrap: ' + note + '\n');
+    }
 
     // ── Era probe ──────────────────────────────────────────────────────────────────────────────
     // The 2026-07-28 spec's dual-era client rule, in probe order: try MODERN first

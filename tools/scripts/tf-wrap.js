@@ -31,7 +31,7 @@
 
 const path = require('node:path');
 const { HOME, srcRequire } = require('./tf-env');
-const { loadExposeStore } = srcRequire('mcp/expose-store');
+const { loadExposeStore, wrapIgnoresNote } = srcRequire('mcp/expose-store');
 const { loadToolState, getPassthrough, setPassthrough } = srcRequire('tools/tool-state');
 
 const STATE_PATH = path.join(HOME, 'tools', 'tools.state.json');
@@ -42,7 +42,9 @@ const LOCKOUT_WARNING =
   'impossible for you: recover via the config web UI (--ui) or `toolfunnel wrap --off` on a terminal.';
 
 function parseArgs() {
-  const raw = process.env.TOOLFUNNEL_TOOL_ARGS;
+  // the arguments: env TOOLFUNNEL_TOOL_ARGS, or stdin when they were too big for the env
+  const raw = process.env.TOOLFUNNEL_TOOL_ARGS
+    ?? (process.env.TOOLFUNNEL_TOOL_ARGS_STDIN === '1' ? require('node:fs').readFileSync(0, 'utf8') : undefined);
   if (raw === undefined || raw === null || raw === '') return {};
   const parsed = JSON.parse(raw);
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
@@ -86,7 +88,8 @@ function run() {
   }
 
   setPassthrough(STATE_PATH, id);
-  return { ok: true, wrapping: id, warning: LOCKOUT_WARNING };
+  const note = wrapIgnoresNote(store, id);
+  return note ? { ok: true, wrapping: id, warning: LOCKOUT_WARNING, note } : { ok: true, wrapping: id, warning: LOCKOUT_WARNING };
 }
 
 function main() {
@@ -96,8 +99,8 @@ function main() {
   } catch (err) {
     payload = { ok: false, error: (err && err.message) || String(err) };
   }
-  process.stdout.write(JSON.stringify(payload) + '\n');
-  process.exit(0);
+  // exit once stdout has drained: an exit straight after write cut answers over 64 KB short on Linux and macOS pipes
+  process.stdout.write(JSON.stringify(payload) + '\n', () => process.exit(0));
 }
 
 main();

@@ -18,7 +18,9 @@
  */
 
 function parseStructuredArgs() {
-  const raw = process.env.TOOLFUNNEL_TOOL_ARGS;
+  // the arguments: env TOOLFUNNEL_TOOL_ARGS, or stdin when they were too big for the env
+  const raw = process.env.TOOLFUNNEL_TOOL_ARGS
+    ?? (process.env.TOOLFUNNEL_TOOL_ARGS_STDIN === '1' ? require('node:fs').readFileSync(0, 'utf8') : undefined);
   if (!raw) return null;
   try {
     return JSON.parse(raw);
@@ -32,8 +34,8 @@ function main() {
   const argv = process.argv.slice(2);
   const args = parseStructuredArgs();
   const payload = { ok: true, args, argv };
-  process.stdout.write(JSON.stringify(payload) + '\n');
-  process.exit(0);
+  // exit once stdout has drained: an exit straight after write cut answers over 64 KB short on Linux and macOS pipes
+  process.stdout.write(JSON.stringify(payload) + '\n', () => process.exit(0));
 }
 
 main();

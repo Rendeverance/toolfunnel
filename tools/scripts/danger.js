@@ -27,7 +27,9 @@
 const fs = require('node:fs');
 
 function structuredArgs() {
-  const raw = process.env.TOOLFUNNEL_TOOL_ARGS;
+  // the arguments: env TOOLFUNNEL_TOOL_ARGS, or stdin when they were too big for the env
+  const raw = process.env.TOOLFUNNEL_TOOL_ARGS
+    ?? (process.env.TOOLFUNNEL_TOOL_ARGS_STDIN === '1' ? require('node:fs').readFileSync(0, 'utf8') : undefined);
   if (!raw) return null;
   try {
     return JSON.parse(raw);
@@ -52,10 +54,11 @@ function main() {
     wrote = true;
   }
 
+  // exit once stdout has drained: an exit straight after write cut answers over 64 KB short on Linux and macOS pipes
   process.stdout.write(
-    JSON.stringify({ ok: true, fired: true, wrote, logPath: logPath || null }) + '\n'
+    JSON.stringify({ ok: true, fired: true, wrote, logPath: logPath || null }) + '\n',
+    () => process.exit(0)
   );
-  process.exit(0);
 }
 
 main();

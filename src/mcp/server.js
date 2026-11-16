@@ -41,6 +41,7 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 const reaper = require('../core/child-reaper');
 const { takeWithinCap } = require('../core/output-cap');
+const { argsJson, spawnWithArgs, stdinOnlyNote, toolSaidFailed, runRecord, isFailedRun } = require('../core/tool-args');
 
 const { makeProtocol } = require('./protocol');
 const { gatedRun } = require('./gated-run');
@@ -201,15 +202,18 @@ function makeRegistryAdapter(registry, opts) {
     return new Promise((resolve, reject) => {
       let child;
       try {
-        child = spawn(command, {
+        // the arguments go in env TOOLFUNNEL_TOOL_ARGS and on stdin; too big for the env, on stdin only
+        child = spawnWithArgs(argsJson(args), (env) => spawn(command, {
           shell: true,
           cwd: ROOT,
-          env: Object.assign({}, process.env, { TOOLFUNNEL_TOOL_ARGS: JSON.stringify(args == null ? null : args) }),
+          env,
+          stdio: ['pipe', 'pipe', 'pipe'],
           windowsHide: true,
           // POSIX process group so the timeout can kill the shell's descendants too; Windows
           // uses taskkill /T inside killTree.
           detached: process.platform !== 'win32',
-        });
+          // never on a shell's stdin: a shell reads stdin as commands, and the model writes the arguments
+        }), false);
       } catch (err) {
         reject(new Error(`shell spawn failed: ${err.message}`));
         return;
@@ -227,12 +231,14 @@ function makeRegistryAdapter(registry, opts) {
         clearTimeout(timer);
         // Release the pipes and unref the handle - the ChildProcess itself keeps the event loop
         // referenced until the child exits (same fix as core/hook-runner.js and tools/registry.js).
-        for (const s of [child.stdout, child.stderr]) {
+        for (const s of [child.stdin, child.stdout, child.stderr]) {
           try { if (s && typeof s.destroy === 'function') s.destroy(); } catch (_e) { /* ignore */ }
         }
         try { if (typeof child.unref === 'function') child.unref(); } catch (_e) { /* ignore */ }
         reaper.untrack(child);
-        resolve(result);
+        const note = stdinOnlyNote(child);
+        if (note) result.stderr = note + (result.stderr ? '\n' + result.stderr : '');
+        resolve(runRecord(result));
       };
       const timer = setTimeout(() => {
         killShellTree(child);
@@ -282,7 +288,9 @@ function makeRegistryAdapter(registry, opts) {
       });
       child.on('close', (code) => {
         const c = typeof code === 'number' ? code : -1;
-        finish({ ok: c === 0, code: c, stdout, stderr });
+        // exit 0 is not success when the tool's own answer says ok: false
+        const said = c === 0 ? toolSaidFailed(stdout) : null;
+        finish(said ? { ok: false, code: c, stdout, stderr, error: said } : { ok: c === 0, code: c, stdout, stderr });
       });
     });
   }
@@ -1391,11 +1399,19 @@ function withUpstreamData(message, result) {
  * envelope. Extracted so the meta-tool path and the unknown-tool path share one shaping.
  */
 function wrapProtocolResult(result) {
-  const isError = !(result && result.ok === true);
+  // a local tool that ran but failed (non-zero exit, or its own answer said ok: false) is an error result too,
+  // carrying its whole run record ({ ok, code, stdout, stderr, error? }) as the text
+  const ran = result && result.ok === true && isFailedRun(result.output);
+  // an upstream tool's own tools/call envelope that says isError (reached through toolfunnel_run_tool)
+  const upstreamError = !!(result && result.ok === true && result.output && typeof result.output === 'object' &&
+    Array.isArray(result.output.content) && result.output.isError === true);
+  const isError = ran || upstreamError || !(result && result.ok === true);
   // On error surface the most informative message (a PreToolUse block carries `reason`, a thrown
   // tool carries `error`); on success serialise the output payload.
   let payload;
-  if (isError) {
+  if (ran || upstreamError) {
+    payload = result.output;
+  } else if (isError) {
     payload = firstString(
       // gatedRun returns `error` as an Error INSTANCE on a thrown tool - extract its message
       // (firstString only takes strings, so a bare Error would be dropped -> generic text).

@@ -42,6 +42,7 @@ const path = require('node:path');
 const { spawn, execFile } = require('node:child_process');
 const reaper = require('../core/child-reaper');
 const { takeWithinCap } = require('../core/output-cap');
+const { argsJson, readsStdinArgs, spawnWithArgs, stdinOnlyNote, toolSaidFailed, runRecord } = require('../core/tool-args');
 const { migrateForStoreFile, snapshotForStoreFile, restoreSnapshot } = require('../core/rename-migration');
 
 // LOCAL tool execution bounds. The upstream path has per-method timeouts; stdio serialises on one
@@ -163,7 +164,7 @@ function validateEntry(entry, { requireId = true } = {}) {
 
 /**
  * Default script executor: spawn `node <resolved script>` with the structured
- * args passed in env TOOLFUNNEL_TOOL_ARGS. Resolves with { ok, code, stdout, stderr }.
+ * args in env TOOLFUNNEL_TOOL_ARGS and on stdin (core/tool-args.js). Resolves with { ok, code, stdout, stderr }.
  * Never rejects on a non-zero exit - the caller (the gated runner / meta-tool)
  * decides how to surface a tool failure. It DOES reject only on spawn failure.
  *
@@ -183,13 +184,20 @@ function defaultRunScript(scriptsRoot, invoke, args) {
       reject(new Error(`Registry: script not found ("${resolved}")`));
       return;
     }
-    const child = spawn(process.execPath, [resolved], {
-      env: { ...process.env, TOOLFUNNEL_TOOL_ARGS: JSON.stringify(args ?? null) },
-      stdio: ['ignore', 'pipe', 'pipe'],
-      windowsHide: true,
-      // POSIX process group so the timeout below can kill a whole tree; Windows uses taskkill /T.
-      detached: process.platform !== 'win32',
-    });
+    // the arguments go in env TOOLFUNNEL_TOOL_ARGS and on stdin; too big for the env, on stdin only (core/tool-args.js)
+    let child;
+    try {
+      child = spawnWithArgs(argsJson(args), (env) => spawn(process.execPath, [resolved], {
+        env,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        windowsHide: true,
+        // POSIX process group so the timeout below can kill a whole tree; Windows uses taskkill /T.
+        detached: process.platform !== 'win32',
+      }), (() => { try { return readsStdinArgs(fs.readFileSync(resolved, 'utf8')); } catch (_e) { return false; } })());
+    } catch (err) {
+      reject(err);
+      return;
+    }
     reaper.track(child); // last-resort sweep if the gateway dies without its kill path
     let stdout = '';
     let stderr = '';
@@ -206,12 +214,14 @@ function defaultRunScript(scriptsRoot, invoke, args) {
       // Release the pipes and unref the handle - the ChildProcess itself keeps the event loop
       // referenced until the child exits, so a tree that survives killTree would otherwise pin
       // the process after we have already answered (same fix as core/hook-runner.js).
-      for (const s of [child.stdout, child.stderr]) {
+      for (const s of [child.stdin, child.stdout, child.stderr]) {
         try { if (s && typeof s.destroy === 'function') s.destroy(); } catch (_e) { /* ignore */ }
       }
       try { if (typeof child.unref === 'function') child.unref(); } catch (_e) { /* ignore */ }
       reaper.untrack(child);
-      resolve(result);
+      const note = stdinOnlyNote(child);
+      if (note) result.stderr = note + (result.stderr ? '\n' + result.stderr : '');
+      resolve(runRecord(result));
     };
     const timer = setTimeout(() => {
       killTree(child);
@@ -258,7 +268,9 @@ function defaultRunScript(scriptsRoot, invoke, args) {
       reject(err);
     });
     child.on('close', (code) => {
-      finish({ ok: code === 0, code, stdout, stderr });
+      // exit 0 is not success when the tool's own answer says ok: false
+      const said = code === 0 ? toolSaidFailed(stdout) : null;
+      finish(said ? { ok: false, code, stdout, stderr, error: said } : { ok: code === 0, code, stdout, stderr });
     });
   });
 }
@@ -474,7 +486,7 @@ class Registry {
    * out of here keeps the safety case in one auditable place.
    *
    * - script invoke: run() spawns node on the host-local script (via the injected
-   *   runScript), passing args in TOOLFUNNEL_TOOL_ARGS.
+   *   runScript), passing args in TOOLFUNNEL_TOOL_ARGS and on stdin.
    * - shell invoke: run() does NOT execute here. It returns a descriptor
    *   { type:'shell', command, args } so the gated runner owns the actual shell
    *   spawn (the broadest power) behind the gate. This keeps arbitrary shell

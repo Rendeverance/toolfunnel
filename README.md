@@ -117,7 +117,7 @@ Hooks speak the Claude-Code hook protocol (event JSON on stdin, exit `2` to bloc
 A tool's description goes straight into your model's context whether or not the tool is ever called, so an MCP server that quietly changes what its tools *say* after you've attached it can steer your model. ToolFunnel records every upstream tool's description and schema the first time it connects, and from then on:
 
 - **Same server version, changed or new tool** - held. The gateway keeps serving the text you approved (a new tool stays hidden), and calls to that tool are refused until you accept the change. Everything else keeps working.
-- **New server version** - approved and reported, because that is what an update looks like. Set `"strictApproval": true` on an upstream to hold every change for acceptance instead.
+- **New server version** - approved and reported, because that is what an update looks like. Set `"strictApproval": true` on an upstream to hold every change for acceptance instead, or at the top of `mcp/expose.json` to hold it for every upstream (an upstream's own `false` does not exempt it).
 
 The refusal tells the model which tool changed and which fields - never the new text. You read that with `toolfunnel changes` or in the UI, and accept it there, with `toolfunnel accept <upstream> [tool]`, or through the agent: a 2026-07-28 client that supports elicitation just asks you in the chat, and any other client can run `tf_accept_change` once you've said yes. Either way an agent-side accept passes your PreToolUse gate as `tf_accept_change`, so a hook can forbid them.
 

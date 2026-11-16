@@ -2026,7 +2026,7 @@ class Aggregator {
       serverVersion: version || null,
       changed: p.changed,
       hash: p.hash,
-      accept: route === 'raw' ? { cli } : { tool: 'tf_accept_change', via: 'toolfunnel_run_tool', arguments: acceptArgs, cli },
+      accept: route === 'raw' ? { cli } : { tool: 'tf_accept_change', via: 'toolfunnel_run_tool', args: acceptArgs, cli },
     };
     return { text, envelope: { content: [{ type: 'text', text }], structuredContent, isError: true } };
   }

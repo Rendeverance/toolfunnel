@@ -73,7 +73,9 @@ const SCRIPTS_ROOT = path.join(ROOT, 'tools', 'scripts');
  * @returns {object}
  */
 function readArgs() {
-  const raw = process.env.TOOLFUNNEL_TOOL_ARGS;
+  // the arguments: env TOOLFUNNEL_TOOL_ARGS, or stdin when they were too big for the env
+  const raw = process.env.TOOLFUNNEL_TOOL_ARGS
+    ?? (process.env.TOOLFUNNEL_TOOL_ARGS_STDIN === '1' ? require('node:fs').readFileSync(0, 'utf8') : undefined);
   if (typeof raw !== 'string' || raw.length === 0) return {};
   try {
     const parsed = JSON.parse(raw);
@@ -182,11 +184,11 @@ function main() {
     payload = build(readArgs());
   } catch (err) {
     // Any logical error (bad kind, missing/malformed store) becomes a well-shaped
-    // failure line. Still exit 0 - the gated runner treats parseable stdout as ok.
+    // failure line. Still exit 0: an answer of { ok: false, error } is reported as a failure (0.8.2).
     payload = { ok: false, error: (err && err.message) || String(err) };
   }
-  process.stdout.write(JSON.stringify(payload) + '\n');
-  process.exit(0);
+  // exit once stdout has drained: an exit straight after write cut answers over 64 KB short on Linux and macOS pipes
+  process.stdout.write(JSON.stringify(payload) + '\n', () => process.exit(0));
 }
 
 main();

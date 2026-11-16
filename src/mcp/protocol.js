@@ -47,6 +47,7 @@
 // Activity log. Self-gating (no-op unless explicitly enabled) and contracted never to
 // throw, so emit points cannot alter dispatch behaviour or break a tool run.
 const logger = require('../core/logger');
+const { isFailedRun } = require('../core/tool-args');
 
 /** The four meta-tool names - the entire exposed surface. */
 const META_TOOLS = Object.freeze({
@@ -187,6 +188,12 @@ function makeProtocol(deps) {
       return errorResult('toolfunnel_run_tool: gatedRun is unavailable - refusing to execute ungated');
     }
 
+    // "arguments" is the key a tools/call uses, so a caller may send it here by habit. Running the tool with
+    // empty args would do the wrong thing quietly; refuse and say which key to use.
+    if (a.args === undefined && a.arguments !== undefined) {
+      return errorResult('toolfunnel_run_tool: the tool\'s arguments go in "args", not "arguments" - nothing was run');
+    }
+
     // The tool's input args (the model's payload for the underlying tool).
     const toolArgs = a.args !== undefined && a.args !== null ? a.args : {};
 
@@ -291,12 +298,14 @@ function makeProtocol(deps) {
         execute: resolution.execute,
       });
       const normalized = normalizeResult(result);
+      // a local tool that ran but failed (its run record says ok: false) is logged as failed, as it is answered
+      const ranFailed = isFailedRun(normalized.output);
       // Activity log: record the run outcome. Self-gates on enabled; never throws.
       logger.log({
         type: 'tool',
         name,
         mode,
-        ok: normalized.ok === true,
+        ok: normalized.ok === true && !ranFailed,
         blocked: normalized.blocked === true,
         durationMs: Date.now() - startedAt,
       });

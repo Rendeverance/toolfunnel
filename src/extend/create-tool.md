@@ -69,8 +69,16 @@ Field-by-field - these names are fixed (registry.js reads exactly these):
 ```
 - `type: "script"` - run a file under `tools/scripts/`. `path` is **relative to `tools/`**
   and MUST stay inside `tools/scripts/` (registry.js path-guards it, same defense-in-depth as the
-  hook loader's `writeScript`). The args object is delivered to the script (e.g. as a JSON blob on
-  stdin or argv per the registry's convention) and the script's stdout is the tool output.
+  hook loader's `writeScript`). The args object is delivered to the script as JSON in the
+  environment variable `TOOLFUNNEL_TOOL_ARGS`, and on stdin as well for a script that reads them
+  there (below), and the script's stdout is the tool output. Arguments too big for an environment
+  variable (over about 128 KB on Linux) come on stdin only, with `TOOLFUNNEL_TOOL_ARGS_STDIN=1` set and
+  `TOOLFUNNEL_TOOL_ARGS` absent, so a script that may take large arguments reads stdin when the
+  variable is missing. The gateway writes the arguments to stdin only for a script whose text names
+  `TOOLFUNNEL_TOOL_ARGS_STDIN`, as the lines below do; any other script gets an empty stdin, and
+  arguments too big for the environment fail the call rather than run it without them. Read them as
+  data (`JSON.parse`), never pass them to a shell or `eval`. A `shell` command gets them in the
+  variable only, never on stdin: a shell reads stdin as commands.
 
 ```json
 { "type": "shell", "command": "node \"${TOOLS_DIR}/scripts/echo-upper.js\"" }
@@ -98,9 +106,18 @@ tools/
 (`registry.js` - the engine that loads/persists the register and runs list/instructions/run - is
 NOT user content. It lives in `src/tools/registry.js` and is not part of this tree.)
 
-The script reads its arguments (the `args` object passed to `run`) and writes its result to stdout.
+The script reads its arguments (the `args` object passed to `run`) and writes its result to stdout. In Node:
+
+```js
+const raw = process.env.TOOLFUNNEL_TOOL_ARGS
+  ?? (process.env.TOOLFUNNEL_TOOL_ARGS_STDIN === '1' ? require('node:fs').readFileSync(0, 'utf8') : undefined);
+const args = raw ? JSON.parse(raw) : {};
+```
+
 Exit non-zero with a message on stderr to signal failure - the registry surfaces that as the tool's
-error. Keep scripts pure and side-effect-honest: anything destructive is exactly what the PreToolUse
+error. An answer that is exactly one JSON object with `"ok": false` (the bundled tools' shape) is a failure too,
+with its `"error"` text as the message, even on exit 0. A tool that passes on someone else's JSON, which may hold
+`"ok": false` of its own, should wrap it (`{ "ok": true, "result": ... }`). Keep scripts pure and side-effect-honest: anything destructive is exactly what the PreToolUse
 gate exists to catch (next section).
 
 ---

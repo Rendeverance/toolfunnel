@@ -1,7 +1,8 @@
 # Known bugs
 
-The **Open** list is what remains open as of 0.8.1. **Fixed in 0.8.1** and **Fixed in 0.8.0** mark
-the defects an earlier user could meet that those releases closed. The full change list is in the
+The **Open** list is what remains open as of 0.8.2. **Fixed in 0.8.2**, **Fixed in 0.8.1** and
+**Fixed in 0.8.0** mark the defects an earlier user could meet that those releases closed. The full
+change list is in [CHANGELOG.md](../CHANGELOG.md) and the
 [release notes](https://github.com/Rendeverance/toolfunnel/releases).
 
 ## Open
@@ -37,6 +38,25 @@ the defects an earlier user could meet that those releases closed. The full chan
 - **OPEN (minor) - A very large approvals file slows refused calls.** Each refused call re-reads
   `mcp/tool-approvals.json`; at 22 MB that costs about half a second per refused call. A home
   with two real upstreams holds about 250 KB.
+
+## Fixed in 0.8.2
+
+- ***FIXED*** - **Large tool arguments failed with `spawn E2BIG`.** Arguments came only in an
+  environment variable, which has a size limit. A script tool that reads them from stdin (its file
+  names `TOOLFUNNEL_TOOL_ARGS_STDIN`) now gets them there too, and on stdin only when too big for the
+  environment; any other tool, and every shell tool, gets an empty stdin as before and still fails
+  the call, naming the fix. Pinned by `test/tool-args-stdin.test.js`.
+- ***FIXED*** - **A bundled tool's answer over 64 KB was cut short on Linux and macOS.** Each tool
+  exited straight after writing, before the pipe had taken it all. They now exit once it is sent.
+- ***FIXED*** - **A tool that answered `{"ok": false}` with exit 0 was reported as a success**, and
+  so were a non-zero exit, a timeout, an over-cap output and an upstream tool's own error through
+  `toolfunnel_run_tool`. All are error results now.
+- ***FIXED*** - **`toolfunnel_run_tool` with `arguments` instead of `args` ran the tool with no
+  arguments.** It now refuses and names the right key.
+- ***FIXED*** - **A wrap ignored the server's `expose` entries without saying so.** `wrap` and
+  `tf_wrap` now say when there are any.
+- ***FIXED*** - **`strictApproval` at the top of `mcp/expose.json` did nothing and warned nobody.** It
+  now holds every upstream; a misplaced or misspelt top-level key gets a warning.
 
 ## Fixed in 0.8.1
 

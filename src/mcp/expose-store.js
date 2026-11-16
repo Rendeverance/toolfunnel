@@ -274,6 +274,8 @@ function editDistance(a, b) {
 }
 
 /** @returns {string[]} one message per unknown field of a RAW entry. */
+const TOP_KNOWN_FIELDS = ['version', 'upstreams', 'expose', 'strictApproval'];
+
 function unknownFieldMessages(raw, known, at) {
   const out = [];
   for (const key of Object.keys(raw)) {
@@ -380,6 +382,17 @@ class ExposeStore {
       throw new Error(`ExposeStore: ${filePath}: "version" must be a number, got ${describeValue(d.version)}`);
     }
     this._version = typeof d.version === 'number' ? d.version : 1;
+    // A top-level strictApproval: true holds every upstream's changes for acceptance. An upstream can add it, not
+    // remove it: 0.8.1 wrote "strictApproval": false on every entry, so an entry's false cannot mean opting out.
+    if (isSet(d.strictApproval) && typeof d.strictApproval !== 'boolean') {
+      throw new Error(`ExposeStore: ${filePath}: "strictApproval" must be true or false, got ${describeValue(d.strictApproval)}`);
+    }
+    this._strictTop = typeof d.strictApproval === 'boolean' ? d.strictApproval : undefined; // written back as found
+    // other top-level keys (a _README, a key meant for an upstream) are kept and written back unchanged
+    // (__proto__, constructor and prototype are never carried: they could retarget the written object)
+    this._extraTop = Object.fromEntries(Object.entries(d)
+      .filter(([k]) => !TOP_KNOWN_FIELDS.includes(k) && !['__proto__', 'constructor', 'prototype'].includes(k))
+      .map(([k, v]) => [k, clone(v)]));
 
     // Index upstreams by id; reject duplicate ids at load (a duplicate id makes
     // getUpstream / cascade-remove ambiguous). Keep insertion order via the Map.
@@ -436,13 +449,13 @@ class ExposeStore {
 
   /** @returns {Array<{id,transport,command,args,env,enabled,description}>} cloned, in order. */
   listUpstreams() {
-    return [...this._upstreams.values()].map(clone);
+    return [...this._upstreams.values()].map((u) => this._withDefaults(clone(u)));
   }
 
   /** @returns {object|undefined} cloned upstream entry, or undefined if unknown. */
   getUpstream(id) {
     const u = this._upstreams.get(id);
-    return u ? clone(u) : undefined;
+    return u ? this._withDefaults(clone(u)) : undefined;
   }
 
   // ── upstreams: write API (validate + atomic persist) ──────────────────────
@@ -656,14 +669,23 @@ class ExposeStore {
 
   /** @returns {{version, upstreams, expose}} a clone of the full config (safe to mutate). */
   toJSON() {
-    return {
+    const out = {
       version: this._version,
       upstreams: [...this._upstreams.values()].map(clone),
       expose: this._expose.map(clone),
     };
+    if (this._strictTop !== undefined) out.strictApproval = this._strictTop;
+    for (const [k, v] of Object.entries(this._extraTop)) out[k] = clone(v);
+    return out;
   }
 
   // ── internals ───────────────────────────────────────────────────────────
+
+  /** An upstream as read: the file's top-level strictApproval: true holds it too. */
+  _withDefaults(u) {
+    if (this._strictTop === true) u.strictApproval = true;
+    return u;
+  }
 
   /** @returns {object|undefined} the LIVE expose entry (not a clone) for (upstream,tool). */
   _findExpose(upstream, tool) {
@@ -733,6 +755,16 @@ function loadExposeStore(filePath, opts = {}) {
   }
   const store = new ExposeStore({ filePath, data });
   if (typeof opts.warnUnknown === 'function') {
+    // a key at the top that belongs on an upstream (legacyPin, timeoutMs...) or is misspelt says so
+    for (const key of Object.keys(data)) {
+      if (!TOP_KNOWN_FIELDS.includes(key) && UPSTREAM_KNOWN_FIELDS.includes(key)) {
+        opts.warnUnknown(`${filePath}: "${key}" belongs on an upstream entry, not at the top of the file. It has no effect there.`);
+      }
+    }
+    const misplaced = Object.keys(data).filter((k) => UPSTREAM_KNOWN_FIELDS.includes(k) && !TOP_KNOWN_FIELDS.includes(k));
+    const rest = Object.fromEntries(Object.entries(data).filter(([k]) => !misplaced.includes(k)));
+    for (const m of unknownFieldMessages(rest, TOP_KNOWN_FIELDS, filePath)) opts.warnUnknown(m);
+
     (data.upstreams || []).forEach((raw, i) => {
       for (const m of unknownFieldMessages(raw, UPSTREAM_KNOWN_FIELDS, `${filePath}: ${upstreamLabel(raw, i)}`)) opts.warnUnknown(m);
     });
@@ -743,8 +775,21 @@ function loadExposeStore(filePath, opts = {}) {
   return store;
 }
 
+/**
+ * What a wrap of one upstream leaves unapplied: its entries in expose[] (which tools, their names and categories,
+ * on or off). A wrap shows every tool of that server under its own name, so these entries do nothing while it
+ * is wrapped. Returns a one-line note, or null when the upstream has none.
+ */
+function wrapIgnoresNote(store, id) {
+  const n = store.listExposed({ upstream: id }).length;
+  if (!n) return null;
+  return `"${id}" has ${n} curated tool entr${n === 1 ? 'y' : 'ies'} in mcp/expose.json (which tools, their names, on or off). ` +
+    'A wrap shows every tool of the server under its own name, so they do not apply while it is wrapped.';
+}
+
 module.exports = {
   ExposeStore,
+  wrapIgnoresNote,
   loadExposeStore,
   // exported for unit tests / the aggregator
   atomicWriteJson,

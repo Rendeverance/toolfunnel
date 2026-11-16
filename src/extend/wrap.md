@@ -15,6 +15,11 @@ protocol eras. Wrapped tool calls wait up to 120 s by default, and a tool that r
 keeps its call alive indefinitely; for silent tools that run longer, set `"timeoutMs"` on the
 upstream entry in `mcp/expose.json`.
 
+**What `mcp/expose.json` still does:** the upstream entry (its command, `timeoutMs`, `strictApproval`
+and the rest) applies as before. The `expose` entries for that upstream (which of its tools, their
+names, on or off) do not: a wrap shows every tool under its own name. `wrap` and `tf_wrap` say so
+when the upstream has any.
+
 **What changes for YOU (the agent):** while a wrap is active, ALL ToolFunnel tools - the four
 meta-tools included - are hidden and uncallable. That includes `tf_wrap` itself. Read §3 before
 setting a wrap in-band.

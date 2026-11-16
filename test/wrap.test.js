@@ -136,8 +136,11 @@ process.stderr.write = (str, ...rest) => {
     const runTfWrap = async (args) => {
       const r = await s.handleMessage(build, { jsonrpc: '2.0', id: 7, method: 'tools/call',
         params: { name: 'toolfunnel_run_tool', arguments: { name: 'tf_wrap', args } } });
-      if (r.result.isError) return { _uncallable: true, text: r.result.content[0].text };
-      return JSON.parse(JSON.parse(r.result.content[0].text).stdout);
+      // a tool that ran and answered ok:false is an error result (0.8.2) that still carries its run record
+      let run = null;
+      try { run = JSON.parse(r.result.content[0].text); } catch (_e) { /* not a run record */ }
+      if (r.result.isError && !(run && typeof run.stdout === 'string')) return { _uncallable: true, text: r.result.content[0].text };
+      return Object.assign(JSON.parse(run.stdout), r.result.isError ? { _isError: true } : {});
     };
     const locked = await runTfWrap({});
     check('tf_wrap: locked out while wrapped (by design)', locked._uncallable === true);
@@ -146,7 +149,7 @@ process.stderr.write = (str, ...rest) => {
     check('tf_wrap: status after recovery', status.ok === true && status.wrapping === null && status.upstreams.includes('oldmcp'));
     const refused = await runTfWrap({ upstream: 'oldmcp' });
     check('tf_wrap: refuses without confirm + explains recovery',
-      refused.ok === false && /confirm/.test(refused.error) && /--off/.test(refused.error));
+      refused.ok === false && refused._isError === true && /confirm/.test(refused.error) && /--off/.test(refused.error));
     const set = await runTfWrap({ upstream: 'oldmcp', confirm: true });
     check('tf_wrap: confirm sets the wrap + warns', set.ok === true && set.wrapping === 'oldmcp' && /hides ALL/.test(set.warning));
     setPassthrough(STATE_PATH, null);
