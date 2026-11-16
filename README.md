@@ -2,7 +2,7 @@
 
 ![ToolFunnel](assets/logo.png)
 
-[![CI](https://github.com/Rendeverance/toolfunnel/actions/workflows/ci.yml/badge.svg)](https://github.com/Rendeverance/toolfunnel/actions/workflows/ci.yml)
+[![CI](https://github.com/Rendeverance/toolfunnel/actions/workflows/ci.yml/badge.svg)](https://github.com/Rendeverance/toolfunnel/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](#license) [![Release](https://img.shields.io/github/v/release/Rendeverance/toolfunnel)](https://github.com/Rendeverance/toolfunnel/releases/latest)
 
 > A zero-dependency MCP and Local tool gateway: host your own tools in any language, forward and curate tools from other MCP servers, expose them leanly to cut agent token cost, gate every call through your own policy hooks before it runs, create your own MCP servers easily with zero code - and **wrap any MCP server so it speaks both protocol eras, invisibly**.
 
